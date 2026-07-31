@@ -22,13 +22,67 @@ package org.openpnp.gui.support;
 import java.awt.Component;
 import java.io.PrintWriter;
 import java.io.StringWriter;
+import java.util.List;
+import java.util.concurrent.CopyOnWriteArrayList;
 
+import javax.swing.JDialog;
 import javax.swing.JOptionPane;
 
 import org.openpnp.gui.MainFrame;
 import org.pmw.tinylog.Logger;
 
 public class MessageBoxes {
+    public interface ErrorListener {
+        void errorShown(String title, String message);
+
+        default void errorDialogShown(String title, String message, JDialog dialog) {
+        }
+    }
+
+    private static final List<ErrorListener> errorListeners = new CopyOnWriteArrayList<>();
+
+    public static void addErrorListener(ErrorListener listener) {
+        errorListeners.add(listener);
+    }
+
+    public static void removeErrorListener(ErrorListener listener) {
+        errorListeners.remove(listener);
+    }
+
+    private static void notifyErrorListeners(String title, String message) {
+        for (ErrorListener listener : errorListeners) {
+            try {
+                listener.errorShown(title, message);
+            }
+            catch (RuntimeException e) {
+                Logger.warn(e, "Unable to notify an error listener.");
+            }
+        }
+    }
+
+    private static void notifyErrorDialogListeners(String title, String message,
+            JDialog dialog) {
+        for (ErrorListener listener : errorListeners) {
+            try {
+                listener.errorDialogShown(title, message, dialog);
+            }
+            catch (RuntimeException e) {
+                Logger.warn(e, "Unable to link an error dialog to a listener.");
+            }
+        }
+    }
+
+    private static Object showErrorDialog(Component parent, String title, String listenerMessage,
+            String displayMessage, int optionType) {
+        JOptionPane optionPane = new JOptionPane(displayMessage, JOptionPane.ERROR_MESSAGE,
+                optionType);
+        JDialog dialog = optionPane.createDialog(parent, title);
+        notifyErrorDialogListeners(title, listenerMessage, dialog);
+        dialog.setVisible(true);
+        Object value = optionPane.getValue();
+        dialog.dispose();
+        return value;
+    }
 
     // prepare message for use in a message box
     static String prepareMessage(String message) {
@@ -58,15 +112,19 @@ public class MessageBoxes {
             message = "No message supplied.";
         }
         Logger.debug("{}: {}", title, cause);
+        String listenerMessage = message;
+        notifyErrorListeners(title, listenerMessage);
         message = message.replaceAll("<", "&lt;");
         message = message.replaceAll(">", "&gt;");
         message = prepareMessage(message);
 
         // if this errorBox shall ask for Continuation, show a ConfirmDialog and return if the user selected YES
         if (withContinuation) {
-            ret = JOptionPane.showConfirmDialog(parent, message, title, JOptionPane.OK_CANCEL_OPTION, JOptionPane.ERROR_MESSAGE) == JOptionPane.OK_OPTION;
-        } else {
-            JOptionPane.showMessageDialog(parent, message, title, JOptionPane.ERROR_MESSAGE);
+            ret = Integer.valueOf(JOptionPane.OK_OPTION).equals(showErrorDialog(parent, title,
+                    listenerMessage, message, JOptionPane.OK_CANCEL_OPTION));
+        }
+        else {
+            showErrorDialog(parent, title, listenerMessage, message, JOptionPane.DEFAULT_OPTION);
         }
         
         return ret;
@@ -81,8 +139,10 @@ public class MessageBoxes {
             message = "";
         }
         Logger.debug("{}: {}", title, message);
+        String listenerMessage = message;
+        notifyErrorListeners(title, listenerMessage);
         message = prepareMessage(message);
-        JOptionPane.showMessageDialog(parent, message, title, JOptionPane.ERROR_MESSAGE);
+        showErrorDialog(parent, title, listenerMessage, message, JOptionPane.DEFAULT_OPTION);
     }
 
     public static boolean errorBoxWithRetry(Component parent, String title, String message) {
@@ -90,8 +150,11 @@ public class MessageBoxes {
             message = "";
         }
         Logger.debug("{}: {}", title, message);
+        String listenerMessage = message;
+        notifyErrorListeners(title, listenerMessage);
         message = prepareMessage(message);
-        return JOptionPane.showConfirmDialog(parent, message, title, JOptionPane.YES_NO_OPTION) == JOptionPane.YES_OPTION;
+        return Integer.valueOf(JOptionPane.YES_OPTION).equals(showErrorDialog(parent, title,
+                listenerMessage, message, JOptionPane.YES_NO_OPTION));
     }
 
     public static void infoBox(String title, String message) {

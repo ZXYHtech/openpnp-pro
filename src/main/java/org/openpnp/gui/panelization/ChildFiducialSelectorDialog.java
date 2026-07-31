@@ -291,7 +291,7 @@ public class ChildFiducialSelectorDialog extends JDialog {
                     new IdentifiableTableCellRenderer<Part>());
             childFiducialsTable.setDefaultRenderer(LengthCellValue.class, new MonospacedFontTableCellRenderer());
             childFiducialsTable.setDefaultRenderer(RotationCellValue.class, new MonospacedFontTableCellRenderer());
-            childFiducialsTable.setAutoResizeMode(JTable.AUTO_RESIZE_NEXT_COLUMN);
+            childFiducialsTable.setAutoResizeMode(JTable.AUTO_RESIZE_OFF);
             
             TableUtils.setColumnAlignment(tableModel, childFiducialsTable);
             

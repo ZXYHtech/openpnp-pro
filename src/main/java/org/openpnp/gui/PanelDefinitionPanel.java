@@ -79,6 +79,9 @@ import org.openpnp.gui.support.IdentifiableTableCellRenderer;
 import org.openpnp.gui.support.LengthCellValue;
 import org.openpnp.gui.support.MessageBoxes;
 import org.openpnp.gui.support.PartsComboBoxModel;
+import org.openpnp.gui.support.PartSearchSupport;
+import org.openpnp.gui.support.StablePartCellEditor;
+import org.openpnp.gui.support.SearchablePartComboBox;
 import org.openpnp.gui.support.RotationCellValue;
 import org.openpnp.gui.support.TableUtils;
 import org.openpnp.gui.tablemodel.PlacementsHolderLocationsTableModel;
@@ -174,7 +177,8 @@ public class PanelDefinitionPanel extends JPanel implements PropertyChangeListen
         replaceChildrenSelectionActionGroup.setEnabled(false);
         
         @SuppressWarnings({"unchecked", "rawtypes"})
-        JComboBox<PartsComboBoxModel> partsComboBox = new JComboBox(new PartsComboBoxModel());
+        JComboBox<PartsComboBoxModel> partsComboBox = new SearchablePartComboBox(new PartsComboBoxModel());
+        PartSearchSupport.install(partsComboBox);
         partsComboBox.setMaximumRowCount(20);
         partsComboBox.setRenderer(new IdentifiableListCellRenderer<Part>());
         @SuppressWarnings({"unchecked", "rawtypes"})
@@ -255,7 +259,7 @@ public class PanelDefinitionPanel extends JPanel implements PropertyChangeListen
         childrenTable.setDefaultRenderer(Boolean.class, new CustomBooleanRenderer());
         childrenTable.setDefaultRenderer(LengthCellValue.class, new MonospacedFontTableCellRenderer());
         childrenTable.setDefaultRenderer(RotationCellValue.class, new MonospacedFontTableCellRenderer());
-        childrenTable.setAutoResizeMode(JTable.AUTO_RESIZE_NEXT_COLUMN);
+        childrenTable.setAutoResizeMode(JTable.AUTO_RESIZE_OFF);
         
         TableUtils.setColumnAlignment(childrenTableModel, childrenTable);
         
@@ -431,12 +435,12 @@ public class PanelDefinitionPanel extends JPanel implements PropertyChangeListen
         fiducialTable.setSelectionMode(ListSelectionModel.MULTIPLE_INTERVAL_SELECTION);
         fiducialTable.setDefaultEditor(Side.class, new DefaultCellEditor(sidesComboBox));
         fiducialTable.setDefaultRenderer(Side.class, new DefaultTableCellRenderer());
-        fiducialTable.setDefaultEditor(Part.class, new DefaultCellEditor(partsComboBox));
+        fiducialTable.setDefaultEditor(Part.class, new StablePartCellEditor(partsComboBox));
         fiducialTable.setDefaultRenderer(Part.class, new IdentifiableTableCellRenderer<Part>());
         fiducialTable.setDefaultRenderer(Boolean.class, new CustomBooleanRenderer());
         fiducialTable.setDefaultRenderer(LengthCellValue.class, new MonospacedFontTableCellRenderer());
         fiducialTable.setDefaultRenderer(RotationCellValue.class, new MonospacedFontTableCellRenderer());
-        fiducialTable.setAutoResizeMode(JTable.AUTO_RESIZE_NEXT_COLUMN);
+        fiducialTable.setAutoResizeMode(JTable.AUTO_RESIZE_OFF);
         
         TableUtils.setColumnAlignment(fiducialTableModel, fiducialTable);
         

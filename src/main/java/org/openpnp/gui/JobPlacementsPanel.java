@@ -30,6 +30,7 @@ import java.awt.event.KeyEvent;
 import java.awt.event.MouseAdapter;
 import java.awt.event.MouseEvent;
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -52,6 +53,8 @@ import javax.swing.JTextField;
 import javax.swing.JToolBar;
 import javax.swing.ListSelectionModel;
 import javax.swing.RowFilter;
+import javax.swing.RowSorter.SortKey;
+import javax.swing.SortOrder;
 import javax.swing.SwingUtilities;
 import javax.swing.UIManager;
 import javax.swing.border.LineBorder;
@@ -78,6 +81,9 @@ import org.openpnp.gui.support.IdentifiableTableCellRenderer;
 import org.openpnp.gui.support.LengthCellValue;
 import org.openpnp.gui.support.MessageBoxes;
 import org.openpnp.gui.support.PartsComboBoxModel;
+import org.openpnp.gui.support.PartSearchSupport;
+import org.openpnp.gui.support.StablePartCellEditor;
+import org.openpnp.gui.support.SearchablePartComboBox;
 import org.openpnp.gui.support.RotationCellValue;
 import org.openpnp.gui.support.TableUtils;
 import org.openpnp.gui.tablemodel.PlacementsHolderPlacementsTableModel;
@@ -104,7 +110,7 @@ import com.google.common.eventbus.Subscribe;
 
 @SuppressWarnings("serial")
 public class JobPlacementsPanel extends JPanel {
-    private JTable table;
+    private AutoSelectTextTable table;
     private PlacementsHolderPlacementsTableModel tableModel;
     private TableRowSorter<PlacementsHolderPlacementsTableModel> tableSorter;
     private ActionGroup topLevelSingleInstanceActionGroup;
@@ -166,7 +172,8 @@ public class JobPlacementsPanel extends JPanel {
 
         // Suppress because adding the type specifiers breaks WindowBuilder.
         @SuppressWarnings({"unchecked", "rawtypes"})
-        JComboBox<PartsComboBoxModel> partsComboBox = new JComboBox(new PartsComboBoxModel());
+        JComboBox<PartsComboBoxModel> partsComboBox = new SearchablePartComboBox(new PartsComboBoxModel());
+        PartSearchSupport.install(partsComboBox);
         partsComboBox.setMaximumRowCount(20);
         partsComboBox.setRenderer(new IdentifiableListCellRenderer<Part>());
         @SuppressWarnings({"unchecked", "rawtypes"})
@@ -195,15 +202,19 @@ public class JobPlacementsPanel extends JPanel {
             @Override
             public String getToolTipText(MouseEvent evt) {
                 int column = convertColumnIndexToModel(columnAtPoint(evt.getPoint()));
-                if(column==11) { return Translations.getString("BoardsPanel.BoardPlacements.Placements.Rank.toolTip"); } //$NON-NLS-1$
-                return null;
+                if(column==11) { return Translations.getString("BoardsPanel.BoardPlacements.Placements.Rank.toolTip")
+                        + " — Right-drag selected rows to reorder"; } //$NON-NLS-1$ //$NON-NLS-2$
+                return super.getToolTipText(evt);
             }
         };
+        table.setMultiRowEditEnabled(true);
         table.setRowSorter(tableSorter);
+        tableSorter.setSortKeys(Collections.singletonList(new SortKey(11, SortOrder.ASCENDING)));
+        table.setRowReorderHandler(this::reorderPlacements);
         table.getTableHeader().setDefaultRenderer(new MultisortTableHeaderCellRenderer());
         table.setSelectionMode(ListSelectionModel.MULTIPLE_INTERVAL_SELECTION);
         table.setDefaultEditor(Side.class, new DefaultCellEditor(sidesComboBox));
-        table.setDefaultEditor(Part.class, new DefaultCellEditor(partsComboBox));
+        table.setDefaultEditor(Part.class, new StablePartCellEditor(partsComboBox));
         table.setDefaultEditor(Type.class, new DefaultCellEditor(typesComboBox));
         table.setDefaultEditor(ErrorHandling.class, new DefaultCellEditor(errorHandlingComboBox));
         table.setDefaultRenderer(Part.class, new IdentifiableTableCellRenderer<Part>());
@@ -212,7 +223,7 @@ public class JobPlacementsPanel extends JPanel {
         table.setDefaultRenderer(Boolean.class, new CustomBooleanRenderer());
         table.setDefaultRenderer(LengthCellValue.class, new MonospacedFontTableCellRenderer());
         table.setDefaultRenderer(RotationCellValue.class, new MonospacedFontTableCellRenderer());
-        table.setAutoResizeMode(JTable.AUTO_RESIZE_NEXT_COLUMN);
+        table.setAutoResizeMode(JTable.AUTO_RESIZE_OFF);
         
         TableUtils.setColumnAlignment(tableModel, table);
         
@@ -306,6 +317,16 @@ public class JobPlacementsPanel extends JPanel {
         
         JPopupMenu popupMenu = new JPopupMenu();
 
+        // Put the high-frequency production state actions directly on the first level.
+        popupMenu.add(new SetEnabledAction(true));
+        popupMenu.add(new SetEnabledAction(false));
+        popupMenu.addSeparator();
+        popupMenu.add(new SetPlacedAction(true));
+        popupMenu.add(new SetPlacedAction(false));
+        popupMenu.addSeparator();
+        popupMenu.add(editPlacementFeederAction);
+        popupMenu.addSeparator();
+
         JMenu setTypeMenu = new JMenu(setTypeAction);
         setTypeMenu.add(new SetTypeAction(Placement.Type.Placement));
         setTypeMenu.add(new SetTypeAction(Placement.Type.Fiducial));
@@ -317,15 +338,6 @@ public class JobPlacementsPanel extends JPanel {
         }
         popupMenu.add(setSideMenu);
 
-        JMenu setPlacedMenu = new JMenu(setPlacedAction);
-        setPlacedMenu.add(new SetPlacedAction(true));
-        setPlacedMenu.add(new SetPlacedAction(false));
-        popupMenu.add(setPlacedMenu);
-
-        JMenu setEnabledMenu = new JMenu(setEnabledAction);
-        setEnabledMenu.add(new SetEnabledAction(true));
-        setEnabledMenu.add(new SetEnabledAction(false));
-        popupMenu.add(setEnabledMenu);
 
         JMenu setErrorHandlingMenu = new JMenu(setErrorHandlingAction);
         setErrorHandlingMenu.add(new SetErrorHandlingAction(ErrorHandling.Default));
@@ -425,6 +437,74 @@ public class JobPlacementsPanel extends JPanel {
         updateRowFilter();
     }
     
+    private boolean reorderPlacements(List<Integer> selectedModelRows, int targetModelRow) {
+        if (boardOrPanelLocation == null || selectedModelRows.isEmpty()
+                || tableModel.getPlacementsHolder() == null) {
+            return false;
+        }
+        int placementCount = tableModel.getPlacementsHolder().getPlacements().size();
+        List<Integer> selectedRows = new ArrayList<>();
+        for (int modelRow : selectedModelRows) {
+            if (modelRow >= 0 && modelRow < placementCount) {
+                selectedRows.add(modelRow);
+            }
+        }
+        if (selectedRows.isEmpty()) {
+            return false;
+        }
+
+        List<Integer> orderedRows = new ArrayList<>();
+        for (int modelRow = 0; modelRow < placementCount; modelRow++) {
+            orderedRows.add(modelRow);
+        }
+        orderedRows.sort((left, right) -> {
+            int rankComparison = Integer.compare(tableModel.getRowObjectAt(left).getRank(),
+                    tableModel.getRowObjectAt(right).getRank());
+            return rankComparison != 0 ? rankComparison : Integer.compare(left, right);
+        });
+        selectedRows.sort((left, right) -> Integer.compare(orderedRows.indexOf(left),
+                orderedRows.indexOf(right)));
+
+        Integer targetRow = targetModelRow >= 0 && targetModelRow < placementCount
+                ? targetModelRow : null;
+        if (targetRow != null && selectedRows.contains(targetRow)) {
+            return false;
+        }
+        orderedRows.removeAll(selectedRows);
+        int insertionIndex = targetRow == null ? orderedRows.size() : orderedRows.indexOf(targetRow);
+        if (insertionIndex < 0) {
+            insertionIndex = orderedRows.size();
+        }
+        orderedRows.addAll(insertionIndex, selectedRows);
+
+        List<Placement> selectedPlacements = new ArrayList<>();
+        for (int selectedRow : selectedRows) {
+            selectedPlacements.add(tableModel.getRowObjectAt(selectedRow));
+        }
+        for (int rank = 0; rank < orderedRows.size(); rank++) {
+            Placement placement = tableModel.getRowObjectAt(orderedRows.get(rank));
+            Placement definition = placement.getDefinition() == null ? placement
+                    : (Placement) placement.getDefinition();
+            if (definition.getRank() != rank) {
+                definition.setRank(rank);
+            }
+        }
+        tableSorter.setSortKeys(Collections.singletonList(new SortKey(11, SortOrder.ASCENDING)));
+        tableModel.fireTableDataChanged();
+        configuration.getBus().post(new DefinitionStructureChangedEvent(
+                tableModel.getPlacementsHolder().getDefinition(), "placements", this));
+        SwingUtilities.invokeLater(() -> {
+            table.clearSelection();
+            for (Placement placement : selectedPlacements) {
+                int modelRow = tableModel.indexOf(placement);
+                int viewRow = modelRow < 0 ? -1 : table.convertRowIndexToView(modelRow);
+                if (viewRow >= 0) {
+                    table.addRowSelectionInterval(viewRow, viewRow);
+                }
+            }
+        });
+        return true;
+    }
     public void refresh() {
         tableModel.fireTableDataChanged();
         updateActivePlacements();

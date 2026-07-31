@@ -8,8 +8,11 @@ import java.util.List;
 import org.openpnp.Translations;
 import org.openpnp.model.AbstractVisionSettings;
 import org.openpnp.model.Configuration;
+import org.openpnp.gui.components.RowReorderableTableModel;
+import org.openpnp.gui.support.RowReorderSupport;
 
-public class VisionSettingsTableModel extends AbstractObjectTableModel implements PropertyChangeListener {
+public class VisionSettingsTableModel extends AbstractObjectTableModel
+        implements PropertyChangeListener, RowReorderableTableModel {
 
     private String[] columnNames = new String[]{
             Translations.getString("VisionSettingsTableModel.ColumnName.Name"), //$NON-NLS-1$
@@ -97,6 +100,12 @@ public class VisionSettingsTableModel extends AbstractObjectTableModel implement
     @Override
     public int indexOf(Object selectedVisionSettings) {
         return visionSettings.indexOf(selectedVisionSettings);
+    }
+
+    @Override
+    public boolean reorderRows(List<Integer> rows, int targetRow) {
+        List<AbstractVisionSettings> ordered = RowReorderSupport.reorder(visionSettings, rows, targetRow);
+        return ordered != null && Configuration.get().reorderVisionSettings(ordered);
     }
 
 }

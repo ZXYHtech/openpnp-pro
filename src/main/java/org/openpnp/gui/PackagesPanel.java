@@ -44,6 +44,7 @@ import javax.swing.AbstractAction;
 import javax.swing.Action;
 import javax.swing.DefaultCellEditor;
 import javax.swing.JComboBox;
+import javax.swing.JComponent;
 import javax.swing.JLabel;
 import javax.swing.JOptionPane;
 import javax.swing.JPanel;
@@ -55,6 +56,7 @@ import javax.swing.JTextField;
 import javax.swing.JToolBar;
 import javax.swing.ListSelectionModel;
 import javax.swing.RowFilter;
+import javax.swing.SwingUtilities;
 import javax.swing.event.DocumentEvent;
 import javax.swing.event.DocumentListener;
 import javax.swing.event.ListSelectionEvent;
@@ -62,6 +64,7 @@ import javax.swing.event.ListSelectionListener;
 import javax.swing.table.TableRowSorter;
 
 import org.openpnp.Translations;
+import org.openpnp.events.JobLoadedEvent;
 import org.openpnp.gui.components.AutoSelectTextTable;
 import org.openpnp.gui.components.CameraView;
 import org.openpnp.gui.support.AbstractConfigurationWizard;
@@ -69,6 +72,9 @@ import org.openpnp.gui.support.ActionGroup;
 import org.openpnp.gui.support.Helpers;
 import org.openpnp.gui.support.Icons;
 import org.openpnp.gui.support.MessageBoxes;
+import org.openpnp.gui.support.JobUsageFilter;
+import org.openpnp.gui.support.JobUsageSnapshot;
+import org.openpnp.gui.support.ModernTheme;
 import org.openpnp.gui.support.MultisortTableHeaderCellRenderer;
 import org.openpnp.gui.support.NamedListCellRenderer;
 import org.openpnp.gui.support.NamedTableCellRenderer;
@@ -85,6 +91,7 @@ import org.openpnp.model.BottomVisionSettings;
 import org.openpnp.model.Configuration;
 import org.openpnp.model.Configuration.TablesLinked;
 import org.openpnp.model.FiducialVisionSettings;
+import org.openpnp.model.Job;
 import org.openpnp.model.Package;
 import org.openpnp.model.Part;
 import org.openpnp.spi.Camera;
@@ -93,6 +100,8 @@ import org.openpnp.spi.Machine;
 import org.openpnp.spi.PartAlignment;
 import org.pmw.tinylog.Logger;
 import org.simpleframework.xml.Serializer;
+
+import com.google.common.eventbus.Subscribe;
 
 @SuppressWarnings("serial")
 public class PackagesPanel extends JPanel implements WizardContainer {
@@ -108,6 +117,8 @@ public class PackagesPanel extends JPanel implements WizardContainer {
     private PackagesTableModel tableModel;
     private TableRowSorter<PackagesTableModel> tableSorter;
     private JTextField searchTextField;
+    private JComboBox<JobUsageFilter> usageFilter;
+    private JobUsageSnapshot usageSnapshot;
     private JTable table;
     private ActionGroup singleSelectionActionGroup;
     private ActionGroup multiSelectionActionGroup;
@@ -137,6 +148,11 @@ public class PackagesPanel extends JPanel implements WizardContainer {
 
         JPanel panel_1 = new JPanel();
         toolbarAndSearch.add(panel_1, BorderLayout.EAST);
+
+        panel_1.add(new JLabel("显示"));
+        usageFilter = new JComboBox<>(JobUsageFilter.values());
+        usageFilter.addActionListener(event -> refreshUsageDisplay());
+        panel_1.add(usageFilter);
 
         JLabel lblSearch = new JLabel(Translations.getString("PackagesPanel.SearchLabel.text")); //$NON-NLS-1$
         panel_1.add(lblSearch);
@@ -178,8 +194,34 @@ public class PackagesPanel extends JPanel implements WizardContainer {
 
         table = new AutoSelectTextTable(tableModel) {
             @Override
+            public Component prepareRenderer(javax.swing.table.TableCellRenderer renderer, int row,
+                    int column) {
+                Component component = super.prepareRenderer(renderer, row, column);
+                Package pkg = tableModel.getRowObjectAt(convertRowIndexToModel(row));
+                boolean used = usageSnapshot != null && usageSnapshot.isUsed(pkg);
+                if (!isRowSelected(row)) {
+                    component.setBackground(used
+                            ? new java.awt.Color(ModernTheme.isDark() ? 0x234A3D : 0xE2F5EC)
+                            : getBackground());
+                }
+                if (component instanceof JComponent) {
+                    ((JComponent) component).setToolTipText(
+                            used ? "当前任务使用" : "当前任务未使用");
+                }
+                return component;
+            }
+
+            @Override
             public String getToolTipText(MouseEvent evt) {
-                int column = convertColumnIndexToModel(columnAtPoint(evt.getPoint()));
+                String fullValue = super.getToolTipText(evt);
+                if (fullValue != null) {
+                    return fullValue;
+                }
+                int viewColumn = columnAtPoint(evt.getPoint());
+                if (viewColumn < 0) {
+                    return null;
+                }
+                int column = convertColumnIndexToModel(viewColumn);
                 if(column==2) { return Translations.getString("PackagesTableModel.Column.TapeSpecification.toolTip"); } //$NON-NLS-1$
                 return null;
             }
@@ -230,6 +272,7 @@ public class PackagesPanel extends JPanel implements WizardContainer {
         });
 
         table.setRowSorter(tableSorter);
+        ((AutoSelectTextTable) table).setRowReorderHandler(this::reorderRows);
         table.getTableHeader().setDefaultRenderer(new MultisortTableHeaderCellRenderer());
 
         splitPane.setLeftComponent(new JScrollPane(table));
@@ -257,6 +300,8 @@ public class PackagesPanel extends JPanel implements WizardContainer {
                 }
             }
         });
+        configuration.getBus().register(this);
+        refreshUsageSnapshot();
     }
 
     public Package getSelectedPackage() {
@@ -282,17 +327,60 @@ public class PackagesPanel extends JPanel implements WizardContainer {
         }
         return selections;
     }
+    private boolean reorderRows(List<Integer> rows, int targetRow) {
+        List<Package> selected = new ArrayList<>();
+        for (Integer row : rows) {
+            if (row != null && row >= 0 && row < tableModel.getRowCount()) {
+                selected.add(tableModel.getRowObjectAt(row));
+            }
+        }
+        boolean changed = tableModel.reorderRows(rows, targetRow);
+        if (changed) {
+            tableSorter.setSortKeys(null);
+            Helpers.selectObjectTableRows(table, selected);
+
+        }
+        return changed;
+    }
+
     private void search() {
-        RowFilter<PackagesTableModel, Object> rf = null;
-        // If current expression doesn't parse, don't update.
+        RowFilter<PackagesTableModel, Object> textFilter = null;
         try {
-            rf = RowFilter.regexFilter("(?i)" + searchTextField.getText().trim());
+            textFilter = RowFilter.regexFilter("(?i)" + searchTextField.getText().trim());
         }
         catch (PatternSyntaxException e) {
             Logger.warn(e, "Search failed");
             return;
         }
-        tableSorter.setRowFilter(rf);
+        final JobUsageFilter selectedFilter = (JobUsageFilter) usageFilter.getSelectedItem();
+        RowFilter<PackagesTableModel, Object> usageRowFilter =
+                new RowFilter<PackagesTableModel, Object>() {
+                    @Override
+                    public boolean include(
+                            Entry<? extends PackagesTableModel, ? extends Object> entry) {
+                        Package pkg = tableModel.getRowObjectAt((Integer) entry.getIdentifier());
+                        return selectedFilter == null || selectedFilter.includes(
+                                usageSnapshot != null && usageSnapshot.isUsed(pkg));
+                    }
+                };
+        tableSorter.setRowFilter(textFilter == null ? usageRowFilter
+                : RowFilter.andFilter(java.util.Arrays.asList(textFilter, usageRowFilter)));
+    }
+
+    private void refreshUsageDisplay() {
+        refreshUsageSnapshot();
+        search();
+        table.repaint();
+    }
+
+    private void refreshUsageSnapshot() {
+        Job job = frame instanceof MainFrame ? ((MainFrame) frame).getJobTab().getJob() : null;
+        usageSnapshot = JobUsageSnapshot.capture(job, configuration.getMachine());
+    }
+
+    @Subscribe
+    public void jobLoaded(JobLoadedEvent event) {
+        SwingUtilities.invokeLater(this::refreshUsageDisplay);
     }
 
     public final Action newPackageAction = new AbstractAction() {

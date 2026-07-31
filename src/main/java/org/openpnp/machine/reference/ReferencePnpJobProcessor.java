@@ -188,6 +188,41 @@ public class ReferencePnpJobProcessor extends AbstractPnpJobProcessor {
         this.fireJobState(Configuration.get().getMachine().getSignalers(), AbstractJobProcessor.State.STOPPED);
     }
 
+    /**
+     * @return true when the processor is paused on a recoverable alignment for this nozzle
+     */
+    public synchronized boolean canRecoverFailedAlignment(Nozzle nozzle) {
+        if (!(currentStep instanceof Align) || nozzle == null) {
+            return false;
+        }
+        Align alignStep = (Align) currentStep;
+        return alignStep.plannedPlacements.stream()
+                .anyMatch(planned -> planned.nozzle == nozzle
+                        && planned.jobPlacement.getStatus() == Status.Processing);
+    }
+    /**
+     * Discard the failed part and return its placement to Pending. The planner will pick it
+     * again in a later cycle while other nozzles in the current cycle continue normally.
+     */    public synchronized boolean discardAndRequeueFailedAlignment(Nozzle nozzle)
+            throws JobProcessorException {
+        if (!(currentStep instanceof Align) || nozzle == null) {
+            return false;
+        }
+        Align alignStep = (Align) currentStep;
+        PlannedPlacement failedPlacement = alignStep.plannedPlacements.stream()
+                .filter(planned -> planned.nozzle == nozzle)
+                .filter(planned -> planned.jobPlacement.getStatus() == Status.Processing)
+                .findFirst()
+                .orElse(null);
+        if (failedPlacement == null) {
+            return false;
+        }
+
+        discard(nozzle);
+        failedPlacement.jobPlacement.setStatus(Status.Pending);
+        failedPlacement.alignmentOffsets = null;
+        return true;
+    }
     @Override
     public synchronized boolean next() throws JobProcessorException {
         this.fireJobState(Configuration.get().getMachine().getSignalers(), AbstractJobProcessor.State.RUNNING);

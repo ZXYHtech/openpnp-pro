@@ -204,6 +204,11 @@ public interface Machine extends WizardConfigurable, PropertySheetHolder, Closea
 
     public void removeFeeder(Feeder feeder);
 
+    /** Reorders feeders without disconnecting or recreating them. */
+    public default boolean reorderFeeders(List<Feeder> ordered) {
+        return false;
+    }
+
     public void addSignaler(Signaler signaler) throws Exception;
 
     public void removeSignaler(Signaler signaler);

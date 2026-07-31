@@ -367,6 +367,21 @@ public abstract class AbstractMachine extends AbstractModelObject implements Mac
     }
 
     @Override
+    public boolean reorderFeeders(List<Feeder> ordered) {
+        if (ordered == null || ordered.size() != feeders.size()
+                || !feeders.containsAll(ordered) || !ordered.containsAll(feeders)) {
+            return false;
+        }
+        List<Feeder> oldValue = new ArrayList<>(feeders);
+        if (oldValue.equals(ordered)) {
+            return false;
+        }
+        feeders.clear();
+        feeders.addAll(ordered);
+        firePropertyChange("feeders", oldValue, new ArrayList<>(feeders));
+        return true;
+    }
+    @Override
     public void addCamera(Camera camera) throws Exception {
         camera.setHead(null);
         cameras.add(camera);

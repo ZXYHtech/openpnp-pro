@@ -27,6 +27,7 @@ import java.awt.Frame;
 import java.awt.event.ActionEvent;
 import java.awt.event.ActionListener;
 import java.io.File;
+import java.io.InputStream;
 import java.net.URI;
 
 import javax.swing.BoxLayout;
@@ -38,6 +39,7 @@ import javax.swing.JTabbedPane;
 import javax.swing.border.EmptyBorder;
 
 import org.apache.commons.io.FileUtils;
+import org.apache.commons.io.IOUtils;
 import org.openpnp.Main;
 import org.openpnp.gui.components.MarkupTextPane;
 
@@ -46,7 +48,9 @@ public class AboutDialog extends JDialog {
 
     private final JPanel contentPanel = new JPanel();
     private MarkupTextPane releaseNotes;
+    private MarkupTextPane proChangeLog;
     private MarkupTextPane credits;
+    private JTabbedPane tabbedPane;
 
     public AboutDialog(Frame frame) {
         super(frame, true);
@@ -66,12 +70,32 @@ public class AboutDialog extends JDialog {
         }
         catch (Exception e) {
         }
+        try {
+            String s = FileUtils.readFileToString(new File("OPENPNP_PRO_CHANGELOG_CN.md"));
+            proChangeLog.setText(s);
+        }
+        catch (Exception fileException) {
+            try (InputStream stream = AboutDialog.class.getResourceAsStream(
+                    "/OPENPNP_PRO_CHANGELOG_CN.md")) {
+                if (stream != null) {
+                    proChangeLog.setText(IOUtils.toString(stream, "UTF-8"));
+                }
+                else {
+                    proChangeLog.setText("# OpenPnP Pro " + Main.getVersionString()
+                            + "\n\n未找到 Pro 更新日志。");
+                }
+            }
+            catch (Exception resourceException) {
+                proChangeLog.setText("# OpenPnP Pro " + Main.getVersionString()
+                        + "\n\nPro 更新日志读取失败。");
+            }
+        }
     }
 
     private void createUi() {
-        setTitle(String.format("About OpenPnP %s", Main.getVersionString()));
+        setTitle(String.format("关于 OpenPnP Pro %s", Main.getVersionString()));
         setDefaultCloseOperation(JDialog.DISPOSE_ON_CLOSE);
-        setBounds(100, 100, 347, 360);
+        setBounds(100, 100, 720, 600);
         getContentPane().setLayout(new BorderLayout());
         JPanel buttonPane = new JPanel();
         buttonPane.setLayout(new FlowLayout(FlowLayout.RIGHT));
@@ -89,7 +113,7 @@ public class AboutDialog extends JDialog {
         contentPanel.setBorder(new EmptyBorder(5, 5, 5, 5));
         getContentPane().add(contentPanel, BorderLayout.CENTER);
         contentPanel.setLayout(new BoxLayout(contentPanel, BoxLayout.Y_AXIS));
-        JLabel lblOpenpnp = new JLabel("OpenPnP");
+        JLabel lblOpenpnp = new JLabel("OpenPnP Pro");
         lblOpenpnp.setAlignmentX(Component.CENTER_ALIGNMENT);
         lblOpenpnp.setFont(new Font("Lucida Grande", Font.BOLD, 32));
         contentPanel.add(lblOpenpnp);
@@ -97,18 +121,25 @@ public class AboutDialog extends JDialog {
         lblCopyright.setFont(new Font("Lucida Grande", Font.PLAIN, 10));
         lblCopyright.setAlignmentX(Component.CENTER_ALIGNMENT);
         contentPanel.add(lblCopyright);
-        JLabel lblVersion = new JLabel("Version: " + Main.getVersion());
+        JLabel lblVersion = new JLabel("版本：" + Main.getVersion());
         lblVersion.setFont(new Font("Lucida Grande", Font.PLAIN, 10));
         lblVersion.setAlignmentX(Component.CENTER_ALIGNMENT);
         contentPanel.add(lblVersion);
 
-        JTabbedPane tabbedPane = new JTabbedPane(JTabbedPane.TOP);
+        tabbedPane = new JTabbedPane(JTabbedPane.TOP);
         contentPanel.add(tabbedPane);
 
         releaseNotes = new MarkupTextPane();
         tabbedPane.addTab("Release Notes", null, releaseNotes, null);
 
+        proChangeLog = new MarkupTextPane();
+        tabbedPane.addTab("Pro 更新日志", null, proChangeLog, null);
+
         credits = new MarkupTextPane();
         tabbedPane.addTab("Credits", null, credits, null);
+    }
+
+    public void showProChangeLog() {
+        tabbedPane.setSelectedComponent(proChangeLog);
     }
 }

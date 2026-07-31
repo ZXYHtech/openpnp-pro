@@ -29,9 +29,12 @@ import org.openpnp.model.BottomVisionSettings;
 import org.openpnp.model.Configuration;
 import org.openpnp.model.FiducialVisionSettings;
 import org.openpnp.model.Package;
+import org.openpnp.gui.components.RowReorderableTableModel;
+import org.openpnp.gui.support.RowReorderSupport;
 
 @SuppressWarnings("serial")
-public class PackagesTableModel extends AbstractObjectTableModel implements PropertyChangeListener {
+public class PackagesTableModel extends AbstractObjectTableModel
+        implements PropertyChangeListener, RowReorderableTableModel {
     final private Configuration configuration;
 
     private String[] columnNames = new String[] {
@@ -39,9 +42,11 @@ public class PackagesTableModel extends AbstractObjectTableModel implements Prop
             Translations.getString("PackagesTableModel.ColumnName.Description"), //$NON-NLS-1$
             Translations.getString("PackagesTableModel.ColumnName.TapeSpecification"), //$NON-NLS-1$
             Translations.getString("PackagesTableModel.ColumnName.BottomVision"), //$NON-NLS-1$
-            Translations.getString("PackagesTableModel.ColumnName.FiducialVision") //$NON-NLS-1$
+            Translations.getString("PackagesTableModel.ColumnName.FiducialVision"), //$NON-NLS-1$
+            "Standard Name",
+            "Aliases"
     };
-    private Class[] columnTypes = new Class[] {String.class, String.class, String.class, BottomVisionSettings.class, FiducialVisionSettings.class};
+    private Class[] columnTypes = new Class[] {String.class, String.class, String.class, BottomVisionSettings.class, FiducialVisionSettings.class, String.class, String.class};
     private List<Package> packages;
 
     public PackagesTableModel(Configuration configuration) {
@@ -100,6 +105,12 @@ public class PackagesTableModel extends AbstractObjectTableModel implements Prop
             else if (columnIndex == 4) {
                 this_package.setFiducialVisionSettings((FiducialVisionSettings) aValue);
             }
+            else if (columnIndex == 5) {
+                this_package.setStandardName((String) aValue);
+            }
+            else if (columnIndex == 6) {
+                this_package.setAliases((String) aValue);
+            }
         }
         catch (Exception e) {
             // TODO: dialog, bad input
@@ -119,6 +130,10 @@ public class PackagesTableModel extends AbstractObjectTableModel implements Prop
                 return this_package.getBottomVisionSettings();
             case 4:
                 return this_package.getFiducialVisionSettings();
+            case 5:
+                return this_package.getStandardName();
+            case 6:
+                return this_package.getAliases();
             default:
                 return null;
         }
@@ -129,4 +144,10 @@ public class PackagesTableModel extends AbstractObjectTableModel implements Prop
         packages = new ArrayList<>(configuration.getPackages());
         fireTableDataChanged();
     }
+    @Override
+    public boolean reorderRows(List<Integer> rows, int targetRow) {
+        List<Package> ordered = RowReorderSupport.reorder(packages, rows, targetRow);
+        return ordered != null && configuration.reorderPackages(ordered);
+    }
+
 }

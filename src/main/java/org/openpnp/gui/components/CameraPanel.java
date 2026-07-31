@@ -195,6 +195,11 @@ public class CameraPanel extends JPanel {
         return cameraViews.get(camera);
     }
 
+    /** Returns the single camera currently active in the main camera panel. */
+    public Camera getSelectedCamera() {
+        return selectedCameraView == null ? null : selectedCameraView.getCamera();
+    }
+
     private void relayoutPanel() {
         selectedCameraView = null;
         camerasPanel.removeAll();

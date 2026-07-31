@@ -1,5 +1,7 @@
 package org.openpnp.vision.pipeline.ui;
 
+import org.openpnp.gui.components.AutoSelectTextTable;
+
 import java.awt.BorderLayout;
 import java.awt.Dimension;
 import java.awt.Toolkit;
@@ -106,7 +108,7 @@ public class PipelinePanel extends JPanel {
         JSplitPane splitPaneStages = new JSplitPane();
         splitPaneStages.setOrientation(JSplitPane.VERTICAL_SPLIT);
 
-        stagesTable = new JTable(stagesTableModel = new StagesTableModel(editor.getPipeline()));
+        stagesTable = new AutoSelectTextTable(stagesTableModel = new StagesTableModel(editor.getPipeline()));
         stagesTable.setSelectionMode(ListSelectionModel.SINGLE_SELECTION);
         stagesTable.setDragEnabled(true);
         stagesTable.setDropMode(DropMode.INSERT_ROWS);

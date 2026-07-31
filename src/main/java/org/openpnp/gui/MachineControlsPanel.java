@@ -19,7 +19,6 @@
 
 package org.openpnp.gui;
 
-import java.awt.Color;
 import java.awt.EventQueue;
 import java.awt.Toolkit;
 import java.awt.event.ActionEvent;
@@ -100,9 +99,6 @@ public class MachineControlsPanel extends JPanel {
 
     private Location markLocation = null;
 
-    private Color droNormalColor = new Color(0xBDFFBE);
-    private Color droSavedColor = new Color(0x90cce0);
-    
     /**
      * Create the panel.
      */
@@ -309,7 +305,7 @@ public class MachineControlsPanel extends JPanel {
         z = l.getZ();
         c = l.getRotation();
 
-        return String.format("X:%-9s Y:%-9s Z:%-9s C:%-9s", //$NON-NLS-1$
+        return String.format("●  X:%-9s  Y:%-9s  Z:%-9s  C:%-9s", //$NON-NLS-1$
                 String.format(Locale.US, configuration.getLengthDisplayFormat(), x),
                 String.format(Locale.US, configuration.getLengthDisplayFormat(), y),
                 String.format(Locale.US, configuration.getLengthDisplayFormat(), z),
@@ -572,7 +568,7 @@ public class MachineControlsPanel extends JPanel {
         @Override
         public void configurationComplete(Configuration configuration) {
             SwingUtilities.invokeLater(() -> {
-                MainFrame.get().getDroLabel().setBackground(droNormalColor);
+                MainFrame.get().applyDroCoordinateStyle(false);
             });
             MainFrame.get().getDroLabel().addMouseListener(new MouseAdapter() {
                 @Override
@@ -585,11 +581,11 @@ public class MachineControlsPanel extends JPanel {
                         SwingUtilities.invokeLater(() -> {
                             if (markLocation == null) {
                                 markLocation = getCurrentLocation();
-                                MainFrame.get().getDroLabel().setBackground(droSavedColor);
+                                MainFrame.get().applyDroCoordinateStyle(true);
                             }
                             else {
                                 markLocation = null;
-                                MainFrame.get().getDroLabel().setBackground(droNormalColor);
+                                MainFrame.get().applyDroCoordinateStyle(false);
                             }
                             updateDros();
                         });

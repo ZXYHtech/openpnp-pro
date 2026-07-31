@@ -82,6 +82,9 @@ import org.openpnp.gui.support.IdentifiableTableCellRenderer;
 import org.openpnp.gui.support.LengthCellValue;
 import org.openpnp.gui.support.MessageBoxes;
 import org.openpnp.gui.support.PartsComboBoxModel;
+import org.openpnp.gui.support.PartSearchSupport;
+import org.openpnp.gui.support.StablePartCellEditor;
+import org.openpnp.gui.support.SearchablePartComboBox;
 import org.openpnp.gui.support.RotationCellValue;
 import org.openpnp.gui.support.TableUtils;
 import org.openpnp.gui.tablemodel.PlacementsHolderPlacementsTableModel;
@@ -110,7 +113,7 @@ import io.github.classgraph.ScanResult;
 
 @SuppressWarnings("serial")
 public class BoardPlacementsPanel extends JPanel {
-    private JTable table;
+    private AutoSelectTextTable table;
     private PlacementsHolderPlacementsTableModel tableModel;
     private TableRowSorter<PlacementsHolderPlacementsTableModel> tableSorter;
     private ActionGroup singleSelectionActionGroup;
@@ -181,7 +184,8 @@ public class BoardPlacementsPanel extends JPanel {
         multiSelectionActionGroup.setEnabled(false);
 
         @SuppressWarnings("unchecked")
-        JComboBox<PartsComboBoxModel> partsComboBox = new JComboBox<>(new PartsComboBoxModel());
+        JComboBox<PartsComboBoxModel> partsComboBox = new SearchablePartComboBox(new PartsComboBoxModel());
+        PartSearchSupport.install(partsComboBox);
         partsComboBox.setMaximumRowCount(20);
         partsComboBox.setRenderer(new IdentifiableListCellRenderer<Part>());
         JComboBox<Side> sidesComboBox = new JComboBox<>(Side.values());
@@ -202,6 +206,7 @@ public class BoardPlacementsPanel extends JPanel {
                 return null;
             }
         };
+        table.setMultiRowEditEnabled(true);
         
         TableColumnModel tcm = table.getColumnModel();
         tcm.removeColumn(tcm.getColumn(9)); //remove Status column
@@ -212,7 +217,7 @@ public class BoardPlacementsPanel extends JPanel {
         
         table.setSelectionMode(ListSelectionModel.MULTIPLE_INTERVAL_SELECTION);
         table.setDefaultEditor(Side.class, new DefaultCellEditor(sidesComboBox));
-        table.setDefaultEditor(Part.class, new DefaultCellEditor(partsComboBox));
+        table.setDefaultEditor(Part.class, new StablePartCellEditor(partsComboBox));
         table.setDefaultEditor(Type.class, new DefaultCellEditor(typesComboBox));
         table.setDefaultRenderer(Type.class, new TypeRenderer());
         table.setDefaultEditor(ErrorHandling.class, new DefaultCellEditor(errorHandlingComboBox));
@@ -220,7 +225,7 @@ public class BoardPlacementsPanel extends JPanel {
         table.setDefaultRenderer(Boolean.class, new CustomBooleanRenderer());
         table.setDefaultRenderer(LengthCellValue.class, new MonospacedFontTableCellRenderer());
         table.setDefaultRenderer(RotationCellValue.class, new MonospacedFontTableCellRenderer());
-        table.setAutoResizeMode(JTable.AUTO_RESIZE_NEXT_COLUMN);
+        table.setAutoResizeMode(JTable.AUTO_RESIZE_OFF);
         
         TableUtils.setColumnAlignment(tableModel, table);
         

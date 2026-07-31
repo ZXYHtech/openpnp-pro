@@ -38,6 +38,15 @@ public class Part extends AbstractPartSettingsHolder {
 
     @Attribute
     private LengthUnit heightUnits = LengthUnit.Millimeters;
+    /** Operator-facing ID. Unlike the internal id this value may be shared by variants. */
+    @Attribute(required = false)
+    private String displayId;
+    @Attribute(required = false)
+    private String variant;
+    /** Comma or semicolon separated ERP, customer and manufacturer aliases. */
+    @Attribute(required = false)
+    private String aliases;
+
     @Attribute
     private double height;
 
@@ -95,6 +104,37 @@ public class Part extends AbstractPartSettingsHolder {
     public String getName() {
         return name;
     }
+
+    public String getDisplayId() {
+        return displayId == null || displayId.trim().isEmpty() ? id : displayId;
+    }
+
+    public void setDisplayId(String displayId) {
+        Object oldValue = getDisplayId();
+        this.displayId = displayId;
+        firePropertyChange("displayId", oldValue, getDisplayId());
+    }
+
+    public String getVariant() {
+        return variant;
+    }
+
+    public void setVariant(String variant) {
+        Object oldValue = this.variant;
+        this.variant = variant;
+        firePropertyChange("variant", oldValue, variant);
+    }
+
+    public String getAliases() {
+        return aliases;
+    }
+
+    public void setAliases(String aliases) {
+        Object oldValue = this.aliases;
+        this.aliases = aliases;
+        firePropertyChange("aliases", oldValue, aliases);
+    }
+
 
     public void setName(String name) {
         Object oldValue = this.name;

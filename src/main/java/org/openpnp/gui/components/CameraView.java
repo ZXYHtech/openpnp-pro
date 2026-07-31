@@ -135,7 +135,7 @@ public class CameraView extends JComponent implements CameraListener {
     /**
      * The last frame received, reported by the Camera.
      */
-    private BufferedImage lastFrame;
+    private volatile BufferedImage lastFrame;
 
     private LinkedHashMap<Object, Reticle> reticles = new LinkedHashMap<>();
 
@@ -204,7 +204,7 @@ public class CameraView extends JComponent implements CameraListener {
 
     private Preferences prefs = Preferences.userNodeForPackage(CameraView.class);
 
-    private String text;
+    private volatile String text;
 
     private boolean showImageInfo;
 
@@ -340,6 +340,42 @@ public class CameraView extends JComponent implements CameraListener {
 
     public Camera getCamera() {
         return camera;
+    }
+
+    /**
+     * Mirrors the complete visual presentation of another view of the same camera. This includes
+     * the most recently presented (possibly pipeline-filtered) frame, dynamic recognition
+     * reticles and overlay text. It deliberately does not copy interaction state such as drag
+     * jogging or selections.
+     *
+     * @param source the authoritative view shown in the main OpenPnP window
+     */
+    public void mirrorPresentationFrom(CameraView source) {
+        if (source == null || source == this || source.getCamera() != camera) {
+            return;
+        }
+        BufferedImage frame;
+        LinkedHashMap<Object, Reticle> sourceReticles;
+        String sourceText;
+        synchronized (source) {
+            frame = source.lastFrame;
+            sourceReticles = new LinkedHashMap<>(source.reticles);
+            sourceText = source.text;
+        }
+        if (frame == null) {
+            return;
+        }
+        synchronized (this) {
+            BufferedImage previous = lastFrame;
+            lastFrame = frame;
+            reticles = sourceReticles;
+            text = sourceText;
+            if (previous == null || previous.getWidth() != frame.getWidth()
+                    || previous.getHeight() != frame.getHeight()) {
+                calculateScalingData();
+            }
+        }
+        repaint();
     }
 
     public void setShowName(boolean showName) {

@@ -1164,13 +1164,17 @@ public class GcodeDriverSolutions implements Solutions.Subject {
      * @throws Exception
      */
     public static void convertToAsync(GcodeDriver gcodeDriver) throws Exception {
+        replaceDriver(createAsyncDriver(gcodeDriver));
+    }
+
+    static GcodeAsyncDriver createAsyncDriver(GcodeDriver gcodeDriver) throws Exception {
         // Serialize the GcodeDriver
         Serializer serOut = XmlSerialize.createSerializer();
         StringWriter sw = new StringWriter();
         serOut.write(gcodeDriver, sw);
         String gcodeDriverSerialized = sw.toString();
         // Patch it.
-        gcodeDriverSerialized.replace(
+        gcodeDriverSerialized = gcodeDriverSerialized.replace(
                 gcodeDriver.getClass().getCanonicalName(), 
                 GcodeAsyncDriver.class.getCanonicalName());
         // De-serialize it.
@@ -1179,7 +1183,7 @@ public class GcodeDriverSolutions implements Solutions.Subject {
         GcodeAsyncDriver asyncDriver = serIn.read(GcodeAsyncDriver.class, sr);
         // Triple the timeout as asynchronously executed move sequences can be longer than single moves.
         asyncDriver.setTimeoutMilliseconds(asyncDriver.getTimeoutMilliseconds()*3);
-        replaceDriver(asyncDriver);
+        return asyncDriver;
     }
 
     /**
@@ -1190,22 +1194,28 @@ public class GcodeDriverSolutions implements Solutions.Subject {
      * @throws Exception
      */
     public static void convertToPlain(GcodeAsyncDriver asyncDriver) throws Exception {
+        replaceDriver(createPlainDriver(asyncDriver));
+    }
+
+    static GcodeDriver createPlainDriver(GcodeAsyncDriver asyncDriver) throws Exception {
         // Serialize the GcodeDriver
         Serializer serOut = XmlSerialize.createSerializer();
         StringWriter sw = new StringWriter();
         serOut.write(asyncDriver, sw);
         String gcodeDriverSerialized = sw.toString();
         // Patch it.
-        gcodeDriverSerialized.replace(
+        gcodeDriverSerialized = gcodeDriverSerialized.replace(
                 asyncDriver.getClass().getCanonicalName(), 
-                GcodeAsyncDriver.class.getCanonicalName());
+                GcodeDriver.class.getCanonicalName());
         // Remove the sub-class properties. 
         gcodeDriverSerialized = XmlSerialize.purgeSubclassXml(GcodeAsyncDriver.class, gcodeDriverSerialized);
         // De-serialize it.
         Serializer serIn = XmlSerialize.createSerializer();
         StringReader sr = new StringReader(gcodeDriverSerialized);
         GcodeDriver gcodeDriver = serIn.read(GcodeDriver.class, sr);
-        replaceDriver(gcodeDriver);
+        gcodeDriver.setTimeoutMilliseconds(
+                Math.max(1, gcodeDriver.getTimeoutMilliseconds() / 3));
+        return gcodeDriver;
     }
 
     /**

@@ -32,6 +32,7 @@ import javax.swing.UIManager;
 
 import org.openpnp.Translations;
 import org.openpnp.gui.support.FlexibleColor;
+import org.openpnp.gui.support.ModernTheme;
 import org.openpnp.model.Configuration;
 
 import com.formdev.flatlaf.FlatDarculaLaf;
@@ -261,6 +262,8 @@ public class ThemeSettingsPanel extends JPanel {
         themes.add(new ThemeInfo(Translations.getString("Theme.Section.Extra"), null, false, null, null)); //$NON-NLS-1$
         themes.add(new ThemeInfo("Light", null, false, null, FlatLightLaf.class.getName()));
         themes.add(new ThemeInfo("Dark", null, true, null, FlatDarkLaf.class.getName()));
+        themes.add(new ThemeInfo(ProCompatibleDarkLaf.NAME, null, true, null,
+                ProCompatibleDarkLaf.class.getName()));
         themes.add(new ThemeInfo("IntelliJ Light", null, false, null, FlatIntelliJLaf.class.getName()));
         themes.add(new ThemeInfo("Darcula", null, true, null, FlatDarculaLaf.class.getName()));
 
@@ -368,6 +371,7 @@ public class ThemeSettingsPanel extends JPanel {
         else {
             UIManager.put("Table.alternateRowColor", null);
         }
+        ModernTheme.apply();
         FlatLaf.updateUI();
         removeAll();
         initComponents();

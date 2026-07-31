@@ -35,6 +35,8 @@ import org.openpnp.gui.support.IntegerConverter;
 import org.openpnp.gui.support.LengthConverter;
 import org.openpnp.gui.support.MutableLocationProxy;
 import org.openpnp.gui.support.PartsComboBoxModel;
+import org.openpnp.gui.support.PartSearchSupport;
+import org.openpnp.gui.support.SearchablePartComboBox;
 import org.openpnp.machine.reference.ReferenceFeeder;
 import org.openpnp.model.Configuration;
 import org.openpnp.model.Part;
@@ -103,11 +105,12 @@ public abstract class AbstractReferenceFeederConfigurationWizard
                 FormSpecs.RELATED_GAP_ROWSPEC,
                 FormSpecs.DEFAULT_ROWSPEC,}));
 
-        comboBoxPart = new JComboBox();
+        comboBoxPart = new SearchablePartComboBox();
         comboBoxPart.setMaximumRowCount(20);
         try {
             partsComboBoxModel = new PartsComboBoxModel();
             comboBoxPart.setModel(partsComboBoxModel);
+        PartSearchSupport.install(comboBoxPart);
         }
         catch (Throwable t) {
             // Swallow this error. This happens during parsing in

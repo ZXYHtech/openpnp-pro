@@ -43,6 +43,13 @@ public class Package extends AbstractPartSettingsHolder {
     private String description;
 
     @Attribute(required = false)
+    private String standardName;
+
+    /** Comma or semicolon separated standard, customer and legacy package names. */
+    @Attribute(required = false)
+    private String aliases;
+
+    @Attribute(required = false)
     private String tapeSpecification;
 
     @Attribute(required = false)
@@ -96,6 +103,26 @@ public class Package extends AbstractPartSettingsHolder {
         Object oldValue = this.description;
         this.description = description;
         firePropertyChange("description", oldValue, description);
+    }
+
+    public String getStandardName() {
+        return standardName;
+    }
+
+    public void setStandardName(String standardName) {
+        Object oldValue = this.standardName;
+        this.standardName = standardName;
+        firePropertyChange("standardName", oldValue, standardName);
+    }
+
+    public String getAliases() {
+        return aliases;
+    }
+
+    public void setAliases(String aliases) {
+        Object oldValue = this.aliases;
+        this.aliases = aliases;
+        firePropertyChange("aliases", oldValue, aliases);
     }
 
     public String getTapeSpecification() {

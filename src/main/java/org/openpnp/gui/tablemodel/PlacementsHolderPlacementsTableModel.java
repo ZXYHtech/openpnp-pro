@@ -20,6 +20,7 @@
 package org.openpnp.gui.tablemodel;
 
 import java.awt.Container;
+import java.util.ArrayList;
 import java.util.List;
 
 import javax.swing.SwingUtilities;
@@ -29,6 +30,8 @@ import org.openpnp.Translations;
 import org.openpnp.events.DefinitionStructureChangedEvent;
 import org.openpnp.events.PlacementChangedEvent;
 import org.openpnp.gui.JobPlacementsPanel;
+import org.openpnp.gui.components.RowReorderableTableModel;
+import org.openpnp.gui.support.RowReorderSupport;
 import org.openpnp.gui.MainFrame;
 import org.openpnp.gui.support.LengthCellValue;
 import org.openpnp.gui.support.PartCellValue;
@@ -47,11 +50,12 @@ import org.openpnp.spi.Feeder;
 import org.openpnp.model.PlacementsHolder;
 import org.openpnp.model.PlacementsHolderLocation;
 import org.openpnp.util.Utils2D;
+import org.openpnp.util.IdentifiableList;
 import com.google.common.eventbus.Subscribe;
 
 @SuppressWarnings("serial")
 public class PlacementsHolderPlacementsTableModel extends AbstractObjectTableModel 
-        implements ColumnAlignable, ColumnWidthSaveable {
+        implements ColumnAlignable, ColumnWidthSaveable, RowReorderableTableModel {
     private PlacementsHolder<?> placementsHolder = null;
 
     private String[] columnNames =
@@ -464,5 +468,34 @@ public class PlacementsHolderPlacementsTableModel extends AbstractObjectTableMod
     @Override
     public int[] getColumnWidthTypes() {
         return columnWidthTypes;
+    }
+    @Override
+    public boolean reorderRows(List<Integer> rows, int targetRow) {
+        if (placementsHolder == null) {
+            return false;
+        }
+        List<Placement> current = new ArrayList<>(placementsHolder.getPlacements());
+        List<Integer> realRows = new ArrayList<>();
+        for (Integer row : rows) {
+            if (row != null && row >= 0 && row < current.size()) {
+                realRows.add(row);
+            }
+        }
+        int realTarget = targetRow < current.size() ? targetRow : current.size();
+        List<Placement> ordered = RowReorderSupport.reorder(current, realRows, realTarget);
+        if (ordered == null) {
+            return false;
+        }
+        IdentifiableList<Placement> reordered = new IdentifiableList<>();
+        for (int rank = 0; rank < ordered.size(); rank++) {
+            Placement placement = ordered.get(rank);
+            placement.setRank(rank);
+            reordered.add(placement);
+        }
+        placementsHolder.setPlacements(reordered);
+        fireTableDataChanged();
+        configuration.getBus().post(new DefinitionStructureChangedEvent(
+                placementsHolder.getDefinition(), "placements", this));
+        return true;
     }
 }

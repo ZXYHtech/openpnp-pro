@@ -36,6 +36,7 @@ import java.util.Map;
 import javax.swing.AbstractAction;
 import javax.swing.Action;
 import javax.swing.DefaultCellEditor;
+import javax.swing.JComponent;
 import javax.swing.JButton;
 import javax.swing.JComboBox;
 import javax.swing.JLabel;
@@ -63,15 +64,19 @@ import org.openpnp.events.FeederSelectedEvent;
 import org.openpnp.gui.components.AutoSelectTextTable;
 import org.openpnp.gui.components.ClassSelectionDialog;
 import org.openpnp.gui.support.AbstractConfigurationWizard;
+import org.openpnp.events.JobLoadedEvent;
 import org.openpnp.gui.support.ActionGroup;
 import org.openpnp.gui.support.CustomBooleanRenderer;
 import org.openpnp.gui.support.Helpers;
 import org.openpnp.gui.support.Icons;
+import org.openpnp.gui.support.JobUsageFilter;
+import org.openpnp.gui.support.JobUsageSnapshot;
 import org.openpnp.gui.support.MessageBoxes;
 import org.openpnp.gui.support.Wizard;
 import org.openpnp.gui.support.WizardContainer;
 import org.openpnp.gui.tablemodel.FeedersTableModel;
 import org.openpnp.machine.reference.vision.AbstractPartAlignment;
+import org.openpnp.gui.support.ModernTheme;
 import org.openpnp.machine.reference.vision.ReferenceBottomVision;
 import org.openpnp.machine.reference.ReferenceFeeder;
 import org.openpnp.model.BoardLocation;
@@ -104,11 +109,13 @@ public class FeedersPanel extends JPanel implements WizardContainer {
     private static final String PREF_DIVIDER_POSITION = "FeedersPanel.dividerPosition";
     private static final int PREF_DIVIDER_POSITION_DEF = -1;
 
-    private JTable table;
+    private AutoSelectTextTable table;
 
     private FeedersTableModel tableModel;
     private TableRowSorter<FeedersTableModel> tableSorter;
     private JTextField searchTextField;
+    private JComboBox<JobUsageFilter> usageFilter;
+    private JobUsageSnapshot usageSnapshot;
 
     private ActionGroup singleSelectActionGroup;
     private ActionGroup multiSelectActionGroup;
@@ -153,6 +160,11 @@ public class FeedersPanel extends JPanel implements WizardContainer {
         JPanel panel_1 = new JPanel();
         panel.add(panel_1, BorderLayout.EAST);
 
+        panel_1.add(new JLabel("显示"));
+        usageFilter = new JComboBox<>(JobUsageFilter.values());
+        usageFilter.addActionListener(event -> refreshUsageDisplay());
+        panel_1.add(usageFilter);
+
         JLabel lblSearch = new JLabel(Translations.getString("FeedersPanel.SearchLabel.text")); //$NON-NLS-1$
         panel_1.add(lblSearch);
 
@@ -178,7 +190,32 @@ public class FeedersPanel extends JPanel implements WizardContainer {
         JComboBox<Type> feedOptionsComboBox = new JComboBox(ReferenceFeeder.FeedOptions.values());
         JComboBox<Type> priorityComboBox = new JComboBox(ReferenceFeeder.Priority.values());
 
-		table = new AutoSelectTextTable(tableModel);
+        table = new AutoSelectTextTable(tableModel) {
+            @Override
+            public Component prepareRenderer(javax.swing.table.TableCellRenderer renderer, int row,
+                    int column) {
+                Component component = super.prepareRenderer(renderer, row, column);
+                Feeder feeder = tableModel.getRowObjectAt(convertRowIndexToModel(row));
+                boolean used = usageSnapshot != null && usageSnapshot.isUsed(feeder);
+                if (!isRowSelected(row)) {
+                    if (used) {
+                        component.setBackground(ModernTheme.isDark()
+                                ? new java.awt.Color(0x234A3D)
+                                : new java.awt.Color(0xE2F5EC));
+                    }
+                    else {
+                        component.setBackground(getBackground());
+                    }
+                }
+                if (component instanceof JComponent) {
+                    ((JComponent) component).setToolTipText(used
+                            ? (feeder.isEnabled() ? "Used by current job" : "Required by job, but feeder is disabled")
+                            : "Not used by current job");
+                }
+                return component;
+            }
+        };
+        table.setMultiRowEditEnabled(true);
 		table.setDefaultRenderer(Boolean.class, new CustomBooleanRenderer() {
 			// cells are grayed if the feeder is not used by any enabled placement.
 			@Override
@@ -187,34 +224,8 @@ public class FeedersPanel extends JPanel implements WizardContainer {
 				final Component c = super.getTableCellRendererComponent(table, value, isSelected, hasFocus, row,
 						column);
 				if (!isSelected) {
-					String partId = (String) tableModel.getValueAt(tableSorter.convertRowIndexToModel(row), 2);
-					Job job = mainFrame.getJobTab().getJob();
-					boolean bFound = false;
-
-					for (BoardLocation boardLocation : job.getBoardLocations()) {
-						// Only check enabled boards
-						if (!boardLocation.isEnabled()) {
-							continue;
-						}
-
-						for (Placement placement : boardLocation.getBoard().getPlacements()) {
-							// Ignore placements that aren't placements
-							if (placement.getType() != Placement.Type.Placement) {
-								continue;
-							}
-							if (!placement.isEnabled()) {
-								continue;
-							}
-
-							if (placement.getPart() != null && placement.getPart().getId().equals(partId)) {
-								bFound = true;
-								break;
-							}
-						}
-						if (bFound) {
-							break;
-						}
-					}
+                    Feeder feeder = tableModel.getRowObjectAt(tableSorter.convertRowIndexToModel(row));
+                    boolean bFound = usageSnapshot != null && usageSnapshot.isUsed(feeder);
 					if (!bFound) {
                         c.setEnabled(false);
                     } else {
@@ -349,6 +360,7 @@ public class FeedersPanel extends JPanel implements WizardContainer {
         popupMenu.add(setFeedOptionsMenu);
 
         table.setComponentPopupMenu(popupMenu);
+        refreshUsageSnapshot();
     }
 
     private boolean keepUnAppliedFeederConfigurationChanges() {
@@ -402,6 +414,22 @@ public class FeedersPanel extends JPanel implements WizardContainer {
         } else {
             return false;
         }
+    }
+
+    private void refreshUsageDisplay() {
+        refreshUsageSnapshot();
+        search();
+        table.repaint();
+    }
+
+    private void refreshUsageSnapshot() {
+        usageSnapshot = JobUsageSnapshot.capture(mainFrame.getJobTab().getJob(),
+                configuration.getMachine());
+    }
+
+    @Subscribe
+    public void jobLoaded(JobLoadedEvent event) {
+        SwingUtilities.invokeLater(this::refreshUsageDisplay);
     }
 
     @Subscribe
@@ -476,16 +504,27 @@ public class FeedersPanel extends JPanel implements WizardContainer {
     }
 
     private void search() {
-        RowFilter<FeedersTableModel, Object> rf = null;
-        // If current expression doesn't parse, don't update.
+        RowFilter<FeedersTableModel, Object> textFilter = null;
         try {
-            rf = RowFilter.regexFilter("(?i)" + searchTextField.getText().trim());
+            textFilter = RowFilter.regexFilter("(?i)" + searchTextField.getText().trim());
         }
         catch (PatternSyntaxException e) {
             Logger.warn(e, "Search failed");
             return;
         }
-        tableSorter.setRowFilter(rf);
+        final JobUsageFilter selectedFilter = (JobUsageFilter) usageFilter.getSelectedItem();
+        RowFilter<FeedersTableModel, Object> usageRowFilter =
+                new RowFilter<FeedersTableModel, Object>() {
+                    @Override
+                    public boolean include(
+                            Entry<? extends FeedersTableModel, ? extends Object> entry) {
+                        Feeder feeder = tableModel.getRowObjectAt((Integer) entry.getIdentifier());
+                        return selectedFilter == null || selectedFilter.includes(
+                                usageSnapshot != null && usageSnapshot.isUsed(feeder));
+                    }
+                };
+        tableSorter.setRowFilter(textFilter == null ? usageRowFilter
+                : RowFilter.andFilter(java.util.Arrays.asList(textFilter, usageRowFilter)));
     }
 
     @Override

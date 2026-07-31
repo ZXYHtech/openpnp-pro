@@ -40,6 +40,8 @@ public class Icons {
     
     public static Icon start = getIcon("/icons/control-start.svg");
     public static Icon pause = getIcon("/icons/control-pause.svg");
+    public static Icon pauseWhenNozzlesEmpty =
+            getIcon("/icons/control-pause-empty-nozzle.svg");
     public static Icon step = getIcon("/icons/control-next.svg");
     public static Icon stop = getIcon("/icons/control-stop.svg");
 

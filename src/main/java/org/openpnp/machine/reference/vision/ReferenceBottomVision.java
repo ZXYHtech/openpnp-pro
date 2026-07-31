@@ -119,13 +119,30 @@ public class ReferenceBottomVision extends AbstractPartAlignment {
         }
 
         Camera camera = VisionUtils.getBottomVisionCamera();
-        PartAlignmentOffset offsets;
-        if ((bottomVisionSettings.getPreRotateUsage() == PreRotateUsage.Default && preRotate)
-                || (bottomVisionSettings.getPreRotateUsage() == PreRotateUsage.AlwaysOn)) {
-            offsets = findOffsetsPreRotate(part, boardLocation, placement, nozzle, camera, bottomVisionSettings);
+        PartAlignmentOffset offsets = null;
+        if (FlyingBottomVisionService.shouldAttempt(part)) {
+            try {
+                offsets = FlyingBottomVisionService.execute(this, part, nozzle).getOffsets();
+            }
+            catch (Exception exception) {
+                Logger.warn(exception,
+                        "Flying bottom vision failed for part {}; falling back={}",
+                        part.getId(), FlyingVisionSettings.isFallbackEnabled());
+                if (!FlyingVisionSettings.isFallbackEnabled()) {
+                    throw exception;
+                }
+            }
         }
-        else {
-            offsets = findOffsetsPostRotate(part, boardLocation, placement, nozzle, camera, bottomVisionSettings);
+        if (offsets == null) {
+            if ((bottomVisionSettings.getPreRotateUsage() == PreRotateUsage.Default && preRotate)
+                    || (bottomVisionSettings.getPreRotateUsage() == PreRotateUsage.AlwaysOn)) {
+                offsets = findOffsetsPreRotate(part, boardLocation, placement, nozzle, camera,
+                        bottomVisionSettings);
+            }
+            else {
+                offsets = findOffsetsPostRotate(part, boardLocation, placement, nozzle, camera,
+                        bottomVisionSettings);
+            }
         }
         if (nozzle.isAligningRotationMode()) {
             // Add the rotation offset to the rotation mode rather than adjusting for it in placement. This has the advantage of
@@ -355,6 +372,40 @@ public class ReferenceBottomVision extends AbstractPartAlignment {
         }
     }
 
+    /**
+     * Runs the configured bottom-vision pipeline against an already captured
+     * frame. This is used only by the guarded flying-vision experiment; normal
+     * bottom vision continues to let ImageCapture control lighting and settling.
+     */
+    public PartAlignmentOffset analyzeExperimentalFrame(Part part, Nozzle nozzle,
+            Camera camera, BufferedImage image) throws Exception {
+        BottomVisionSettings settings = getInheritedVisionSettings(part);
+        Location wantedLocation = getCameraLocationAtPartHeight(part, camera, nozzle, 0.);
+        try (CvPipeline pipeline = settings.getPipeline()) {
+            preparePipeline(pipeline, settings.getPipelineParameterAssignments(), camera,
+                    part.getPackage(), nozzle, nozzle.getNozzleTip(), wantedLocation,
+                    wantedLocation, settings);
+            pipeline.setProperty(
+                    org.openpnp.vision.pipeline.stages.ImageCapture.EXPERIMENTAL_CAPTURE_PROPERTY,
+                    image);
+            RotatedRect rect = processPipelineAndGetResult(pipeline, camera, part, nozzle,
+                    wantedLocation, wantedLocation, settings);
+            Location offsets = VisionUtils.getPixelCenterOffsets(
+                    camera, rect.center.x, rect.center.y);
+            double angleOffset = VisionUtils.getPixelAngle(camera, rect.angle);
+            if (settings.getMaxRotation() == MaxRotation.Adjust) {
+                angleOffset = Utils2D.angleNorm(angleOffset);
+            }
+            else {
+                angleOffset = Utils2D.angleNorm(angleOffset, 180);
+            }
+            partSizeCheck(part, settings, rect, camera);
+            offsets = offsets.derive(null, null, null, angleOffset)
+                    .subtract(settings.getVisionOffset().rotateXy(angleOffset));
+            offsetsCheck(part, nozzle, offsets);
+            return new PartAlignmentOffset(offsets, false);
+        }
+    }
     protected void offsetsCheck(Part part, Nozzle nozzle, Location offsets) throws Exception {
         if (nozzle.getNozzleTip() != null) {
             NozzleTip nt = nozzle.getNozzleTip();
