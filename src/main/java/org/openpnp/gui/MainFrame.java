@@ -659,6 +659,7 @@ public class MainFrame extends JFrame {
         experimentalFeaturesMenu = new JMenu("实验功能");
         experimentalFeaturesMenu.add(new JMenuItem(motionPerformanceCenterAction));
         experimentalFeaturesMenu.add(new JMenuItem(flyingVisionCenterAction));
+        experimentalFeaturesMenu.add(new JMenuItem(cameraDiagnosticsAction));
         experimentalFeaturesMenu.add(new JMenuItem(safetyWorkbenchAction));
         experimentalFeaturesMenu.setVisible(
                 ExperimentalMotionCenterDialog.isExperimentalModeEnabled());
@@ -1912,6 +1913,17 @@ public class MainFrame extends JFrame {
         @Override
         public void actionPerformed(ActionEvent event) {
             new FlyingVisionCenterDialog(MainFrame.this).setVisible(true);
+        }
+    };
+    private Action cameraDiagnosticsAction = new AbstractAction("相机诊断与高速预览...") {
+        {
+            putValue(SHORT_DESCRIPTION,
+                    "测量顶部/底部相机真实采集与显示帧率、延迟抖动、格式和灯光状态");
+        }
+
+        @Override
+        public void actionPerformed(ActionEvent event) {
+            new CameraDiagnosticsDialog(MainFrame.this).setVisible(true);
         }
     };
     private Action safetyWorkbenchAction = new AbstractAction("3D 安全工作台...") {

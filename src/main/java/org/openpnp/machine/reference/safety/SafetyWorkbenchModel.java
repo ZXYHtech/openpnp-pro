@@ -19,6 +19,11 @@ public class SafetyWorkbenchModel {
         LOOSE_PARTS_FEEDER("散料飞达"),
         BOARD("待贴电路板"),
         KEEP_OUT("禁入区"),
+        HOME_POINT("Home 点"),
+        PARK_POINT("停靠点"),
+        NOZZLE_CHANGER_POINT("自动换吸嘴点"),
+        DISCARD_POINT("抛料点"),
+        FEEDER_PICK_POINT("飞达取料点"),
         CUSTOM("自定义物体");
 
         private final String displayName;
@@ -29,6 +34,12 @@ public class SafetyWorkbenchModel {
 
         public String getDisplayName() {
             return displayName;
+        }
+
+        public boolean isReferencePoint() {
+            return this == HOME_POINT || this == PARK_POINT
+                    || this == NOZZLE_CHANGER_POINT || this == DISCARD_POINT
+                    || this == FEEDER_PICK_POINT;
         }
     }
 
@@ -131,6 +142,7 @@ public class SafetyWorkbenchModel {
         public boolean enabled = true;
         public boolean locked;
         public int colorRgb = 0x71879A;
+        public String sourceKey = "";
         public List<Point2> polygon = new ArrayList<>();
 
         public SafetyObject copy() {
@@ -159,7 +171,7 @@ public class SafetyWorkbenchModel {
         }
     }
 
-    private int schemaVersion = 2;
+    private int schemaVersion = 3;
     private long revision = 1;
     private long certifiedRevision;
     private long certifiedAt;
@@ -171,6 +183,8 @@ public class SafetyWorkbenchModel {
     private double maxY = 400;
     private double minZ = -50;
     private double maxZ = 150;
+    private Double importedSafeZLow;
+    private Double importedSafeZHigh;
 
     private double toolRadiusX = 15;
     private double toolRadiusY = 15;
@@ -243,12 +257,39 @@ public class SafetyWorkbenchModel {
                 object.clearance = 0;
                 object.colorRgb = 0x8A5656;
                 break;
+            case HOME_POINT:
+                configureReferencePoint(object, 0x5D8FB5, 10, 6);
+                break;
+            case PARK_POINT:
+                configureReferencePoint(object, 0x6B879A, 10, 6);
+                break;
+            case NOZZLE_CHANGER_POINT:
+                configureReferencePoint(object, 0x8D739E, 9, 7);
+                break;
+            case DISCARD_POINT:
+                configureReferencePoint(object, 0xA17A62, 12, 5);
+                break;
+            case FEEDER_PICK_POINT:
+                configureReferencePoint(object, 0x6F9A78, 7, 4);
+                break;
             case CUSTOM:
             default:
                 object.colorRgb = 0x71879A;
                 break;
         }
         return object;
+    }
+
+    private static void configureReferencePoint(SafetyObject object, int color,
+            double size, double markerHeight) {
+        object.width = size;
+        object.depth = size;
+        object.height = markerHeight;
+        object.clearance = 0;
+        object.obstacle = false;
+        object.locked = true;
+        object.shape = Shape.CYLINDER;
+        object.colorRgb = color;
     }
 
     public void addObject(SafetyObject object) {
@@ -270,7 +311,7 @@ public class SafetyWorkbenchModel {
     }
 
     public void certify(String note) {
-        schemaVersion = 2;
+        schemaVersion = 3;
         certifiedRevision = revision;
         certifiedAt = System.currentTimeMillis();
         certificationNote = note == null ? "" : note;
@@ -355,6 +396,25 @@ public class SafetyWorkbenchModel {
         touch();
     }
 
+    public boolean hasImportedSafeZ() {
+        return importedSafeZLow != null && importedSafeZHigh != null
+                && Double.isFinite(importedSafeZLow) && Double.isFinite(importedSafeZHigh);
+    }
+
+    public double getImportedSafeZLow() {
+        return importedSafeZLow;
+    }
+
+    public double getImportedSafeZHigh() {
+        return importedSafeZHigh;
+    }
+
+    public void setImportedSafeZ(double low, double high) {
+        importedSafeZLow = Math.min(low, high);
+        importedSafeZHigh = Math.max(low, high);
+        touch();
+    }
+
     public double getToolRadiusX() {
         return toolRadiusX;
     }
@@ -419,7 +479,7 @@ public class SafetyWorkbenchModel {
         if (profile != null) {
             return profile;
         }
-        schemaVersion = 2;
+        schemaVersion = 3;
         profile = new ToolProfile();
         profile.headId = headId == null ? "" : headId;
         profile.toolId = toolId == null ? "" : toolId;

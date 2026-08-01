@@ -30,6 +30,7 @@ import java.text.SimpleDateFormat;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Date;
+import java.util.EnumSet;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -67,6 +68,10 @@ import org.openpnp.machine.reference.safety.DynamicSafetyCollisionEngine.Dynamic
 import org.openpnp.machine.reference.safety.SafetyCollisionEngine;
 import org.openpnp.machine.reference.safety.SafetyCollisionEngine.ValidationResult;
 import org.openpnp.machine.reference.safety.SafetyCollisionEngine.Waypoint;
+import org.openpnp.machine.reference.safety.SafetyWorkbenchImportService;
+import org.openpnp.machine.reference.safety.SafetyWorkbenchImportService.Category;
+import org.openpnp.machine.reference.safety.SafetyWorkbenchVertexEditor;
+import org.openpnp.machine.reference.safety.SafetyWorkbenchVertexEditor.Vertex;
 import org.openpnp.machine.reference.safety.SafetyModelValidator;
 import org.openpnp.machine.reference.safety.SafetyWorkbenchModel;
 import org.openpnp.machine.reference.safety.SafetyWorkbenchModel.ObjectType;
@@ -79,6 +84,7 @@ import org.openpnp.model.Configuration;
 import org.openpnp.model.Length;
 import org.openpnp.model.LengthUnit;
 import org.openpnp.model.Location;
+import org.openpnp.spi.Feeder;
 import org.openpnp.spi.Head;
 import org.openpnp.spi.HeadMountable;
 import org.openpnp.spi.MotionPlanner.CompletionType;
@@ -143,8 +149,23 @@ public class SafetyWorkbenchDialog extends JDialog {
     private final JCheckBox profileEnabled = new JCheckBox("启用此吸嘴安全包络");
     private final JCheckBox profileBodyFollowsZ =
             new JCheckBox("机头本体随吸嘴 Z 一起升降");
+    private final JComboBox<Nozzle> workbenchNozzle = new JComboBox<>();
+    private final JComboBox<Feeder> workbenchFeeder = new JComboBox<>();
+    private final JSpinner coordinateX = new JSpinner(
+            new SpinnerNumberModel(0.0, -5000, 5000, 0.1));
+    private final JSpinner coordinateY = new JSpinner(
+            new SpinnerNumberModel(0.0, -5000, 5000, 0.1));
+    private final JSpinner coordinateZ = new JSpinner(
+            new SpinnerNumberModel(0.0, -5000, 5000, 0.1));
+    private final JSpinner coordinateRotation = new JSpinner(
+            new SpinnerNumberModel(0.0, -3600, 3600, 1));
+    private final JComboBox<Double> jogStep = new JComboBox<>(
+            new Double[] {0.01, 0.1, 1.0, 10.0});
+    private final JToggleButton motionArmed = new JToggleButton("启用窗口内低速点动");
+    private final JLabel coordinateStatus = new JLabel("尚未读取坐标");
+    private final JLabel vertexStatus = new JLabel("请在 3D 视图点击物体顶点");
     private final JToggleButton liveMode = new JToggleButton("实时运行画面");
-    private final JCheckBox followSelectedTool = new JCheckBox("跟随当前贴装头", true);
+    private final JCheckBox followSelectedTool = new JCheckBox("跟随控制吸嘴", true);
     private final JCheckBox keepOnTop = new JCheckBox("窗口置顶");
     private final Map<String, LiveToolState> liveTools = new LinkedHashMap<>();
     private final List<Waypoint> liveTrail = new ArrayList<>();
@@ -156,6 +177,7 @@ public class SafetyWorkbenchDialog extends JDialog {
         this.frame = frame;
         this.model = SafetyWorkbenchStore.get();
         synchronizeToolProfiles();
+        loadWorkbenchControls();
         setDefaultCloseOperation(DISPOSE_ON_CLOSE);
         setMinimumSize(new Dimension(1220, 760));
         setSize(new Dimension(1440, 860));
@@ -188,6 +210,45 @@ public class SafetyWorkbenchDialog extends JDialog {
                 toolProfileListModel.addElement(profile);
             }
         }
+    }
+
+    private void loadWorkbenchControls() {
+        HeadMountable mainSelection = frame.getMachineControls().getSelectedTool();
+        for (Head head : Configuration.get().getMachine().getHeads()) {
+            for (Nozzle nozzle : head.getNozzles()) {
+                workbenchNozzle.addItem(nozzle);
+                if (nozzle == mainSelection) {
+                    workbenchNozzle.setSelectedItem(nozzle);
+                }
+            }
+        }
+        for (Feeder feeder : Configuration.get().getMachine().getFeeders()) {
+            workbenchFeeder.addItem(feeder);
+        }
+        workbenchNozzle.addActionListener(event -> {
+            Nozzle nozzle = selectedWorkbenchNozzle();
+            if (nozzle == null || nozzle.getHead() == null) {
+                return;
+            }
+            for (int index = 0; index < toolProfileListModel.size(); index++) {
+                ToolProfile profile = toolProfileListModel.get(index);
+                if (profile.headId.equals(nozzle.getHead().getId())
+                        && profile.toolId.equals(nozzle.getId())) {
+                    toolProfileList.setSelectedIndex(index);
+                    break;
+                }
+            }
+            canvas.repaint();
+        });
+    }
+
+    private Nozzle selectedWorkbenchNozzle() {
+        return (Nozzle) workbenchNozzle.getSelectedItem();
+    }
+
+    private HeadMountable selectedWorkbenchTool() {
+        Nozzle nozzle = selectedWorkbenchNozzle();
+        return nozzle == null ? firstNozzle() : nozzle;
     }
 
     private void showToolProfile(ToolProfile profile) {
@@ -265,7 +326,7 @@ public class SafetyWorkbenchDialog extends JDialog {
 
     private void captureProfileZ(boolean retracted) {
         ToolProfile profile = toolProfileList.getSelectedValue();
-        HeadMountable selected = frame.getMachineControls().getSelectedTool();
+        HeadMountable selected = selectedWorkbenchTool();
         if (profile == null || !(selected instanceof Nozzle)
                 || selected.getHead() == null
                 || !profile.headId.equals(selected.getHead().getId())
@@ -298,7 +359,7 @@ public class SafetyWorkbenchDialog extends JDialog {
         if (now - lastLiveSnapshot >= 45) {
             lastLiveSnapshot = now;
             try {
-                HeadMountable selected = frame.getMachineControls().getSelectedTool();
+                HeadMountable selected = selectedWorkbenchTool();
                 if (selected == null || selected.getHead() == null) {
                     selected = firstNozzle();
                 }
@@ -328,7 +389,7 @@ public class SafetyWorkbenchDialog extends JDialog {
             state.animate();
         }
         if (liveMode.isSelected() && followSelectedTool.isSelected()) {
-            HeadMountable selected = frame.getMachineControls().getSelectedTool();
+            HeadMountable selected = selectedWorkbenchTool();
             if (selected != null && selected.getHead() != null) {
                 LiveToolState state = liveTools.get(selected.getHead().getId()
                         + "/" + selected.getId());
@@ -398,6 +459,8 @@ public class SafetyWorkbenchDialog extends JDialog {
         JPanel status = new JPanel(new FlowLayout(FlowLayout.RIGHT, 8, 0));
         certification.setOpaque(true);
         certification.setBorder(BorderFactory.createEmptyBorder(7, 12, 7, 12));
+        JButton importConfiguration = new JButton("从 OpenPnP 导入…");
+        importConfiguration.addActionListener(event -> importOpenPnpConfiguration());
         JButton settings = new JButton("工作台与工具包络…");
         settings.addActionListener(event -> editWorkbench());
         JButton save = new JButton("保存模型");
@@ -409,7 +472,7 @@ public class SafetyWorkbenchDialog extends JDialog {
             liveMode.setText(liveMode.isSelected() ? "● 实时运行" : "编辑模式");
             canvas.repaint();
         });
-        followSelectedTool.setToolTipText("实时模式下让视图中心跟随主界面当前选择的工具头。");
+        followSelectedTool.setToolTipText("实时模式下让视图中心跟随本窗口选择的控制吸嘴。");
         keepOnTop.setToolTipText("把数字孪生保持在主界面上方，适合贴装时持续观察。");
         keepOnTop.addActionListener(event -> setAlwaysOnTop(keepOnTop.isSelected()));
         JLabel driver = new JLabel(isAsyncDriverActive()
@@ -420,6 +483,7 @@ public class SafetyWorkbenchDialog extends JDialog {
         status.add(keepOnTop);
         status.add(driver);
         status.add(certification);
+        status.add(importConfiguration);
         status.add(settings);
         status.add(save);
         status.add(certify);
@@ -505,14 +569,20 @@ public class SafetyWorkbenchDialog extends JDialog {
         polygonPoint.addActionListener(event -> capturePolygonPoint());
         JButton clearPolygon = new JButton("清空自定义轮廓");
         clearPolygon.addActionListener(event -> clearPolygon());
+        JButton moveVertex = new JButton("移动到 3D 视图所选顶点");
+        moveVertex.addActionListener(event -> moveToSelectedVertex());
+        JButton confirmVertex = new JButton("用当前吸嘴位置确认该顶点");
+        confirmVertex.addActionListener(event -> confirmSelectedVertex());
         capture.add(origin);
         capture.add(minimum);
         capture.add(maximum);
         capture.add(polygonPoint);
         capture.add(clearPolygon);
+        capture.add(moveVertex);
+        capture.add(confirmVertex);
         JTextArea captureHint = new JTextArea(
                 "采点只读取工具头当前位置，不会自动移动机器。请使用原有点动控制慢速靠近物体边界，"
-                        + "并把吸嘴半径、相机外壳和线缆活动范围计入安全间隙。");
+                        + "也可转到“移动/坐标”在本窗口低速点动；请把吸嘴半径、相机外壳和线缆活动范围计入安全间隙。");
         captureHint.setEditable(false);
         captureHint.setLineWrap(true);
         captureHint.setWrapStyleWord(true);
@@ -524,6 +594,7 @@ public class SafetyWorkbenchDialog extends JDialog {
         tabs.setPreferredSize(new Dimension(330, 500));
         tabs.addTab("物体/采点", outer);
         tabs.addTab("贴装头/吸嘴", buildToolProfilesPanel());
+        tabs.addTab("移动/坐标", buildCoordinatePanel());
         return tabs;
     }
 
@@ -585,6 +656,84 @@ public class SafetyWorkbenchDialog extends JDialog {
         return panel;
     }
 
+    private Component buildCoordinatePanel() {
+        JPanel panel = new JPanel(new BorderLayout(5, 6));
+        JPanel selectors = new JPanel(new GridLayout(0, 2, 5, 5));
+        addField(selectors, "当前控制吸嘴", workbenchNozzle);
+        addField(selectors, "飞达取料坐标", workbenchFeeder);
+        addField(selectors, "目标 X (mm)", coordinateX);
+        addField(selectors, "目标 Y (mm)", coordinateY);
+        addField(selectors, "吸嘴 Z (mm)", coordinateZ);
+        addField(selectors, "旋转 (°)", coordinateRotation);
+        addField(selectors, "点动步距 (mm)", jogStep);
+        selectors.add(new JLabel("安全锁"));
+        selectors.add(motionArmed);
+        panel.add(selectors, BorderLayout.NORTH);
+
+        JPanel actions = new JPanel(new GridLayout(0, 1, 4, 4));
+        JButton readCurrent = new JButton("读取当前吸嘴 XYZ/R");
+        readCurrent.addActionListener(event -> readCurrentCoordinate());
+        JButton readZ = new JButton("仅读取当前吸嘴 Z");
+        readZ.addActionListener(event -> readCurrentNozzleZ());
+        JButton readFeeder = new JButton("读取所选飞达拾取坐标");
+        readFeeder.addActionListener(event -> readSelectedFeederCoordinate());
+        JButton readVertex = new JButton("使用 3D 视图所选物体/顶点坐标");
+        readVertex.addActionListener(event -> useSelectedVertexCoordinate());
+        actions.add(readCurrent);
+        actions.add(readZ);
+        actions.add(readFeeder);
+        actions.add(readVertex);
+
+        JPanel jog = new JPanel(new GridLayout(3, 3, 3, 3));
+        jog.setBorder(BorderFactory.createTitledBorder("窗口内低速点动"));
+        JButton xMinus = new JButton("X−");
+        xMinus.addActionListener(event -> jog(-1, 0, 0));
+        JButton yPlus = new JButton("Y+");
+        yPlus.addActionListener(event -> jog(0, 1, 0));
+        JButton zPlus = new JButton("Z+");
+        zPlus.addActionListener(event -> jog(0, 0, 1));
+        JButton yMinus = new JButton("Y−");
+        yMinus.addActionListener(event -> jog(0, -1, 0));
+        JButton xPlus = new JButton("X+");
+        xPlus.addActionListener(event -> jog(1, 0, 0));
+        JButton zMinus = new JButton("Z−");
+        zMinus.addActionListener(event -> jog(0, 0, -1));
+        jog.add(new JLabel());
+        jog.add(yPlus);
+        jog.add(zPlus);
+        jog.add(xMinus);
+        jog.add(new JLabel("步进", SwingConstants.CENTER));
+        jog.add(xPlus);
+        jog.add(new JLabel());
+        jog.add(yMinus);
+        jog.add(zMinus);
+        actions.add(jog);
+
+        JButton move = new JButton("移动到坐标（安全 Z 路径）");
+        move.addActionListener(event -> moveToCoordinate(false));
+        JButton moveAndRelease = new JButton("移动到坐标并释放吸嘴物料");
+        moveAndRelease.addActionListener(event -> moveToCoordinate(true));
+        actions.add(move);
+        actions.add(moveAndRelease);
+        vertexStatus.setToolTipText("先在 3D 视图点击黄色顶点手柄；点击不会立即驱动机器。");
+        actions.add(vertexStatus);
+        actions.add(coordinateStatus);
+
+        JTextArea hint = new JTextArea(
+                "这里直接控制上方选定的吸嘴，不再依赖主界面的机器控件。"
+                        + "所有运动均要求实验模式、机器启用并回零、软限位可达。"
+                        + "点动限速；整段移动先抬到安全 Z，再走 XY，最后下降。"
+                        + "顶点示教只在路径检查时忽略被测物体本身，其他物体仍参与碰撞检查。");
+        hint.setEditable(false);
+        hint.setLineWrap(true);
+        hint.setWrapStyleWord(true);
+        hint.setOpaque(false);
+        hint.setRows(5);
+        actions.add(hint);
+        panel.add(new JScrollPane(actions), BorderLayout.CENTER);
+        return panel;
+    }
+
     private Component buildMotionPanel() {
         JPanel panel = new JPanel(new BorderLayout(8, 5));
         panel.setBorder(BorderFactory.createTitledBorder("轨迹实验室（先预演，后真机）"));
@@ -628,6 +777,58 @@ public class SafetyWorkbenchDialog extends JDialog {
         panel.add(field);
     }
 
+    private void importOpenPnpConfiguration() {
+        JCheckBox workArea = new JCheckBox("工作范围：XYZ 轴已启用的软限位", true);
+        JCheckBox homeAndPark = new JCheckBox("Home 点和各贴装头停靠点", true);
+        JCheckBox changer = new JCheckBox("自动换吸嘴的起点、中间点和终点", true);
+        JCheckBox discard = new JCheckBox("机器抛料点", true);
+        JCheckBox feeders = new JCheckBox("全部飞达的取料点", true);
+        JPanel choices = new JPanel();
+        choices.setLayout(new BoxLayout(choices, BoxLayout.Y_AXIS));
+        choices.add(new JLabel("选择要从当前 OpenPnP 机器配置同步到 3D 工作台的内容："));
+        choices.add(Box.createVerticalStrut(8));
+        choices.add(workArea);
+        choices.add(homeAndPark);
+        choices.add(changer);
+        choices.add(discard);
+        choices.add(feeders);
+        choices.add(Box.createVerticalStrut(8));
+        choices.add(new JLabel("再次导入会按来源更新已有标记，不会重复堆叠。"));
+        if (JOptionPane.showConfirmDialog(this, choices, "从 OpenPnP 导入安全区与坐标",
+                JOptionPane.OK_CANCEL_OPTION, JOptionPane.PLAIN_MESSAGE)
+                != JOptionPane.OK_OPTION) {
+            return;
+        }
+        EnumSet<Category> categories = EnumSet.noneOf(Category.class);
+        if (workArea.isSelected()) {
+            categories.add(Category.WORK_AREA);
+        }
+        if (homeAndPark.isSelected()) {
+            categories.add(Category.HOME_AND_PARK);
+        }
+        if (changer.isSelected()) {
+            categories.add(Category.NOZZLE_CHANGER);
+        }
+        if (discard.isSelected()) {
+            categories.add(Category.DISCARD);
+        }
+        if (feeders.isSelected()) {
+            categories.add(Category.FEEDER_PICK_POINTS);
+        }
+        SafetyWorkbenchImportService.Summary summary =
+                SafetyWorkbenchImportService.importConfiguration(model,
+                        Configuration.get().getMachine(), selectedWorkbenchNozzle(), categories);
+        reloadObjects();
+        selectFirstObject();
+        updateCertification();
+        canvas.repaint();
+        result.setText(summary.toDisplayText()
+                + "\n导入后请在 3D 视图核对标记和范围，再重新检查并认证模型。");
+        JOptionPane.showMessageDialog(this, summary.toDisplayText(), "导入完成",
+                summary.getWarnings().isEmpty()
+                        ? JOptionPane.INFORMATION_MESSAGE : JOptionPane.WARNING_MESSAGE);
+    }
+
     private void reloadObjects() {
         objectListModel.clear();
         for (SafetyObject object : model.getObjects()) {
@@ -644,8 +845,10 @@ public class SafetyWorkbenchDialog extends JDialog {
 
     private void addObject(ObjectType objectType, double worldX, double worldY) {
         SafetyObject object = model.createObject(objectType);
-        object.x = worldX - object.width / 2.0;
-        object.y = worldY - object.depth / 2.0;
+        object.x = objectType.isReferencePoint()
+                ? worldX : worldX - object.width / 2.0;
+        object.y = objectType.isReferencePoint()
+                ? worldY : worldY - object.depth / 2.0;
         object.z = Math.max(model.getMinZ(), 0);
         model.addObject(object);
         objectListModel.addElement(object);
@@ -835,7 +1038,7 @@ public class SafetyWorkbenchDialog extends JDialog {
     }
 
     private Location currentToolLocation() {
-        HeadMountable tool = frame.getMachineControls().getSelectedTool();
+        HeadMountable tool = selectedWorkbenchTool();
         if (tool == null) {
             JOptionPane.showMessageDialog(this, "请先在主界面选择要用于标定的工具头/吸嘴。",
                     "未选择工具头", JOptionPane.WARNING_MESSAGE);
@@ -851,18 +1054,329 @@ public class SafetyWorkbenchDialog extends JDialog {
         }
     }
 
+    private void readCurrentCoordinate() {
+        Location location = currentToolLocation();
+        if (location != null) {
+            setCoordinate(location);
+        }
+    }
+
+    private void readCurrentNozzleZ() {
+        Location location = currentToolLocation();
+        if (location != null) {
+            coordinateZ.setValue(location.getZ());
+            coordinateStatus.setText("已读取当前吸嘴 Z=" + format(location.getZ()) + " mm");
+        }
+    }
+
+    private void readSelectedFeederCoordinate() {
+        Feeder feeder = (Feeder) workbenchFeeder.getSelectedItem();
+        if (feeder == null) {
+            JOptionPane.showMessageDialog(this, "当前机器没有可选飞达。", "未选择飞达",
+                    JOptionPane.WARNING_MESSAGE);
+            return;
+        }
+        try {
+            Location location = feeder.getPickLocation();
+            if (location == null) {
+                throw new Exception("飞达没有返回取料坐标");
+            }
+            setCoordinate(location);
+            coordinateStatus.setText("已读取飞达“" + feeder.getName() + "”的取料坐标");
+        }
+        catch (Exception exception) {
+            JOptionPane.showMessageDialog(this, "无法读取飞达取料坐标：" + exception.getMessage(),
+                    "读取失败", JOptionPane.ERROR_MESSAGE);
+        }
+    }
+
+    private void useSelectedVertexCoordinate() {
+        Vertex vertex = canvas.getSelectedVertex();
+        if (vertex != null) {
+            setCoordinate(vertex.getLocation());
+            vertexStatus.setText("已选择：" + vertex.getLabel());
+            return;
+        }
+        SafetyObject object = requireSelected();
+        if (object == null) {
+            return;
+        }
+        double px = object.type.isReferencePoint() ? object.x : object.x + object.width / 2.0;
+        double py = object.type.isReferencePoint() ? object.y : object.y + object.depth / 2.0;
+        double pz = object.type.isReferencePoint() ? object.z
+                : object.z + object.height + object.clearance;
+        setCoordinate(new Location(LengthUnit.Millimeters, px, py, pz, 0));
+        vertexStatus.setText("未选顶点，已使用“" + object.name + "”参考位置");
+    }
+
+    private void setCoordinate(Location source) {
+        Location location = source.convertToUnits(LengthUnit.Millimeters);
+        coordinateX.setValue(location.getX());
+        coordinateY.setValue(location.getY());
+        coordinateZ.setValue(location.getZ());
+        coordinateRotation.setValue(location.getRotation());
+        coordinateStatus.setText(String.format(Locale.ROOT,
+                "目标 X %.3f / Y %.3f / Z %.3f / R %.2f",
+                location.getX(), location.getY(), location.getZ(), location.getRotation()));
+    }
+
+    private void onVertexSelected(Vertex vertex) {
+        if (vertex == null) {
+            vertexStatus.setText("请在 3D 视图点击物体顶点");
+            return;
+        }
+        setCoordinate(vertex.getLocation());
+        vertexStatus.setText("已选择：" + vertex.getLabel());
+    }
+
+    private void moveToSelectedVertex() {
+        Vertex vertex = canvas.getSelectedVertex();
+        if (vertex == null) {
+            JOptionPane.showMessageDialog(this,
+                    "请先在 3D 视图点击所选物体上显示的黄色顶点手柄。",
+                    "未选择顶点", JOptionPane.WARNING_MESSAGE);
+            return;
+        }
+        setCoordinate(vertex.getLocation());
+        moveToCoordinate(false, true);
+    }
+
+    private void confirmSelectedVertex() {
+        Vertex vertex = canvas.getSelectedVertex();
+        if (vertex == null) {
+            JOptionPane.showMessageDialog(this, "请先在 3D 视图选择一个顶点。",
+                    "未选择顶点", JOptionPane.WARNING_MESSAGE);
+            return;
+        }
+        Location location = currentToolLocation();
+        if (location == null) {
+            return;
+        }
+        SafetyWorkbenchVertexEditor.apply(vertex, location);
+        model.touch();
+        showObject(vertex.object);
+        objectList.repaint();
+        canvas.repaint();
+        updateCertification();
+        setCoordinate(location);
+        result.setText("已用当前吸嘴坐标确认“" + vertex.getLabel()
+                + "”。物体几何已更新，需要重新检查并认证。"
+                + (vertex.object.sourceKey == null || vertex.object.sourceKey.isEmpty()
+                        ? "" : "该点来自 OpenPnP；再次导入会恢复为机器配置中的坐标。"));
+    }
+
+    private void moveToCoordinate(boolean release) {
+        moveToCoordinate(release, false);
+    }
+
+    private void moveToCoordinate(boolean release, boolean teachingVertex) {
+        Nozzle nozzle = requireMotionReady();
+        if (nozzle == null) {
+            return;
+        }
+        Location target = targetCoordinate();
+        if (!checkReachable(nozzle, target)) {
+            return;
+        }
+        if (release && nozzle.getPart() == null) {
+            JOptionPane.showMessageDialog(this,
+                    "当前吸嘴没有记录到物料，不会执行释放动作。",
+                    "吸嘴无料", JOptionPane.WARNING_MESSAGE);
+            return;
+        }
+        List<Waypoint> path;
+        ValidationResult validation;
+        try {
+            path = safeCoordinatePath(nozzle, target);
+            validation = validateManualPath(nozzle, path, teachingVertex);
+        }
+        catch (Exception exception) {
+            JOptionPane.showMessageDialog(this, "无法完成移动前安全检查：" + exception.getMessage(),
+                    "安全检查失败", JOptionPane.ERROR_MESSAGE);
+            return;
+        }
+        canvas.setPath(path, validation.isSafe());
+        if (!validation.isSafe()) {
+            result.setText("坐标移动被 3D 安全工作台拒绝：\n• "
+                    + String.join("\n• ", validation.getIssues()));
+            JOptionPane.showMessageDialog(this, result.getText(), "路径存在碰撞风险",
+                    JOptionPane.WARNING_MESSAGE);
+            return;
+        }
+        if (release && JOptionPane.showConfirmDialog(this,
+                "吸嘴将移动到指定坐标并执行释放，然后抬升到安全 Z。\n"
+                        + "请确认目标位置允许放下当前物料。",
+                "确认释放物料", JOptionPane.YES_NO_OPTION, JOptionPane.WARNING_MESSAGE)
+                != JOptionPane.YES_OPTION) {
+            return;
+        }
+        result.setText(release ? "正在移动并释放物料…" : "正在按安全 Z 路径移动…");
+        List<Waypoint> executedPath = new ArrayList<>(path);
+        UiUtils.submitUiMachineTask(() -> {
+            double currentRotation = nozzle.getLocation().getRotation();
+            for (int index = 1; index < executedPath.size(); index++) {
+                Waypoint point = executedPath.get(index);
+                double rotation = index >= 2 ? target.getRotation() : currentRotation;
+                nozzle.moveTo(new Location(LengthUnit.Millimeters,
+                        point.x, point.y, point.z, rotation),
+                        Math.min(number(speed), 0.20));
+            }
+            nozzle.waitForCompletion(CompletionType.WaitForStillstand);
+            if (release) {
+                nozzle.place();
+                Waypoint safe = executedPath.get(Math.max(0, executedPath.size() - 2));
+                nozzle.moveTo(new Location(LengthUnit.Millimeters,
+                        safe.x, safe.y, safe.z, target.getRotation()), 0.15);
+                nozzle.waitForCompletion(CompletionType.WaitForStillstand);
+            }
+            return nozzle.getLocation().convertToUnits(LengthUnit.Millimeters);
+        }, actual -> {
+            setCoordinate(actual);
+            result.setText(release
+                    ? "物料已释放，吸嘴已回到安全 Z。"
+                    : "坐标移动完成，控制器已确认静止。");
+        }, throwable -> UiUtils.showError(this, "3D 安全工作台移动失败", throwable));
+    }
+
+    private void jog(double dx, double dy, double dz) {
+        Nozzle nozzle = requireMotionReady();
+        if (nozzle == null) {
+            return;
+        }
+        try {
+            Location current = nozzle.getLocation().convertToUnits(LengthUnit.Millimeters);
+            double step = ((Number) jogStep.getSelectedItem()).doubleValue();
+            Location target = new Location(LengthUnit.Millimeters,
+                    current.getX() + dx * step, current.getY() + dy * step,
+                    current.getZ() + dz * step, current.getRotation());
+            if (!checkReachable(nozzle, target)) {
+                return;
+            }
+            List<Waypoint> path = Arrays.asList(
+                    new Waypoint(current.getX(), current.getY(), current.getZ()),
+                    new Waypoint(target.getX(), target.getY(), target.getZ()));
+            ValidationResult validation = validateManualPath(nozzle, path,
+                    canvas.getSelectedVertex() != null);
+            canvas.setPath(path, validation.isSafe());
+            if (!validation.isSafe()) {
+                result.setText("低速点动被碰撞检查拒绝：\n• "
+                        + String.join("\n• ", validation.getIssues()));
+                return;
+            }
+            UiUtils.submitUiMachineTask(() -> {
+                nozzle.moveTo(target, Math.min(number(speed), 0.12));
+                nozzle.waitForCompletion(CompletionType.WaitForStillstand);
+                return nozzle.getLocation().convertToUnits(LengthUnit.Millimeters);
+            }, this::setCoordinate,
+                    throwable -> UiUtils.showError(this, "低速点动失败", throwable));
+        }
+        catch (Exception exception) {
+            UiUtils.showError(this, "低速点动安全检查失败", exception);
+        }
+    }
+
+    private Nozzle requireMotionReady() {
+        Nozzle nozzle = selectedWorkbenchNozzle();
+        if (nozzle == null) {
+            JOptionPane.showMessageDialog(this, "请先在本窗口选择要控制的吸嘴。",
+                    "未选择吸嘴", JOptionPane.WARNING_MESSAGE);
+            return null;
+        }
+        if (!ExperimentalMotionCenterDialog.isExperimentalModeEnabled()) {
+            JOptionPane.showMessageDialog(this, "请先从“窗口 → 实验模式”开启实验功能。",
+                    "实验模式未开启", JOptionPane.WARNING_MESSAGE);
+            return null;
+        }
+        if (!Configuration.get().getMachine().isEnabled()
+                || !Configuration.get().getMachine().isHomed()) {
+            JOptionPane.showMessageDialog(this, "机器必须已连接、启用并完成回零。",
+                    "机器未就绪", JOptionPane.WARNING_MESSAGE);
+            return null;
+        }
+        if (Configuration.get().getMachine().isBusy()) {
+            JOptionPane.showMessageDialog(this, "机器正在执行其他任务，不能开始手动移动。",
+                    "机器忙", JOptionPane.WARNING_MESSAGE);
+            return null;
+        }
+        if (!motionArmed.isSelected()) {
+            JOptionPane.showMessageDialog(this,
+                    "请先在“移动/坐标”页启用窗口内低速点动安全锁。",
+                    "移动未解锁", JOptionPane.WARNING_MESSAGE);
+            return null;
+        }
+        return nozzle;
+    }
+
+    private Location targetCoordinate() {
+        return new Location(LengthUnit.Millimeters, number(coordinateX), number(coordinateY),
+                number(coordinateZ), number(coordinateRotation));
+    }
+
+    private boolean checkReachable(Nozzle nozzle, Location target) {
+        try {
+            if (nozzle.isReachable(target)) {
+                return true;
+            }
+        }
+        catch (Exception exception) {
+            JOptionPane.showMessageDialog(this, "软限位检查失败：" + exception.getMessage(),
+                    "位置不可达", JOptionPane.ERROR_MESSAGE);
+            return false;
+        }
+        JOptionPane.showMessageDialog(this, String.format(Locale.ROOT,
+                "软限位拒绝 X %.3f / Y %.3f / Z %.3f。",
+                target.getX(), target.getY(), target.getZ()),
+                "位置不可达", JOptionPane.WARNING_MESSAGE);
+        return false;
+    }
+
+    private List<Waypoint> safeCoordinatePath(Nozzle nozzle, Location target) throws Exception {
+        Location start = nozzle.getLocation().convertToUnits(LengthUnit.Millimeters);
+        Length effectiveSafeZ = nozzle.getEffectiveSafeZ();
+        double safeZ = effectiveSafeZ == null
+                ? model.getMaxZ() - model.getToolMaxZOffset()
+                : effectiveSafeZ.convertToUnits(LengthUnit.Millimeters).getValue();
+        return Arrays.asList(new Waypoint(start.getX(), start.getY(), start.getZ()),
+                new Waypoint(start.getX(), start.getY(), safeZ),
+                new Waypoint(target.getX(), target.getY(), safeZ),
+                new Waypoint(target.getX(), target.getY(), target.getZ()));
+    }
+
+    private ValidationResult validateManualPath(Nozzle nozzle, List<Waypoint> path,
+            boolean teachingVertex) throws Exception {
+        Vertex vertex = teachingVertex ? canvas.getSelectedVertex() : null;
+        SafetyObject target = vertex == null ? null : vertex.object;
+        boolean obstacleState = target != null && target.obstacle;
+        if (target != null) {
+            target.obstacle = false;
+        }
+        try {
+            return DynamicSafetyCollisionEngine.validate(model, path,
+                    DynamicSafetyCollisionEngine.snapshot(model,
+                            Configuration.get().getMachine(), nozzle));
+        }
+        finally {
+            if (target != null) {
+                target.obstacle = obstacleState;
+            }
+        }
+    }
+
     private void useSelectedObjectCenter() {
         SafetyObject object = requireSelected();
         if (object == null) {
             return;
         }
-        targetX.setValue(object.x + object.width / 2.0);
-        targetY.setValue(object.y + object.depth / 2.0);
-        targetZ.setValue(object.z + object.height + object.clearance);
+        targetX.setValue(object.type.isReferencePoint()
+                ? object.x : object.x + object.width / 2.0);
+        targetY.setValue(object.type.isReferencePoint()
+                ? object.y : object.y + object.depth / 2.0);
+        targetZ.setValue(object.type.isReferencePoint()
+                ? object.z : object.z + object.height + object.clearance);
     }
 
     private void simulate() {
-        HeadMountable tool = frame.getMachineControls().getSelectedTool();
+        HeadMountable tool = selectedWorkbenchTool();
         if (tool == null) {
             JOptionPane.showMessageDialog(this, "请先选择工具头，预演需要读取真实起点。",
                     "未选择工具头", JOptionPane.WARNING_MESSAGE);
@@ -961,7 +1475,7 @@ public class SafetyWorkbenchDialog extends JDialog {
                     "机器未就绪", JOptionPane.WARNING_MESSAGE);
             return;
         }
-        HeadMountable tool = frame.getMachineControls().getSelectedTool();
+        HeadMountable tool = selectedWorkbenchTool();
         if (tool == null) {
             return;
         }
@@ -1284,6 +1798,16 @@ public class SafetyWorkbenchDialog extends JDialog {
                     return "▤";
                 case KEEP_OUT:
                     return "⚠";
+                case HOME_POINT:
+                    return "⌂";
+                case PARK_POINT:
+                    return "P";
+                case NOZZLE_CHANGER_POINT:
+                    return "↻";
+                case DISCARD_POINT:
+                    return "⌫";
+                case FEEDER_PICK_POINT:
+                    return "◎";
                 default:
                     return "◆";
             }
@@ -1299,6 +1823,7 @@ public class SafetyWorkbenchDialog extends JDialog {
         private double viewCenterX = Double.NaN;
         private double viewCenterY = Double.NaN;
         private SafetyObject selected;
+        private Vertex selectedVertex;
         private Point mouseStart;
         private double dragStartX;
         private double dragStartY;
@@ -1324,8 +1849,11 @@ public class SafetyWorkbenchDialog extends JDialog {
                     mouseStart = event.getPoint();
                     startYaw = yaw;
                     startPitch = pitch;
-                    selected = hitObject(event.getPoint());
+                    Vertex vertex = hitVertex(event.getPoint());
+                    selected = vertex == null ? hitObject(event.getPoint()) : vertex.object;
                     objectList.setSelectedValue(selected, true);
+                    selectedVertex = vertex;
+                    onVertexSelected(selectedVertex);
                     if (selected != null) {
                         dragStartX = selected.x;
                         dragStartY = selected.y;
@@ -1348,7 +1876,8 @@ public class SafetyWorkbenchDialog extends JDialog {
                                 Math.min(Math.toRadians(75), startPitch - dy * 0.006));
                     }
                     else if (!liveMode.isSelected()
-                            && selected != null && !selected.locked) {
+                            && selected != null && selectedVertex == null
+                            && !selected.locked) {
                         if ((event.getModifiersEx() & InputEvent.SHIFT_DOWN_MASK) != 0) {
                             selected.z = dragStartZ - dy / scale();
                         }
@@ -1386,8 +1915,16 @@ public class SafetyWorkbenchDialog extends JDialog {
         }
 
         void setSelected(SafetyObject selected) {
+            if (this.selected != selected) {
+                selectedVertex = null;
+                onVertexSelected(null);
+            }
             this.selected = selected;
             repaint();
+        }
+
+        Vertex getSelectedVertex() {
+            return selectedVertex;
         }
 
         void setPath(List<Waypoint> path, boolean safe) {
@@ -1419,16 +1956,69 @@ public class SafetyWorkbenchDialog extends JDialog {
             g.setRenderingHint(RenderingHints.KEY_ANTIALIASING,
                     RenderingHints.VALUE_ANTIALIAS_ON);
             drawGrid(g);
+            drawSafeZZone(g);
             for (SafetyObject object : model.getObjects()) {
                 if (object != null && object.enabled) {
                     drawObject(g, object);
                 }
             }
+            drawVertices(g);
             drawLiveTrail(g);
             drawPath(g);
             drawLiveTools(g);
             drawOverlay(g);
             g.dispose();
+        }
+
+        private void drawSafeZZone(Graphics2D g) {
+            if (!model.hasImportedSafeZ()) {
+                return;
+            }
+            double low = model.getImportedSafeZLow();
+            double high = model.getImportedSafeZHigh();
+            g.setComposite(AlphaComposite.SrcOver.derive(0.45f));
+            g.setStroke(new BasicStroke(1.2f, BasicStroke.CAP_BUTT,
+                    BasicStroke.JOIN_MITER, 10f, new float[] {6f, 5f}, 0));
+            drawSafeZPlane(g, low, new Color(100, 160, 184));
+            drawSafeZPlane(g, high, new Color(123, 186, 158));
+            g.setComposite(AlphaComposite.SrcOver);
+            Point label = project(model.getMinX(), model.getMaxY(), high);
+            g.setColor(new Color(151, 202, 183));
+            g.drawString(String.format(Locale.ROOT, "导入安全 Z %.2f～%.2f mm", low, high),
+                    label.x + 5, label.y - 5);
+        }
+
+        private void drawSafeZPlane(Graphics2D g, double z, Color color) {
+            Point a = project(model.getMinX(), model.getMinY(), z);
+            Point b = project(model.getMaxX(), model.getMinY(), z);
+            Point c = project(model.getMaxX(), model.getMaxY(), z);
+            Point d = project(model.getMinX(), model.getMaxY(), z);
+            g.setColor(color);
+            g.drawPolygon(polygon(a, b, c, d));
+        }
+
+        private void drawVertices(Graphics2D g) {
+            if (selected == null || liveMode.isSelected()) {
+                return;
+            }
+            for (Vertex vertex : SafetyWorkbenchVertexEditor.vertices(selected)) {
+                Location location = vertex.getLocation();
+                Point point = project(location.getX(), location.getY(), location.getZ());
+                boolean active = sameVertex(vertex, selectedVertex);
+                int radius = active ? 7 : 5;
+                g.setColor(active ? new Color(106, 205, 231) : new Color(242, 190, 83));
+                g.fillOval(point.x - radius, point.y - radius, radius * 2, radius * 2);
+                g.setColor(new Color(35, 39, 43));
+                g.drawOval(point.x - radius, point.y - radius, radius * 2, radius * 2);
+            }
+        }
+
+        private boolean sameVertex(Vertex first, Vertex second) {
+            return first != null && second != null && first.object == second.object
+                    && first.polygonIndex == second.polygonIndex
+                    && first.maximumX == second.maximumX
+                    && first.maximumY == second.maximumY
+                    && first.maximumZ == second.maximumZ;
         }
 
         private void drawGrid(Graphics2D g) {
@@ -1470,6 +2060,10 @@ public class SafetyWorkbenchDialog extends JDialog {
         }
 
         private void drawObject(Graphics2D g, SafetyObject object) {
+            if (object.type.isReferencePoint()) {
+                drawReferencePoint(g, object);
+                return;
+            }
             if (object.shape == Shape.CYLINDER) {
                 drawCylinder(g, object);
                 return;
@@ -1504,6 +2098,33 @@ public class SafetyWorkbenchDialog extends JDialog {
                 default:
                     break;
             }
+        }
+
+        private void drawReferencePoint(Graphics2D g, SafetyObject object) {
+            Font originalFont = g.getFont();
+            Point point = project(object.x, object.y, object.z);
+            Point top = project(object.x, object.y, object.z + Math.max(4, object.height));
+            Color base = new Color(object.colorRgb);
+            int radius = (int) Math.max(6, Math.min(13, object.width * scale() * 0.35));
+            g.setColor(shade(base, 0.75));
+            g.setStroke(new BasicStroke(3f, BasicStroke.CAP_ROUND,
+                    BasicStroke.JOIN_ROUND));
+            g.drawLine(point.x, point.y, top.x, top.y);
+            g.setColor(new Color(30, 35, 39, 210));
+            g.fillOval(point.x - radius, point.y - radius / 2,
+                    radius * 2, Math.max(5, radius));
+            g.setColor(object == selected ? new Color(242, 190, 83) : shade(base, 1.35));
+            g.drawOval(point.x - radius, point.y - radius / 2,
+                    radius * 2, Math.max(5, radius));
+            g.drawLine(point.x - radius - 4, point.y, point.x + radius + 4, point.y);
+            g.drawLine(point.x, point.y - radius, point.x, point.y + radius);
+            g.setColor(new Color(231, 234, 236));
+            g.drawString(object.name, top.x + 7, top.y - 6);
+            g.setFont(originalFont.deriveFont(9f));
+            g.setColor(new Color(171, 183, 191));
+            g.drawString(String.format(Locale.ROOT, "X %.2f  Y %.2f  Z %.2f",
+                    object.x, object.y, object.z), top.x + 7, top.y + 7);
+            g.setFont(originalFont);
         }
 
         private void drawFeederDetails(Graphics2D g, SafetyObject object) {
@@ -1829,6 +2450,21 @@ public class SafetyWorkbenchDialog extends JDialog {
                     + String.format(Locale.ROOT, "%.0f FPS", smoothedFps), 24, 74);
         }
 
+        private Vertex hitVertex(Point mouse) {
+            Vertex nearest = null;
+            double nearestDistance = 13;
+            for (Vertex vertex : SafetyWorkbenchVertexEditor.vertices(selected)) {
+                Location location = vertex.getLocation();
+                Point point = project(location.getX(), location.getY(), location.getZ());
+                double distance = point.distance(mouse);
+                if (distance < nearestDistance) {
+                    nearestDistance = distance;
+                    nearest = vertex;
+                }
+            }
+            return nearest;
+        }
+
         private SafetyObject hitObject(Point mouse) {
             SafetyObject best = null;
             double bestDistance = 34;
@@ -1836,9 +2472,11 @@ public class SafetyWorkbenchDialog extends JDialog {
                 if (object == null || !object.enabled) {
                     continue;
                 }
-                Point center = project(object.x + object.width / 2.0,
-                        object.y + object.depth / 2.0,
-                        object.z + object.height / 2.0);
+                Point center = object.type.isReferencePoint()
+                        ? project(object.x, object.y, object.z)
+                        : project(object.x + object.width / 2.0,
+                                object.y + object.depth / 2.0,
+                                object.z + object.height / 2.0);
                 double distance = center.distance(mouse);
                 if (distance < bestDistance) {
                     bestDistance = distance;
