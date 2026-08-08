@@ -37,6 +37,7 @@ import javax.swing.border.TitledBorder;
 import org.jdesktop.beansbinding.AutoBinding.UpdateStrategy;
 import org.openpnp.gui.MainFrame;
 import org.openpnp.gui.components.ComponentDecorators;
+import org.openpnp.gui.components.RotationDialButton;
 import org.openpnp.gui.support.AbstractConfigurationWizard;
 import org.openpnp.gui.support.DoubleConverter;
 import org.openpnp.gui.support.Helpers;
@@ -119,7 +120,7 @@ public class BlindsFeederConfigurationWizard extends AbstractConfigurationWizard
         panelPart.add(lblRotationInTape, "2, 4, right, default");
 
         textFieldLocationRotation = new JTextField();
-        panelPart.add(textFieldLocationRotation, "4, 4, fill, default");
+        panelPart.add(RotationDialButton.wrap(textFieldLocationRotation), "4, 4, fill, default");
         textFieldLocationRotation.setColumns(4);
 
         lblPartTopZ = new JLabel("Part Z");
@@ -647,4 +648,3 @@ public class BlindsFeederConfigurationWizard extends AbstractConfigurationWizard
     private JLabel lblFirstPocket;
     private JButton btnOcrDetect;
 }
-

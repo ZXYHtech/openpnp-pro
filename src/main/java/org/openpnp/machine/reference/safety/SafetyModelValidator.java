@@ -71,11 +71,12 @@ public final class SafetyModelValidator {
                     && (object.polygon == null || object.polygon.size() < 3)) {
                 issues.add("“" + name + "”的自定义轮廓至少需要 3 个点。");
             }
-            if (object.type == SafetyWorkbenchModel.ObjectType.BOTTOM_CAMERA
+            if ((object.type == SafetyWorkbenchModel.ObjectType.BOTTOM_CAMERA
+                    || object.type == SafetyWorkbenchModel.ObjectType.NOZZLE_CHANGER)
                     && (object.apertureWidth < 0 || object.apertureDepth < 0
                             || object.apertureWidth > object.width
                             || object.apertureDepth > object.depth)) {
-                issues.add("“" + name + "”的中央通道尺寸超出相机外形。");
+                issues.add("“" + name + "”的中央通道尺寸超出实体外形。");
             }
         }
         return issues;

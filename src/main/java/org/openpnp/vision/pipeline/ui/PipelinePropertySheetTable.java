@@ -1,6 +1,9 @@
 package org.openpnp.vision.pipeline.ui;
 
+import java.awt.event.MouseEvent;
+
 import org.openpnp.spi.Actuator;
+import org.openpnp.vision.smart.VisionParameterHelp;
 
 import com.l2fprod.common.beans.editor.BooleanAsCheckBoxPropertyEditor;
 import com.l2fprod.common.beans.editor.ComboBoxPropertyEditor;
@@ -16,6 +19,21 @@ public class PipelinePropertySheetTable extends PropertySheetTable {
 
     public PipelinePropertySheetTable(PipelinePanel pipelinePanel) {
         this.pipelinePanel = pipelinePanel;
+    }
+
+    @Override
+    public String getToolTipText(MouseEvent event) {
+        int row = rowAtPoint(event.getPoint());
+        if (row < 0) {
+            return super.getToolTipText(event);
+        }
+        PropertySheetTableModel model = (PropertySheetTableModel) getModel();
+        PropertySheetTableModel.Item item = model.getPropertySheetElement(row);
+        if (item == null || item.getProperty() == null) {
+            return super.getToolTipText(event);
+        }
+        return "<html><b>" + item.getProperty().getName() + "</b><br>"
+                + VisionParameterHelp.describe(item.getProperty().getName()) + "</html>";
     }
 
     @Override

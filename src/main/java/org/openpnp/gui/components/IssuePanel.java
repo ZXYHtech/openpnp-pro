@@ -57,11 +57,8 @@ import javax.swing.event.DocumentListener;
 import javax.swing.event.PopupMenuEvent;
 import javax.swing.event.PopupMenuListener;
 
-import org.jdesktop.beansbinding.AutoBinding;
-import org.jdesktop.beansbinding.AutoBinding.UpdateStrategy;
-import org.jdesktop.beansbinding.BeanProperty;
-import org.jdesktop.beansbinding.Bindings;
 import org.openpnp.Translations;
+import org.openpnp.gui.support.ChineseUiLocalizer;
 import org.openpnp.gui.support.LengthConverter;
 import org.openpnp.machine.reference.ReferenceMachine;
 import org.openpnp.model.Length;
@@ -216,7 +213,8 @@ public class IssuePanel extends JPanel {
                     new RowSpec[] {
                             FormSpecs.DEFAULT_ROWSPEC,}));
 
-            JLabel lbl = new JLabel(issue.getExtendedDescription());
+            JLabel lbl = new JLabel(ChineseUiLocalizer.translateIssueText(
+                    issue.getExtendedDescription()));
             setClipboardHandler(lbl);
             panelControl.add(lbl, "1, 1");
             lbl.setIcon(issue.getExtendedIcon());
@@ -228,8 +226,8 @@ public class IssuePanel extends JPanel {
         for (Solutions.Issue.CustomProperty property : issue.getProperties()) {
             if (property instanceof StringProperty) {
                 StringProperty stringProperty = (StringProperty) property;
-                JLabel lbl = new JLabel(property.getLabel());
-                lbl.setToolTipText(property.getToolTip());
+                JLabel lbl = new JLabel(ChineseUiLocalizer.translateIssueText(property.getLabel()));
+                lbl.setToolTipText(ChineseUiLocalizer.translateIssueText(property.getToolTip()));
                 panel.add(lbl, "2, "+(formRow*2)+", right, default");
                 if (property instanceof MultiLineTextProperty) {
                     JPanel subPanel = new JPanel();
@@ -258,13 +256,13 @@ public class IssuePanel extends JPanel {
                     });
                     String val = stringProperty.get();
                     textField.setText(val);
-                    textField.setToolTipText(property.getToolTip());
+                    textField.setToolTipText(ChineseUiLocalizer.translateIssueText(property.getToolTip()));
                     textField.setEnabled(issue.getState() == Solutions.State.Open);
                     panel.add(subPanel, "4, "+(formRow*2)+",fill, fill");
                     if (stringProperty.getSuggestions() != null) {
                         JPanel suggestPanel = new JPanel();
                         suggestPanel.setLayout(new BorderLayout());
-                        JLabel lbl2 = new JLabel("Templates: ");
+                        JLabel lbl2 = new JLabel("模板：");
                         lbl2.setToolTipText(stringProperty.getSuggestionToolTip());
                         suggestPanel.add(lbl2, BorderLayout.WEST);
                         JComboBox comboBox = new JComboBox(stringProperty.getSuggestions());
@@ -322,15 +320,15 @@ public class IssuePanel extends JPanel {
                     });
                     String val = stringProperty.get();
                     textField.setText(val);
-                    textField.setToolTipText(property.getToolTip());
+                    textField.setToolTipText(ChineseUiLocalizer.translateIssueText(property.getToolTip()));
                     textField.setEnabled(issue.getState() == Solutions.State.Open);
                     panel.add(textField, "4, "+(formRow*2)+", left, default");
                 }
             }
             else if (property instanceof BooleanProperty) {
                 BooleanProperty booleanProperty = (BooleanProperty) property;
-                JLabel lbl = new JLabel(property.getLabel());
-                lbl.setToolTipText(property.getToolTip());
+                JLabel lbl = new JLabel(ChineseUiLocalizer.translateIssueText(property.getLabel()));
+                lbl.setToolTipText(ChineseUiLocalizer.translateIssueText(property.getToolTip()));
                 panel.add(lbl, "2, "+(formRow*2)+", right, default");
                 JCheckBox button = new JCheckBox();
                 button.addChangeListener(new ChangeListener() {
@@ -347,14 +345,14 @@ public class IssuePanel extends JPanel {
                 });
                 boolean state = booleanProperty.get();
                 button.setSelected(state);
-                button.setToolTipText(property.getToolTip());
+                    button.setToolTipText(ChineseUiLocalizer.translateIssueText(property.getToolTip()));
                 button.setEnabled(issue.getState() == Solutions.State.Open);
                 panel.add(button, "4, "+(formRow*2)+", left, default");
             }
             else if (property instanceof IntegerProperty) {
                 IntegerProperty intProperty = (IntegerProperty) property;
-                JLabel lbl = new JLabel(property.getLabel());
-                lbl.setToolTipText(property.getToolTip());
+                JLabel lbl = new JLabel(ChineseUiLocalizer.translateIssueText(property.getLabel()));
+                lbl.setToolTipText(ChineseUiLocalizer.translateIssueText(property.getToolTip()));
                 panel.add(lbl, "2, "+(formRow*2)+", right, default");
                 JSpinner spinner = new JSpinner();
                 spinner.addChangeListener(new ChangeListener() {
@@ -371,14 +369,14 @@ public class IssuePanel extends JPanel {
                 });
                 int val = intProperty.get();
                 spinner.setModel(new SpinnerNumberModel(val, (int)Math.min(val, intProperty.getMin()), (int)Math.max(val, intProperty.getMax()), 1));
-                spinner.setToolTipText(property.getToolTip());
+                spinner.setToolTipText(ChineseUiLocalizer.translateIssueText(property.getToolTip()));
                 spinner.setEnabled(issue.getState() == Solutions.State.Open);
                 panel.add(spinner, "4, "+(formRow*2)+", left, default");
             }
             else if (property instanceof DoubleProperty) {
                 DoubleProperty doubleProperty = (DoubleProperty) property;
-                JLabel lbl = new JLabel(property.getLabel());
-                lbl.setToolTipText(property.getToolTip());
+                JLabel lbl = new JLabel(ChineseUiLocalizer.translateIssueText(property.getLabel()));
+                lbl.setToolTipText(ChineseUiLocalizer.translateIssueText(property.getToolTip()));
                 panel.add(lbl, "2, "+(formRow*2)+", right, default");
                 JSlider slider = new JSlider(JSlider.HORIZONTAL,
                         0, SLIDER_MAX, getSliderValue(doubleProperty));
@@ -395,17 +393,17 @@ public class IssuePanel extends JPanel {
                     }
                 });
                 double val = doubleProperty.get();
-                slider.setToolTipText(property.getToolTip());
+                slider.setToolTipText(ChineseUiLocalizer.translateIssueText(property.getToolTip()));
                 slider.setEnabled(issue.getState() == Solutions.State.Open);
                 panel.add(slider, "4, "+(formRow*2)+", left, default");
             }
             else if (property instanceof LengthProperty) {
                 LengthProperty lengthProperty = (LengthProperty) property;
-                JLabel lbl = new JLabel(lengthProperty.getLabel());
-                lbl.setToolTipText(lengthProperty.getToolTip());
+                JLabel lbl = new JLabel(ChineseUiLocalizer.translateIssueText(lengthProperty.getLabel()));
+                lbl.setToolTipText(ChineseUiLocalizer.translateIssueText(lengthProperty.getToolTip()));
                 panel.add(lbl, "2, "+(formRow*2)+", right, default");
                 JTextField textField = new JTextField();
-                textField.setToolTipText(lengthProperty.getToolTip());
+                textField.setToolTipText(ChineseUiLocalizer.translateIssueText(lengthProperty.getToolTip()));
                 textField.setEnabled(issue.getState() == Solutions.State.Open);
                 textField.setColumns(10);
                 LengthConverter lengthConverter = new LengthConverter();
@@ -433,11 +431,11 @@ public class IssuePanel extends JPanel {
             }
             else if (property instanceof ActionProperty) {
                 ActionProperty actionProperty = (ActionProperty) property;
-                JLabel lbl = new JLabel(actionProperty.getLabel());
-                lbl.setToolTipText(actionProperty.getToolTip());
+                JLabel lbl = new JLabel(ChineseUiLocalizer.translateIssueText(actionProperty.getLabel()));
+                lbl.setToolTipText(ChineseUiLocalizer.translateIssueText(actionProperty.getToolTip()));
                 panel.add(lbl, "2, "+(formRow*2)+", right, default");
                 JButton button = new JButton(actionProperty.get());
-                button.setToolTipText(actionProperty.getToolTip());
+                button.setToolTipText(ChineseUiLocalizer.translateIssueText(actionProperty.getToolTip()));
                 button.setEnabled(issue.getState() == Solutions.State.Open);
                 button.setHorizontalAlignment(SwingConstants.LEFT);
                 button.setPreferredSize(new Dimension(200, button.getPreferredSize().height));
@@ -473,7 +471,8 @@ public class IssuePanel extends JPanel {
                         new RowSpec[] {
                                 FormSpecs.DEFAULT_ROWSPEC,}));
 
-                JLabel lblMultiChoice = new JLabel(choice.getDescription());
+                JLabel lblMultiChoice = new JLabel(ChineseUiLocalizer.translateIssueText(
+                        choice.getDescription()));
                 panelMultiChoice.add(lblMultiChoice, "1, 1");
                 lblMultiChoice.setIcon(choice.getIcon());
                 lblMultiChoice.setIconTextGap(20);
@@ -604,17 +603,11 @@ public class IssuePanel extends JPanel {
         //      AutoBinding<Issue, String, JTextArea, String> autoBinding = Bindings.createAutoBinding(UpdateStrategy.READ, issue, issueBeanProperty, subjectText, jTextAreaBeanProperty);
         //      autoBinding.bind();
         // So bind it statically, it is final anyway. 
-        subjectText.setText(issue.getSubject().getSubjectText());
+        subjectText.setText(ChineseUiLocalizer.translateIssueText(
+                issue.getSubject().getSubjectText()));
         subjectText.setIcon(issue.getSubject().getSubjectIcon());
-
-        BeanProperty<Issue, String> issueBeanProperty_1 = BeanProperty.create("issue");
-        BeanProperty<JTextArea, String> jLabelBeanProperty = BeanProperty.create("text");
-        AutoBinding<Issue, String, JTextArea, String> autoBinding_1 = Bindings.createAutoBinding(UpdateStrategy.READ, issue, issueBeanProperty_1, issueText, jLabelBeanProperty);
-        autoBinding_1.bind();
-        //
-        BeanProperty<Issue, String> issueBeanProperty_2 = BeanProperty.create("solution");
-        AutoBinding<Issue, String, JTextArea, String> autoBinding_2 = Bindings.createAutoBinding(UpdateStrategy.READ, issue, issueBeanProperty_2, solutionText, jLabelBeanProperty);
-        autoBinding_2.bind();
+        issueText.setText(ChineseUiLocalizer.translateIssueText(issue.getIssue()));
+        solutionText.setText(ChineseUiLocalizer.translateIssueText(issue.getSolution()));
 
         UiUtils.messageBoxOnExceptionLater(() -> {
             issue.activate();

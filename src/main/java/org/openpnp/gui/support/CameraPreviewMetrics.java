@@ -17,8 +17,10 @@ public class CameraPreviewMetrics {
     private final long windowNanos;
     private final Deque<Long> frameTimes = new ArrayDeque<>();
     private final Deque<Long> displayTimes = new ArrayDeque<>();
+    private final Deque<TimedValue> rawCaptureDurations = new ArrayDeque<>();
     private final Deque<TimedValue> captureDurations = new ArrayDeque<>();
     private final Deque<TimedValue> processingDurations = new ArrayDeque<>();
+    private final Deque<TimedValue> previewLoopDurations = new ArrayDeque<>();
     private final Deque<TimedValue> renderDurations = new ArrayDeque<>();
 
     private long startedNanos;
@@ -47,8 +49,10 @@ public class CameraPreviewMetrics {
         haveFingerprint = false;
         frameTimes.clear();
         displayTimes.clear();
+        rawCaptureDurations.clear();
         captureDurations.clear();
         processingDurations.clear();
+        previewLoopDurations.clear();
         renderDurations.clear();
     }
 
@@ -84,12 +88,28 @@ public class CameraPreviewMetrics {
         trimValues(captureDurations, nowNanos);
     }
 
+    public synchronized void recordRawCaptureDuration(double milliseconds, long nowNanos) {
+        if (!Double.isFinite(milliseconds) || milliseconds < 0) {
+            return;
+        }
+        rawCaptureDurations.addLast(new TimedValue(nowNanos, milliseconds));
+        trimValues(rawCaptureDurations, nowNanos);
+    }
+
     public synchronized void recordProcessingDuration(double milliseconds, long nowNanos) {
         if (!Double.isFinite(milliseconds) || milliseconds < 0) {
             return;
         }
         processingDurations.addLast(new TimedValue(nowNanos, milliseconds));
         trimValues(processingDurations, nowNanos);
+    }
+
+    public synchronized void recordPreviewLoopDuration(double milliseconds, long nowNanos) {
+        if (!Double.isFinite(milliseconds) || milliseconds < 0) {
+            return;
+        }
+        previewLoopDurations.addLast(new TimedValue(nowNanos, milliseconds));
+        trimValues(previewLoopDurations, nowNanos);
     }
 
     public synchronized void recordRenderDuration(double milliseconds, long nowNanos) {
@@ -103,13 +123,17 @@ public class CameraPreviewMetrics {
     public synchronized Snapshot snapshot(long nowNanos) {
         trimTimes(frameTimes, nowNanos);
         trimTimes(displayTimes, nowNanos);
+        trimValues(rawCaptureDurations, nowNanos);
         trimValues(captureDurations, nowNanos);
         trimValues(processingDurations, nowNanos);
+        trimValues(previewLoopDurations, nowNanos);
         trimValues(renderDurations, nowNanos);
 
         IntervalStats frameIntervals = intervalStats(frameTimes);
+        ValueStats rawCapture = valueStats(rawCaptureDurations);
         ValueStats capture = valueStats(captureDurations);
         ValueStats processing = valueStats(processingDurations);
+        ValueStats previewLoop = valueStats(previewLoopDurations);
         ValueStats render = valueStats(renderDurations);
         return new Snapshot(
                 fps(frameTimes),
@@ -117,10 +141,12 @@ public class CameraPreviewMetrics {
                 frameIntervals.average,
                 frameIntervals.jitter,
                 frameIntervals.maximum,
+                rawCapture.average,
                 capture.average,
                 capture.minimum,
                 capture.maximum,
                 processing.average,
+                previewLoop.average,
                 render.average,
                 receivedFrames,
                 displayedFrames,
@@ -260,10 +286,12 @@ public class CameraPreviewMetrics {
         public final double frameIntervalAverageMs;
         public final double frameIntervalJitterMs;
         public final double maximumStallMs;
+        public final double rawCaptureAverageMs;
         public final double captureAverageMs;
         public final double captureMinimumMs;
         public final double captureMaximumMs;
         public final double processingAverageMs;
+        public final double previewLoopAverageMs;
         public final double renderAverageMs;
         public final long receivedFrames;
         public final long displayedFrames;
@@ -272,9 +300,11 @@ public class CameraPreviewMetrics {
         public final long elapsedMillis;
 
         Snapshot(double captureFps, double displayFps, double frameIntervalAverageMs,
-                double frameIntervalJitterMs, double maximumStallMs, double captureAverageMs,
+                double frameIntervalJitterMs, double maximumStallMs,
+                double rawCaptureAverageMs, double captureAverageMs,
                 double captureMinimumMs, double captureMaximumMs, double processingAverageMs,
-                double renderAverageMs, long receivedFrames, long displayedFrames,
+                double previewLoopAverageMs, double renderAverageMs,
+                long receivedFrames, long displayedFrames,
                 long droppedFrames,
                 long duplicateFrames, long elapsedMillis) {
             this.captureFps = captureFps;
@@ -282,10 +312,12 @@ public class CameraPreviewMetrics {
             this.frameIntervalAverageMs = frameIntervalAverageMs;
             this.frameIntervalJitterMs = frameIntervalJitterMs;
             this.maximumStallMs = maximumStallMs;
+            this.rawCaptureAverageMs = rawCaptureAverageMs;
             this.captureAverageMs = captureAverageMs;
             this.captureMinimumMs = captureMinimumMs;
             this.captureMaximumMs = captureMaximumMs;
             this.processingAverageMs = processingAverageMs;
+            this.previewLoopAverageMs = previewLoopAverageMs;
             this.renderAverageMs = renderAverageMs;
             this.receivedFrames = receivedFrames;
             this.displayedFrames = displayedFrames;

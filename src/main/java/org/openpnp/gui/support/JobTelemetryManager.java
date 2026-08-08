@@ -32,6 +32,7 @@ import org.openpnp.model.Abstract2DLocatable.Side;
 import org.openpnp.model.BoardLocation;
 import org.openpnp.model.Configuration;
 import org.openpnp.model.Job;
+import org.openpnp.model.Part;
 import org.openpnp.model.Placement;
 import org.openpnp.spi.Feeder;
 import org.pmw.tinylog.Logger;
@@ -169,7 +170,6 @@ public class JobTelemetryManager {
         loadHistory();
         MessageBoxes.addErrorListener(errorListener);
         timer = new Timer(1000, event -> tick());
-        timer.start();
     }
 
     public synchronized void start(Job job) {
@@ -193,6 +193,9 @@ public class JobTelemetryManager {
         updateCounts(job, current);
         initializePrediction(current);
         updatePrediction(current, current.startTime);
+        if (!timer.isRunning()) {
+            timer.start();
+        }
         fireChanged();
     }
 
@@ -845,11 +848,11 @@ public class JobTelemetryManager {
         record.boardCount = 0;
         record.completedBoards = 0;
         Set<String> uniqueParts = new HashSet<>();
-        Set<String> configuredFeederParts = new HashSet<>();
+        List<Part> configuredFeederParts = new ArrayList<>();
         if (configuration.getMachine() != null) {
             for (Feeder feeder : configuration.getMachine().getFeeders()) {
                 if (feeder.isEnabled() && feeder.getPart() != null) {
-                    configuredFeederParts.add(feeder.getPart().getId());
+                    configuredFeederParts.add(feeder.getPart());
                 }
             }
         }
@@ -873,7 +876,9 @@ public class JobTelemetryManager {
         record.uniqueParts = uniqueParts.size();
         int covered = 0;
         for (String partId : uniqueParts) {
-            if (configuredFeederParts.contains(partId)) {
+            Part jobPart = configuration.getPart(partId);
+            if (jobPart != null && configuredFeederParts.stream()
+                    .anyMatch(jobPart::isInterchangeableWith)) {
                 covered++;
             }
         }
@@ -913,6 +918,7 @@ public class JobTelemetryManager {
             history.remove(history.size() - 1);
         }
         saveHistory();
+        timer.stop();
         fireChanged();
     }
 

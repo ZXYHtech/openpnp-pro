@@ -22,6 +22,7 @@ package org.openpnp.gui;
 import java.awt.BorderLayout;
 import java.awt.Component;
 import java.awt.Frame;
+import java.awt.FlowLayout;
 import java.awt.Toolkit;
 import java.awt.datatransfer.Clipboard;
 import java.awt.datatransfer.DataFlavor;
@@ -35,6 +36,8 @@ import java.beans.PropertyChangeListener;
 import java.io.StringReader;
 import java.io.StringWriter;
 import java.util.ArrayList;
+import java.time.Instant;
+import java.util.Arrays;
 import java.util.List;
 import java.util.prefs.Preferences;
 import java.util.regex.PatternSyntaxException;
@@ -56,6 +59,7 @@ import javax.swing.JTextField;
 import javax.swing.JToolBar;
 import javax.swing.ListSelectionModel;
 import javax.swing.RowFilter;
+import javax.swing.SwingWorker;
 import javax.swing.SwingUtilities;
 import javax.swing.event.DocumentEvent;
 import javax.swing.event.DocumentListener;
@@ -94,6 +98,11 @@ import org.openpnp.model.FiducialVisionSettings;
 import org.openpnp.model.Job;
 import org.openpnp.model.Package;
 import org.openpnp.model.Part;
+import org.openpnp.packageimport.PackageCategoryRegistry;
+import org.openpnp.packageimport.PackageCategoryRegistry.Category;
+import org.openpnp.packageimport.PackageClassifier;
+import org.openpnp.packageimport.PackageLibraryAuditService;
+import org.openpnp.packageimport.PackageResolutionService;
 import org.openpnp.spi.Camera;
 import org.openpnp.spi.FiducialLocator;
 import org.openpnp.spi.Machine;
@@ -118,6 +127,9 @@ public class PackagesPanel extends JPanel implements WizardContainer {
     private TableRowSorter<PackagesTableModel> tableSorter;
     private JTextField searchTextField;
     private JComboBox<JobUsageFilter> usageFilter;
+    private JComboBox<CategoryFilterOption> categoryFilter;
+    private JComboBox<ReviewFilterOption> reviewFilter;
+    private JComboBox<SourceFilterOption> sourceFilter;
     private JobUsageSnapshot usageSnapshot;
     private JTable table;
     private ActionGroup singleSelectionActionGroup;
@@ -146,15 +158,34 @@ public class PackagesPanel extends JPanel implements WizardContainer {
         toolBar.setFloatable(false);
         toolbarAndSearch.add(toolBar);
 
-        JPanel panel_1 = new JPanel();
-        toolbarAndSearch.add(panel_1, BorderLayout.EAST);
+        JPanel panel_1 = new JPanel(new FlowLayout(FlowLayout.LEFT, 6, 3));
+        toolbarAndSearch.add(panel_1, BorderLayout.SOUTH);
 
         panel_1.add(new JLabel("显示"));
         usageFilter = new JComboBox<>(JobUsageFilter.values());
         usageFilter.addActionListener(event -> refreshUsageDisplay());
         panel_1.add(usageFilter);
 
-        JLabel lblSearch = new JLabel(Translations.getString("PackagesPanel.SearchLabel.text")); //$NON-NLS-1$
+        panel_1.add(new JLabel("分类"));
+        categoryFilter = new JComboBox<>(categoryFilterOptions());
+        categoryFilter.setMaximumRowCount(24);
+        categoryFilter.addActionListener(event -> search());
+        categoryFilter.setToolTipText("一级分类会同时显示其二级分类；可与任务、审核、来源和搜索组合使用。");
+        panel_1.add(categoryFilter);
+
+        panel_1.add(new JLabel("审核状态"));
+        reviewFilter = new JComboBox<>(reviewFilterOptions());
+        reviewFilter.addActionListener(event -> search());
+        reviewFilter.setToolTipText("待审核包含自动归类但尚未确认的封装；疑似重复、缺少信息和冲突可单独筛选。");
+        panel_1.add(reviewFilter);
+
+        panel_1.add(new JLabel("来源"));
+        sourceFilter = new JComboBox<>(sourceFilterOptions());
+        sourceFilter.addActionListener(event -> search());
+        panel_1.add(sourceFilter);
+
+        JLabel lblSearch = new JLabel(Translations.getString("PackagesPanel.SearchLabel.text"));
+        //$NON-NLS-1$
         panel_1.add(lblSearch);
 
         searchTextField = new JTextField();
@@ -200,13 +231,16 @@ public class PackagesPanel extends JPanel implements WizardContainer {
                 Package pkg = tableModel.getRowObjectAt(convertRowIndexToModel(row));
                 boolean used = usageSnapshot != null && usageSnapshot.isUsed(pkg);
                 if (!isRowSelected(row)) {
-                    component.setBackground(used
+                    java.awt.Color metadataColor = metadataColor(pkg);
+                    component.setBackground(metadataColor != null ? metadataColor : used
                             ? new java.awt.Color(ModernTheme.isDark() ? 0x234A3D : 0xE2F5EC)
                             : getBackground());
                 }
                 if (component instanceof JComponent) {
-                    ((JComponent) component).setToolTipText(
-                            used ? "当前任务使用" : "当前任务未使用");
+                    ((JComponent) component).setToolTipText("分类："
+                            + PackageCategoryRegistry.label(pkg.getCategoryId()) + "；审核："
+                            + pkg.getReviewState() + "；来源：" + pkg.getSourceType()
+                            + (used ? "；当前任务使用" : ""));
                 }
                 return component;
             }
@@ -244,6 +278,13 @@ public class PackagesPanel extends JPanel implements WizardContainer {
 
         table.setDefaultRenderer(AbstractVisionSettings.class,
                 new NamedTableCellRenderer<AbstractVisionSettings>());
+
+        JComboBox<Category> categoryCombo = new JComboBox<>(
+                PackageCategoryRegistry.all().toArray(new Category[0]));
+        categoryCombo.setMaximumRowCount(24);
+        table.setDefaultEditor(Category.class, new DefaultCellEditor(categoryCombo));
+        table.setDefaultEditor(Package.ReviewState.class,
+                new DefaultCellEditor(new JComboBox<>(Package.ReviewState.values())));
 
         table.getSelectionModel().addListSelectionListener(new ListSelectionListener() {
             @Override
@@ -283,6 +324,11 @@ public class PackagesPanel extends JPanel implements WizardContainer {
         toolBar.addSeparator();
         toolBar.add(copyPackageToClipboardAction);
         toolBar.add(pastePackageToClipboardAction);
+        toolBar.addSeparator();
+        toolBar.add(openKicadImportCenterAction);
+        toolBar.add(reclassifyPackagesAction);
+        toolBar.add(markReviewedAction);
+        toolBar.add(showDuplicateCandidatesAction);
 
         addComponentListener(new ComponentAdapter() {
             @Override
@@ -344,7 +390,7 @@ public class PackagesPanel extends JPanel implements WizardContainer {
     }
 
     private void search() {
-        RowFilter<PackagesTableModel, Object> textFilter = null;
+        final RowFilter<PackagesTableModel, Object> textFilter;
         try {
             textFilter = RowFilter.regexFilter("(?i)" + searchTextField.getText().trim());
         }
@@ -353,18 +399,27 @@ public class PackagesPanel extends JPanel implements WizardContainer {
             return;
         }
         final JobUsageFilter selectedFilter = (JobUsageFilter) usageFilter.getSelectedItem();
-        RowFilter<PackagesTableModel, Object> usageRowFilter =
+        final CategoryFilterOption selectedCategory =
+                (CategoryFilterOption) categoryFilter.getSelectedItem();
+        final ReviewFilterOption selectedReview =
+                (ReviewFilterOption) reviewFilter.getSelectedItem();
+        final SourceFilterOption selectedSource =
+                (SourceFilterOption) sourceFilter.getSelectedItem();
+        RowFilter<PackagesTableModel, Object> combinedFilter =
                 new RowFilter<PackagesTableModel, Object>() {
                     @Override
                     public boolean include(
                             Entry<? extends PackagesTableModel, ? extends Object> entry) {
                         Package pkg = tableModel.getRowObjectAt((Integer) entry.getIdentifier());
-                        return selectedFilter == null || selectedFilter.includes(
-                                usageSnapshot != null && usageSnapshot.isUsed(pkg));
+                        boolean used = usageSnapshot != null && usageSnapshot.isUsed(pkg);
+                        return (selectedFilter == null || selectedFilter.includes(used))
+                                && (selectedCategory == null || selectedCategory.includes(pkg))
+                                && (selectedReview == null || selectedReview.includes(pkg))
+                                && (selectedSource == null || selectedSource.includes(pkg))
+                                && (textFilter == null || textFilter.include(entry));
                     }
                 };
-        tableSorter.setRowFilter(textFilter == null ? usageRowFilter
-                : RowFilter.andFilter(java.util.Arrays.asList(textFilter, usageRowFilter)));
+        tableSorter.setRowFilter(combinedFilter);
     }
 
     private void refreshUsageDisplay() {
@@ -386,8 +441,10 @@ public class PackagesPanel extends JPanel implements WizardContainer {
     public final Action newPackageAction = new AbstractAction() {
         {
             putValue(SMALL_ICON, Icons.add);
-            putValue(NAME, Translations.getString("PackagesPanel.Action.NewPackage")); //$NON-NLS-1$
-            putValue(SHORT_DESCRIPTION, Translations.getString("PackagesPanel.Action.NewPackage.Description")); //$NON-NLS-1$
+            putValue(NAME, Translations.getString("PackagesPanel.Action.NewPackage"));
+            //$NON-NLS-1$
+            putValue(SHORT_DESCRIPTION, Translations.getString("PackagesPanel.Action.NewPackage.Description"));
+            //$NON-NLS-1$
         }
 
         @Override
@@ -405,6 +462,9 @@ public class PackagesPanel extends JPanel implements WizardContainer {
                 }
                 Package this_package = new Package(id);
 
+                PackageResolutionService.initializeNewPackage(this_package,
+                        Package.SourceType.MANUAL, "封装库手工新建", null);
+
                 configuration.addPackage(this_package);
                 tableModel.fireTableDataChanged();
                 Helpers.selectObjectTableRow(table, this_package);
@@ -416,8 +476,10 @@ public class PackagesPanel extends JPanel implements WizardContainer {
     public final Action deletePackageAction = new AbstractAction() {
         {
             putValue(SMALL_ICON, Icons.delete);
-            putValue(NAME, Translations.getString("PackagesPanel.Action.DeletePackage")); //$NON-NLS-1$
-            putValue(SHORT_DESCRIPTION, Translations.getString("PackagesPanel.Action.DeletePackage.Description")); //$NON-NLS-1$
+            putValue(NAME, Translations.getString("PackagesPanel.Action.DeletePackage"));
+            //$NON-NLS-1$
+            putValue(SHORT_DESCRIPTION, Translations.getString("PackagesPanel.Action.DeletePackage.Description"));
+            //$NON-NLS-1$
         }
 
         @Override
@@ -431,7 +493,8 @@ public class PackagesPanel extends JPanel implements WizardContainer {
                                 Translations.getString("CommonWords.error"), //$NON-NLS-1$
                                 pkg.getId() + " " + Translations.getString( //$NON-NLS-1$
                                         "CommonPhrases.cannotBeDeletedUsedBy" //$NON-NLS-1$
-                                ) + " " + part.getId()); //$NON-NLS-1$
+                                ) + " " + part.getId());
+                                //$NON-NLS-1$
                         return;
                     }
                 }
@@ -451,7 +514,8 @@ public class PackagesPanel extends JPanel implements WizardContainer {
                     ) + " " + formattedIds + "?", //$NON-NLS-1$ //$NON-NLS-1$
                     Translations.getString("DialogMessages.ConfirmDelete.title" //$NON-NLS-1$
                     ) + selections.size() + " " + Translations.getString(
-                                    "CommonWords.packages") + "?", JOptionPane.YES_NO_OPTION); //$NON-NLS-1$ //$NON-NLS-2$
+                                    "CommonWords.packages") + "?", JOptionPane.YES_NO_OPTION);
+                                    //$NON-NLS-1$ //$NON-NLS-2$
             if (ret == JOptionPane.YES_OPTION) {
                 for (Package pkg : selections) {
                     Configuration.get().removePackage(pkg);
@@ -463,8 +527,10 @@ public class PackagesPanel extends JPanel implements WizardContainer {
     public final Action copyPackageToClipboardAction = new AbstractAction() {
         {
             putValue(SMALL_ICON, Icons.copy);
-            putValue(NAME, Translations.getString("PackagesPanel.Action.CopyPackage")); //$NON-NLS-1$
-            putValue(SHORT_DESCRIPTION, Translations.getString("PackagesPanel.Action.CopyPackage.Description")); //$NON-NLS-1$
+            putValue(NAME, Translations.getString("PackagesPanel.Action.CopyPackage"));
+            //$NON-NLS-1$
+            putValue(SHORT_DESCRIPTION, Translations.getString("PackagesPanel.Action.CopyPackage.Description"));
+            //$NON-NLS-1$
         }
 
         @Override
@@ -490,8 +556,10 @@ public class PackagesPanel extends JPanel implements WizardContainer {
     public final Action pastePackageToClipboardAction = new AbstractAction() {
         {
             putValue(SMALL_ICON, Icons.paste);
-            putValue(NAME, Translations.getString("PackagesPanel.Action.PastePackage")); //$NON-NLS-1$
-            putValue(SHORT_DESCRIPTION, Translations.getString("PackagesPanel.Action.PastePackage.Description")); //$NON-NLS-1$
+            putValue(NAME, Translations.getString("PackagesPanel.Action.PastePackage"));
+            //$NON-NLS-1$
+            putValue(SHORT_DESCRIPTION, Translations.getString("PackagesPanel.Action.PastePackage.Description"));
+            //$NON-NLS-1$
         }
 
         @Override
@@ -520,6 +588,11 @@ public class PackagesPanel extends JPanel implements WizardContainer {
                     StringReader r = new StringReader(s);
                     Package pkg = ser.read(Package.class, s);
                     pkg.setId(id);
+                    pkg.setSourceType(Package.SourceType.CLIPBOARD);
+                    pkg.setSourceReference("封装库剪贴板粘贴");
+                    if (pkg.getCategoryId() == null) {
+                        PackageClassifier.applySuggestion(pkg, false);
+                    }
                     Configuration.get().addPackage(pkg);
                     tableModel.fireTableDataChanged();
                     Helpers.selectObjectTableRow(table, pkg);
@@ -624,5 +697,161 @@ public class PackagesPanel extends JPanel implements WizardContainer {
         if (getSelectedPackage() != packag) {
             Helpers.selectObjectTableRow(table, packag);
         }
+    }
+
+    public final Action openKicadImportCenterAction = new AbstractAction() {
+        {
+            putValue(NAME, "KiCad 导入中心...");
+            putValue(SHORT_DESCRIPTION, "分步扫描单个/多个 .kicad_mod 或 .pretty 目录，审核分类、1 脚方向和冲突后再写入。");
+        }
+        @Override public void actionPerformed(ActionEvent event) {
+            KicadPackageImportDialog dialog = new KicadPackageImportDialog(frame, configuration);
+            dialog.setVisible(true);
+            tableModel.fireTableDataChanged();
+            search();
+        }
+    };
+
+    public final Action reclassifyPackagesAction = new AbstractAction() {
+        {
+            putValue(NAME, "重新自动分类");
+            putValue(SHORT_DESCRIPTION, "为选中封装生成分类建议；已确认或已有手工分类不会被覆盖。");
+        }
+        @Override public void actionPerformed(ActionEvent event) {
+            List<Package> targets = getSelections();
+            if (targets.isEmpty()) {
+                targets = new ArrayList<>(configuration.getPackages());
+            }
+            final List<Package> selectedTargets = targets;
+            reclassifyPackagesAction.setEnabled(false);
+            new SwingWorker<PackageLibraryAuditService.Result, Void>() {
+                @Override
+                protected PackageLibraryAuditService.Result doInBackground() {
+                    return PackageLibraryAuditService.audit(configuration.getPackages(),
+                            selectedTargets);
+                }
+
+                @Override
+                protected void done() {
+                    reclassifyPackagesAction.setEnabled(true);
+                    try {
+                        PackageLibraryAuditService.Result result = get();
+                        tableModel.fireTableDataChanged();
+                        search();
+                        JOptionPane.showMessageDialog(PackagesPanel.this,
+                                "已分析 " + result.analyzed + " 个封装，新增分类建议 "
+                                + result.classified + " 个；发现重复组 "
+                                + result.duplicateGroups + " 组（" + result.duplicatePackages
+                                + " 个封装），缺少几何 " + result.missingFootprints
+                                + " 个。\n已确认/手工分类保持不变，未自动合并或删除。",
+                                "封装库审核", JOptionPane.INFORMATION_MESSAGE);
+                    }
+                    catch (Exception exception) {
+                        MessageBoxes.errorBox(PackagesPanel.this, "封装库审核失败", exception);
+                    }
+                }
+            }.execute();
+        }
+    };
+
+    public final Action markReviewedAction = new AbstractAction() {
+        {
+            putValue(NAME, "标记已审核");
+            putValue(SHORT_DESCRIPTION, "确认选中封装当前分类和几何；不会合并、删除或覆盖其他封装。");
+        }
+        @Override public void actionPerformed(ActionEvent event) {
+            List<Package> targets = getSelections();
+            if (targets.isEmpty()) { return; }
+            for (Package pkg : targets) {
+                pkg.setReviewState(Package.ReviewState.VERIFIED);
+                pkg.setLastReviewedAt(Instant.now().toString());
+            }
+            tableModel.fireTableDataChanged();
+            search();
+        }
+    };
+
+    public final Action showDuplicateCandidatesAction = new AbstractAction() {
+        {
+            putValue(NAME, "查看重复候选");
+            putValue(SHORT_DESCRIPTION, "切换到疑似重复筛选；重复组编号用于连续审核，不会自动合并。");
+        }
+        @Override public void actionPerformed(ActionEvent event) {
+            for (int i = 0; i < reviewFilter.getItemCount(); i++) {
+                if (reviewFilter.getItemAt(i).state == Package.ReviewState.DUPLICATE_CANDIDATE) {
+                    reviewFilter.setSelectedIndex(i);
+                    break;
+                }
+            }
+        }
+    };
+
+    private java.awt.Color metadataColor(Package pkg) {
+        boolean dark = ModernTheme.isDark();
+        switch (pkg.getReviewState()) {
+            case CONFLICT: return new java.awt.Color(dark ? 0x583238 : 0xFFE5E5);
+            case DUPLICATE_CANDIDATE: return new java.awt.Color(dark ? 0x51452D : 0xFFF2CC);
+            case MISSING_FOOTPRINT: return new java.awt.Color(dark ? 0x4B3D55 : 0xF3E6FF);
+            default:
+                return pkg.getImportBatchId() == null ? null
+                        : new java.awt.Color(dark ? 0x2E4653 : 0xE5F3FA);
+        }
+    }
+
+    private static CategoryFilterOption[] categoryFilterOptions() {
+        List<CategoryFilterOption> values = new ArrayList<>();
+        values.add(new CategoryFilterOption(null, "全部"));
+        for (Category category : PackageCategoryRegistry.all()) {
+            values.add(new CategoryFilterOption(category.id, category.toString()));
+        }
+        values.add(new CategoryFilterOption("__uncategorized__", "未分类"));
+        return values.toArray(new CategoryFilterOption[0]);
+    }
+    private static ReviewFilterOption[] reviewFilterOptions() {
+        return new ReviewFilterOption[] { new ReviewFilterOption(null, "全部"),
+                new ReviewFilterOption(Package.ReviewState.NEEDS_REVIEW, "待审核"),
+                new ReviewFilterOption(Package.ReviewState.DUPLICATE_CANDIDATE, "疑似重复"),
+                new ReviewFilterOption(Package.ReviewState.MISSING_FOOTPRINT, "缺少封装信息"),
+                new ReviewFilterOption(Package.ReviewState.CONFLICT, "有冲突"),
+                new ReviewFilterOption(Package.ReviewState.VERIFIED, "已确认") };
+    }
+    private static SourceFilterOption[] sourceFilterOptions() {
+        List<SourceFilterOption> values = new ArrayList<>();
+        values.add(new SourceFilterOption(null, "全部"));
+        for (Package.SourceType type : Package.SourceType.values()) {
+            values.add(new SourceFilterOption(type, type.toString()));
+        }
+        return values.toArray(new SourceFilterOption[0]);
+    }
+
+    private static final class CategoryFilterOption {
+        final String id;
+        final String label;
+        CategoryFilterOption(String id, String label) { this.id=id;
+        this.label=label; }
+        boolean includes(Package pkg) { return PackageCategoryRegistry.includes(id, pkg.getCategoryId()); }
+        @Override public String toString() { return label; }
+    }
+    private static final class ReviewFilterOption {
+        final Package.ReviewState state;
+        final String label;
+        ReviewFilterOption(Package.ReviewState state, String label) { this.state=state;
+        this.label=label; }
+        boolean includes(Package pkg) {
+            if (state == null) { return true; }
+            if (state == Package.ReviewState.NEEDS_REVIEW)
+                { return pkg.getReviewState() == Package.ReviewState.NEEDS_REVIEW
+                        || pkg.getReviewState() == Package.ReviewState.AUTO_CLASSIFIED; }
+            return pkg.getReviewState() == state;
+        }
+        @Override public String toString() { return label; }
+    }
+    private static final class SourceFilterOption {
+        final Package.SourceType source;
+        final String label;
+        SourceFilterOption(Package.SourceType source, String label) { this.source=source;
+        this.label=label; }
+        boolean includes(Package pkg) { return source == null || pkg.getSourceType() == source; }
+        @Override public String toString() { return label; }
     }
 }

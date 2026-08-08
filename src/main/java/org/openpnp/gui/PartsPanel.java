@@ -226,11 +226,20 @@ public class PartsPanel extends JPanel implements WizardContainer {
                 if (viewColumn < 0) {
                     return null;
                 }
-                int column = convertColumnIndexToModel(viewColumn);
-                if(column==2) { return Translations.getString("PartsTableModel.Column.Height.toolTip"); } //$NON-NLS-1$
-                if(column==3) { return Translations.getString("PartsTableModel.Column.ThroughBoardDepth.toolTip"); } //$NON-NLS-1$
-                return null;
-            }
+                  int column = convertColumnIndexToModel(viewColumn);
+                  if(column==2) { return Translations.getString("PartsTableModel.Column.Height.toolTip"); } //$NON-NLS-1$
+                  if(column==3) { return Translations.getString("PartsTableModel.Column.ThroughBoardDepth.toolTip"); } //$NON-NLS-1$
+                  if(column==10) {
+                      return "通用归类名相同的任务元件与飞达元件可互相调配。建议填写统一物料组编码。";
+                  }
+                  if(column==11) {
+                      return "规格/变体仅用于说明、显示和搜索，不会自动允许不同物料共用飞达。";
+                  }
+                  if(column==12) {
+                      return "调配别名可填写其他任务或飞达元件名，以逗号或分号分隔；任一名称匹配即可共用飞达。";
+                  }
+                  return null;
+              }
         };
         table.setSelectionMode(ListSelectionModel.MULTIPLE_INTERVAL_SELECTION);
         table.setDefaultEditor(org.openpnp.model.Package.class,

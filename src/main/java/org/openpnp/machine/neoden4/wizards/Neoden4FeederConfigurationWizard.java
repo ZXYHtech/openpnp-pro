@@ -30,6 +30,7 @@ import org.openpnp.gui.MainFrame;
 import org.openpnp.gui.components.CameraView;
 import org.openpnp.gui.components.ComponentDecorators;
 import org.openpnp.gui.components.LocationButtonsPanel;
+import org.openpnp.gui.components.RotationDialButton;
 import org.openpnp.gui.support.BufferedImageIconConverter;
 import org.openpnp.gui.support.IntegerConverter;
 import org.openpnp.gui.support.LengthConverter;
@@ -121,7 +122,7 @@ public class Neoden4FeederConfigurationWizard extends AbstractReferenceFeederCon
         panelOther.add(lblPartRotationInTape, "6, 2, right, default");
 
         textFieldPartRotationInTape = new JTextField();
-        panelOther.add(textFieldPartRotationInTape, "8, 2");
+        panelOther.add(RotationDialButton.wrap(textFieldPartRotationInTape), "8, 2");
         textFieldPartRotationInTape.setColumns(5);
 
         lblActuatorId = new JLabel("Actuator Name");

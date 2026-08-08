@@ -8,6 +8,7 @@ import java.io.Reader;
 import java.io.Writer;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
+import java.nio.file.StandardCopyOption;
 
 import org.openpnp.model.Configuration;
 import org.pmw.tinylog.Logger;
@@ -44,18 +45,22 @@ public final class SafetyWorkbenchStore {
         if (parent != null) {
             parent.mkdirs();
         }
+        if (file.isFile() && read(file) != null) {
+            Files.copy(file.toPath(), getBackupFile().toPath(),
+                    StandardCopyOption.REPLACE_EXISTING);
+        }
         File temporary = new File(parent, file.getName() + ".tmp");
         try (Writer writer = Files.newBufferedWriter(temporary.toPath(), StandardCharsets.UTF_8)) {
             GSON.toJson(model, writer);
         }
         try {
             Files.move(temporary.toPath(), file.toPath(),
-                    java.nio.file.StandardCopyOption.REPLACE_EXISTING,
-                    java.nio.file.StandardCopyOption.ATOMIC_MOVE);
+                    StandardCopyOption.REPLACE_EXISTING,
+                    StandardCopyOption.ATOMIC_MOVE);
         }
         catch (Exception notAtomic) {
             Files.move(temporary.toPath(), file.toPath(),
-                    java.nio.file.StandardCopyOption.REPLACE_EXISTING);
+                    StandardCopyOption.REPLACE_EXISTING);
         }
         current = model;
     }
@@ -65,19 +70,38 @@ public final class SafetyWorkbenchStore {
                 "pro-safety-workbench.json");
     }
 
+    public static File getBackupFile() {
+        return new File(Configuration.get().getConfigurationDirectory(),
+                "pro-safety-workbench.json.bak");
+    }
+
     private static SafetyWorkbenchModel load() {
         File file = getFile();
-        if (!file.isFile()) {
-            return SafetyWorkbenchModel.createDefault();
+        SafetyWorkbenchModel model = read(file);
+        if (model != null) {
+            return model;
+        }
+        File backup = getBackupFile();
+        model = read(backup);
+        if (model != null) {
+            Logger.warn("Recovered OpenPnP Pro safety workbench from backup {}",
+                    backup.getAbsolutePath());
+            return model;
+        }
+        return SafetyWorkbenchModel.createDefault();
+    }
+
+    private static SafetyWorkbenchModel read(File file) {
+        if (file == null || !file.isFile()) {
+            return null;
         }
         try (Reader reader = Files.newBufferedReader(file.toPath(), StandardCharsets.UTF_8)) {
-            SafetyWorkbenchModel model = GSON.fromJson(reader, SafetyWorkbenchModel.class);
-            return model == null ? SafetyWorkbenchModel.createDefault() : model;
+            return GSON.fromJson(reader, SafetyWorkbenchModel.class);
         }
         catch (Exception exception) {
             Logger.warn(exception, "Unable to load OpenPnP Pro safety workbench {}",
                     file.getAbsolutePath());
-            return SafetyWorkbenchModel.createDefault();
+            return null;
         }
     }
 }

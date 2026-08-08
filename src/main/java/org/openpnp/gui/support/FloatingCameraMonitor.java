@@ -41,6 +41,7 @@ import javax.swing.JComboBox;
 import javax.swing.JDialog;
 import javax.swing.JFrame;
 import javax.swing.JLabel;
+import javax.swing.JLayeredPane;
 import javax.swing.JOptionPane;
 import javax.swing.JPanel;
 import javax.swing.JSpinner;
@@ -66,6 +67,7 @@ public class FloatingCameraMonitor {
     private static final String PREF_HEIGHT = "floatingCamera.height";
     private static final String PREF_COMMAND = "floatingCamera.command.";
     private static final String PREF_COMMAND_COUNT = "floatingCamera.commandCount";
+    private static final String PREF_CAMERA_SOURCE = "floatingCamera.cameraSource";
     private static final int HEADER_HEIGHT = 38;
     private static final int EDGE_VISIBLE = 22;
 
@@ -81,7 +83,7 @@ public class FloatingCameraMonitor {
         SAVE_JOB_AS("任务", "任务另存", "将当前任务另存为"),
         OPEN_JOB("任务", "打开任务", "打开贴片任务"),
         NEW_JOB("任务", "新建任务", "新建贴片任务"),
-        PACKAGE_ALIGNMENT("对位", "封装检查", "执行封装对位检查"),
+        PACKAGE_ALIGNMENT("对位", "整板投射", "切换顶部相机整板封装实时投射"),
         FIDUCIAL_CHECK("对位", "Mark对位", "执行单板基准点对位"),
         TWO_POINT_LOCATE("对位", "两点定位", "使用两点重新定位单板"),
         VIEW_JOB("对位", "任务预览", "打开全任务器件查看器"),
@@ -140,11 +142,30 @@ public class FloatingCameraMonitor {
             return category + " · " + label;
         }
     }
+
+    public enum CameraSourceMode {
+        FOLLOW_ACTIVE("跟随活动画面", "等待活动相机"),
+        TOP_CAMERA("固定顶部相机", "未找到顶部相机（向下看）"),
+        BOTTOM_CAMERA("固定底部相机", "未找到底部相机（向上看）");
+
+        private final String label;
+        private final String unavailableLabel;
+
+        CameraSourceMode(String label, String unavailableLabel) {
+            this.label = label;
+            this.unavailableLabel = unavailableLabel;
+        }
+
+        @Override
+        public String toString() {
+            return label;
+        }
+    }
     private final MainFrame owner;
     private final Preferences prefs = Preferences.userNodeForPackage(FloatingCameraMonitor.class);
     private final JFrame window;
     private final CameraView cameraView = new CameraView();
-    private final JPanel cameraContainer = new JPanel();
+    private final CameraLayerPane cameraContainer = new CameraLayerPane();
     private final JPanel commandPanel = new JPanel(new java.awt.GridLayout(1, 4, 8, 0));
     private final JPanel footer = new JPanel(new BorderLayout(7, 0));
     private final JPanel warningPanel = new JPanel(new BorderLayout(8, 8));
@@ -201,9 +222,7 @@ public class FloatingCameraMonitor {
             updateCompactMode();
             ensureInteractiveWindow();
         });
-        cameraTimer.start();
         presentationTimer = new Timer(50, event -> mirrorCameraPresentation());
-        presentationTimer.start();
         redockTimer = new Timer(700, event -> collapseToEdgeIfPointerOutside());
         redockTimer.setRepeats(false);
         MessageBoxes.addErrorListener(errorListener);
@@ -263,12 +282,10 @@ public class FloatingCameraMonitor {
         installDragHandler(cameraNameLabel);
         window.add(header, BorderLayout.NORTH);
 
-        cameraContainer.setLayout(new javax.swing.OverlayLayout(cameraContainer));
+        cameraContainer.setOpaque(true);
         cameraContainer.setBackground(Color.BLACK);
-        cameraView.setAlignmentX(Component.CENTER_ALIGNMENT);
-        cameraView.setAlignmentY(Component.CENTER_ALIGNMENT);
-        cameraContainer.add(warningPanel);
-        cameraContainer.add(cameraView);
+        cameraContainer.add(cameraView, Integer.valueOf(JLayeredPane.DEFAULT_LAYER));
+        cameraContainer.add(warningPanel, Integer.valueOf(JLayeredPane.MODAL_LAYER));
         buildWarningPanel();
         window.add(cameraContainer, BorderLayout.CENTER);
 
@@ -528,13 +545,24 @@ public class FloatingCameraMonitor {
         if (!window.isVisible() || !isEnabled()) {
             return;
         }
-        Camera selected = owner.getCameraViews().getSelectedCamera();
-        if (selected == null && Configuration.get().getMachine() != null) {
-            List<Camera> cameras = Configuration.get().getMachine().getAllCameras();
-            if (!cameras.isEmpty()) {
-                selected = cameras.get(0);
-            }
+        Camera activeSelection = owner.getCameraViews().getSelectedCamera();
+        List<Camera> cameras = new ArrayList<>();
+        if (Configuration.get().getMachine() != null) {
+            cameras.addAll(Configuration.get().getMachine().getAllCameras());
         }
+        CameraSourceMode sourceMode = readCameraSourceMode();
+        Camera selected = selectCameraForMode(sourceMode, activeSelection, cameras);
+        if (selected == null) {
+            if (activeCamera != null) {
+                activeCamera.stopContinuousCapture(cameraView);
+                activeCamera = null;
+                activePresentationSource = null;
+            }
+            cameraView.setVisible(false);
+            cameraNameLabel.setText(sourceMode.unavailableLabel);
+            return;
+        }
+        cameraView.setVisible(true);
         CameraView source = selected == null ? null
                 : owner.getCameraViews().getCameraView(selected);
         if (selected != null && (selected != activeCamera
@@ -552,7 +580,34 @@ public class FloatingCameraMonitor {
                 selected.stopContinuousCapture(cameraView);
                 cameraView.mirrorPresentationFrom(activePresentationSource);
             }
-            cameraNameLabel.setText(selected.getName());
+        }
+        cameraNameLabel.setText(sourceMode == CameraSourceMode.FOLLOW_ACTIVE
+                ? selected.getName() : sourceMode + " · " + selected.getName());
+    }
+
+    static Camera selectCameraForMode(CameraSourceMode mode, Camera activeSelection,
+            List<Camera> cameras) {
+        if (mode == CameraSourceMode.FOLLOW_ACTIVE) {
+            return activeSelection != null ? activeSelection
+                    : cameras.isEmpty() ? null : cameras.get(0);
+        }
+        Camera.Looking expected = mode == CameraSourceMode.TOP_CAMERA
+                ? Camera.Looking.Down : Camera.Looking.Up;
+        for (Camera camera : cameras) {
+            if (camera.getLooking() == expected) {
+                return camera;
+            }
+        }
+        return null;
+    }
+
+    private CameraSourceMode readCameraSourceMode() {
+        try {
+            return CameraSourceMode.valueOf(prefs.get(PREF_CAMERA_SOURCE,
+                    CameraSourceMode.FOLLOW_ACTIVE.name()));
+        }
+        catch (IllegalArgumentException e) {
+            return CameraSourceMode.FOLLOW_ACTIVE;
         }
     }
 
@@ -847,6 +902,9 @@ public class FloatingCameraMonitor {
     @SuppressWarnings("unchecked")
     public void showSettingsDialog() {
         JCheckBox enabled = new JCheckBox("启动时打开桌面悬浮监控", isEnabled());
+        JComboBox<CameraSourceMode> cameraSource = new JComboBox<>(CameraSourceMode.values());
+        cameraSource.setSelectedItem(readCameraSourceMode());
+        cameraSource.setToolTipText("跟随活动画面会随主窗口当前相机切换；固定模式始终显示指定相机");
         int originalCount = readCommandCount();
         JSpinner commandCount = new JSpinner(new SpinnerNumberModel(originalCount, 4, 8, 1));
         JComboBox<Command>[] selectors = new JComboBox[8];
@@ -858,6 +916,20 @@ public class FloatingCameraMonitor {
         constraints.gridy = 0;
         constraints.gridwidth = 2;
         panel.add(enabled, constraints);
+        constraints.gridy++;
+        constraints.gridwidth = 1;
+        panel.add(new JLabel("监控画面"), constraints);
+        constraints.gridx = 1;
+        constraints.fill = GridBagConstraints.HORIZONTAL;
+        constraints.weightx = 1;
+        panel.add(cameraSource, constraints);
+        constraints.gridx = 0;
+        constraints.gridy++;
+        constraints.gridwidth = 2;
+        constraints.fill = GridBagConstraints.NONE;
+        constraints.weightx = 0;
+        panel.add(new JLabel("错误提示固定在视频之上的独立层，不会被实时帧刷新覆盖。"),
+                constraints);
         constraints.gridy++;
         panel.add(new JLabel("可配置 4–8 个按钮，功能按类别排列；悬停按钮可查看完整说明。"),
                 constraints);
@@ -898,12 +970,15 @@ public class FloatingCameraMonitor {
         if (result == JOptionPane.OK_OPTION) {
             int count = ((Number) commandCount.getValue()).intValue();
             prefs.putInt(PREF_COMMAND_COUNT, count);
+            prefs.put(PREF_CAMERA_SOURCE,
+                    ((CameraSourceMode) cameraSource.getSelectedItem()).name());
             for (int index = 0; index < selectors.length; index++) {
                 prefs.put(PREF_COMMAND + index,
                         ((Command) selectors[index].getSelectedItem()).name());
             }
             rebuildCommands();
             setEnabled(enabled.isSelected());
+            updateActiveCamera();
         }
     }
     public boolean isEnabled() {
@@ -918,6 +993,7 @@ public class FloatingCameraMonitor {
         else {
             saveExpandedBounds();
             window.setVisible(false);
+            stopRefreshTimers();
             if (activeCamera != null) {
                 activeCamera.stopContinuousCapture(cameraView);
             }
@@ -926,9 +1002,25 @@ public class FloatingCameraMonitor {
     }
 
     public void show() {
+        startRefreshTimers();
         window.setVisible(true);
         updateActiveCamera();
         ensureInteractiveWindow();
+    }
+
+    private void startRefreshTimers() {
+        if (!cameraTimer.isRunning()) {
+            cameraTimer.start();
+        }
+        if (!presentationTimer.isRunning()) {
+            presentationTimer.start();
+        }
+    }
+
+    private void stopRefreshTimers() {
+        cameraTimer.stop();
+        presentationTimer.stop();
+        redockTimer.stop();
     }
 
     private void updateCompactMode() {
@@ -1134,6 +1226,23 @@ public class FloatingCameraMonitor {
     }
 
     @SuppressWarnings("serial")
+    static class CameraLayerPane extends JLayeredPane {
+        @Override
+        public void doLayout() {
+            for (Component component : getComponents()) {
+                component.setBounds(0, 0, getWidth(), getHeight());
+            }
+        }
+
+        @Override
+        public boolean isOptimizedDrawingEnabled() {
+            // CameraView repaints for every frame. Disabling optimized child painting is essential:
+            // it makes Swing repaint the higher warning layer after any overlapping video repaint.
+            return false;
+        }
+    }
+
+    @SuppressWarnings("serial")
     private static class RoundedCommandButton extends JButton {
         private final Color base;
         private boolean hover;
@@ -1180,17 +1289,16 @@ public class FloatingCameraMonitor {
 
     public void dispose() {
         saveExpandedBounds();
-        cameraTimer.stop();
-        presentationTimer.stop();
+        stopRefreshTimers();
         Toolkit.getDefaultToolkit().removeAWTEventListener(dialogErrorListener);
         if (Thread.getDefaultUncaughtExceptionHandler() == exceptionHandler) {
             Thread.setDefaultUncaughtExceptionHandler(previousExceptionHandler);
         }
-        redockTimer.stop();
         MessageBoxes.removeErrorListener(errorListener);
         if (activeCamera != null) {
             activeCamera.stopContinuousCapture(cameraView);
         }
+        cameraView.clearTransientImageState();
         window.dispose();
     }
 }

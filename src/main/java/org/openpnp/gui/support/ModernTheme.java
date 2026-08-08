@@ -56,6 +56,26 @@ public final class ModernTheme {
         UIManager.put("TabbedPane.underlineColor", accent);
         UIManager.put("TabbedPane.selectedBackground", selection);
         UIManager.put("Separator.foreground", divider);
+        // Keep native confirmation dialogs understandable on Chinese production stations even
+        // when the bundled runtime or Windows display language defaults Swing to English.
+        UIManager.put("OptionPane.okButtonText", "确定");
+        UIManager.put("OptionPane.yesButtonText", "是");
+        UIManager.put("OptionPane.noButtonText", "否");
+        UIManager.put("OptionPane.cancelButtonText", "取消");
+        UIManager.put("FileChooser.openButtonText", "打开");
+        UIManager.put("FileChooser.saveButtonText", "保存");
+        UIManager.put("FileChooser.cancelButtonText", "取消");
+        UIManager.put("FileChooser.openDialogTitleText", "打开");
+        UIManager.put("FileChooser.saveDialogTitleText", "保存");
+        UIManager.put("FileChooser.lookInLabelText", "查找范围：");
+        UIManager.put("FileChooser.fileNameLabelText", "文件名：");
+        UIManager.put("FileChooser.filesOfTypeLabelText", "文件类型：");
+        UIManager.put("FileChooser.upFolderToolTipText", "上一级");
+        UIManager.put("FileChooser.homeFolderToolTipText", "主目录");
+        UIManager.put("FileChooser.newFolderToolTipText", "新建文件夹");
+        UIManager.put("FileChooser.listViewButtonToolTipText", "列表");
+        UIManager.put("FileChooser.detailsViewButtonToolTipText", "详细信息");
+        ChineseUiLocalizer.install();
     }
 
     public static Color surface(boolean elevated) {

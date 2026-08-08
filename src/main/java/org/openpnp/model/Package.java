@@ -33,6 +33,25 @@ import org.simpleframework.xml.ElementList;
 import org.simpleframework.xml.Version;
 
 public class Package extends AbstractPartSettingsHolder {
+    public enum SourceType {
+        BUILT_IN("内置"), MANUAL("手工"), CLIPBOARD("剪贴板"), BOM("BOM"),
+        KICAD("KiCad"), LEGACY("旧配置");
+
+        private final String label;
+        SourceType(String label) { this.label = label; }
+        @Override public String toString() { return label; }
+    }
+
+    public enum ReviewState {
+        VERIFIED("已确认"), AUTO_CLASSIFIED("自动归类"), NEEDS_REVIEW("待审核"),
+        DUPLICATE_CANDIDATE("疑似重复"), MISSING_FOOTPRINT("缺少封装信息"),
+        CONFLICT("有冲突");
+
+        private final String label;
+        ReviewState(String label) { this.label = label; }
+        @Override public String toString() { return label; }
+    }
+
     @Version(revision=1.1)
     private double version;    
     
@@ -48,6 +67,48 @@ public class Package extends AbstractPartSettingsHolder {
     /** Comma or semicolon separated standard, customer and legacy package names. */
     @Attribute(required = false)
     private String aliases;
+
+    @Attribute(required = false)
+    private String categoryId;
+
+    @Attribute(required = false)
+    private SourceType sourceType;
+
+    @Attribute(required = false)
+    private String sourceReference;
+
+    @Attribute(required = false)
+    private ReviewState reviewState;
+
+    @Attribute(required = false)
+    private String geometryFingerprint;
+
+    @Attribute(required = false)
+    private Double orientationAdjustment;
+
+    @Attribute(required = false)
+    private String orientationReason;
+
+    @Attribute(required = false)
+    private String lastReviewedAt;
+
+    @Attribute(required = false)
+    private String lastImportedAt;
+
+    @Attribute(required = false)
+    private String importBatchId;
+
+    @Attribute(required = false)
+    private String duplicateGroupId;
+
+    @Attribute(required = false)
+    private String relatedPackageId;
+
+    @Attribute(required = false)
+    private double classificationConfidence;
+
+    @Attribute(required = false)
+    private String classificationReason;
 
     @Attribute(required = false)
     private String tapeSpecification;
@@ -123,6 +184,101 @@ public class Package extends AbstractPartSettingsHolder {
         Object oldValue = this.aliases;
         this.aliases = aliases;
         firePropertyChange("aliases", oldValue, aliases);
+    }
+
+    public String getCategoryId() { return categoryId; }
+    public void setCategoryId(String value) {
+        Object old = categoryId;
+        categoryId = emptyToNull(value);
+        firePropertyChange("categoryId", old, categoryId);
+    }
+    public SourceType getSourceType() { return sourceType == null ? SourceType.LEGACY : sourceType; }
+    public void setSourceType(SourceType value) {
+        Object old = sourceType;
+        sourceType = value;
+        firePropertyChange("sourceType", old, value);
+    }
+    public String getSourceReference() { return sourceReference; }
+    public void setSourceReference(String value) {
+        Object old = sourceReference;
+        sourceReference = emptyToNull(value);
+        firePropertyChange("sourceReference", old, sourceReference);
+    }
+    public ReviewState getReviewState() {
+        if (reviewState != null) { return reviewState; }
+        return footprint == null || footprint.getPads().isEmpty()
+                ? ReviewState.MISSING_FOOTPRINT : ReviewState.NEEDS_REVIEW;
+    }
+    public void setReviewState(ReviewState value) {
+        Object old = reviewState;
+        reviewState = value;
+        firePropertyChange("reviewState", old, value);
+    }
+    public String getGeometryFingerprint() { return geometryFingerprint; }
+    public void setGeometryFingerprint(String value) {
+        Object old = geometryFingerprint;
+        geometryFingerprint = emptyToNull(value);
+        firePropertyChange("geometryFingerprint", old, geometryFingerprint);
+    }
+    public double getOrientationAdjustment() {
+        return orientationAdjustment == null ? 0.0 : orientationAdjustment;
+    }
+    public void setOrientationAdjustment(double value) {
+        Object old = orientationAdjustment;
+        orientationAdjustment = value;
+        firePropertyChange("orientationAdjustment", old, value);
+    }
+    public String getOrientationReason() { return orientationReason; }
+    public void setOrientationReason(String value) {
+        Object old = orientationReason;
+        orientationReason = emptyToNull(value);
+        firePropertyChange("orientationReason", old, orientationReason);
+    }
+    public String getLastReviewedAt() { return lastReviewedAt; }
+    public void setLastReviewedAt(String value) {
+        Object old = lastReviewedAt;
+        lastReviewedAt = emptyToNull(value);
+        firePropertyChange("lastReviewedAt", old, lastReviewedAt);
+    }
+    public String getLastImportedAt() { return lastImportedAt; }
+    public void setLastImportedAt(String value) {
+        Object old = lastImportedAt;
+        lastImportedAt = emptyToNull(value);
+        firePropertyChange("lastImportedAt", old, lastImportedAt);
+    }
+    public String getImportBatchId() { return importBatchId; }
+    public void setImportBatchId(String value) {
+        Object old = importBatchId;
+        importBatchId = emptyToNull(value);
+        firePropertyChange("importBatchId", old, importBatchId);
+    }
+    public String getDuplicateGroupId() { return duplicateGroupId; }
+    public void setDuplicateGroupId(String value) {
+        Object old = duplicateGroupId;
+        duplicateGroupId = emptyToNull(value);
+        firePropertyChange("duplicateGroupId", old, duplicateGroupId);
+    }
+    public String getRelatedPackageId() { return relatedPackageId; }
+    public void setRelatedPackageId(String value) {
+        Object old = relatedPackageId;
+        relatedPackageId = emptyToNull(value);
+        firePropertyChange("relatedPackageId", old, relatedPackageId);
+    }
+    public double getClassificationConfidence() { return classificationConfidence; }
+    public void setClassificationConfidence(double value) {
+        double old = classificationConfidence;
+        classificationConfidence = value;
+        firePropertyChange("classificationConfidence", old, value);
+    }
+    public String getClassificationReason() { return classificationReason; }
+    public void setClassificationReason(String value) {
+        Object old = classificationReason;
+        classificationReason = emptyToNull(value);
+        firePropertyChange("classificationReason", old, classificationReason);
+    }
+
+    private static String emptyToNull(String value) {
+        return value == null || value.trim().isEmpty() ? null : value.trim();
     }
 
     public String getTapeSpecification() {

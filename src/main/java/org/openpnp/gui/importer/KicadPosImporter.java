@@ -39,11 +39,14 @@ import org.openpnp.model.Location;
 import org.openpnp.model.Package;
 import org.openpnp.model.Part;
 import org.openpnp.model.Placement;
+import org.openpnp.packageimport.PackageResolutionService;
 
 @SuppressWarnings("serial")
 public class KicadPosImporter implements BoardImporter {
-    private final static String NAME = "KiCAD .pos"; //$NON-NLS-1$
-    final static String DESCRIPTION = Translations.getString("KicadPosImporter.Importer.Description"); //$NON-NLS-1$
+    private final static String NAME = "KiCAD .pos";
+    //$NON-NLS-1$
+    final static String DESCRIPTION = Translations.getString("KicadPosImporter.Importer.Description");
+    //$NON-NLS-1$
 
     Board board;
     File topFile;
@@ -75,6 +78,7 @@ public class KicadPosImporter implements BoardImporter {
         BufferedReader reader =
                 new BufferedReader(new InputStreamReader(new FileInputStream(file), StandardCharsets.UTF_8));
         ArrayList<Placement> placements = new ArrayList<>();
+        String importBatchId = "KICAD-POS-" + file.getName() + "-" + file.lastModified();
         String line;
 
         // See:
@@ -89,7 +93,8 @@ public class KicadPosImporter implements BoardImporter {
         // C3 100u Capacitors_SMD:c 67.9450 -77.4700 180.0 F.Cu
 
         Pattern pattern = Pattern.compile(
-                "(\\S+)\\s+(.*?)\\s+(.*?)\\s+(-?\\d+\\.\\d+)\\s+(-?\\d+\\.\\d+)\\s+(-?\\d+\\.\\d+)\\s(.*?)"); //$NON-NLS-1$
+                "(\\S+)\\s+(.*?)\\s+(.*?)\\s+(-?\\d+\\.\\d+)\\s+(-?\\d+\\.\\d+)\\s+(-?\\d+\\.\\d+)\\s(.*?)");
+                //$NON-NLS-1$
 
         while ((line = reader.readLine()) != null) {
             line = line.trim();
@@ -133,21 +138,20 @@ public class KicadPosImporter implements BoardImporter {
             Configuration cfg = Configuration.get();
             if (cfg != null && assignParts) {
                 String partId;
-                if(useOnlyValueAsPartId == true) {
-                	partId = partValue;
-                }else {
-                	partId = pkgName + "-" + partValue; //$NON-NLS-1$
+                if (useOnlyValueAsPartId) {
+                    partId = partValue;
+                }
+                else {
+                    partId = pkgName + "-" + partValue; //$NON-NLS-1$
                 }
                 Part part = cfg.getPart(partId);
                 if (part != null) {
                     placement.setPart(part);
-                } else if (createMissingParts) {
+                }
+                else if (createMissingParts) {
                     part = new Part(partId);
-                    Package pkg = cfg.getPackage(pkgName);
-                    if (pkg == null) {
-                        pkg = new Package(pkgName);
-                        cfg.addPackage(pkg);
-                    }
+                    Package pkg = PackageResolutionService.resolveOrCreatePlaceholder(cfg, pkgName,
+                            Package.SourceType.BOM, file.getName(), importBatchId);
                     part.setPackage(pkg);
                     cfg.addPart(part);
                     placement.setPart(part);

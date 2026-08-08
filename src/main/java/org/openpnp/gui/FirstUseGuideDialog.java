@@ -248,7 +248,7 @@ public final class FirstUseGuideDialog {
             if (step.beforeShow != null) {
                 step.beforeShow.run();
             }
-            badge.setText("OpenPnP Pro 2.6P2 · 界面导览 · 步骤 " + (stepIndex + 1));
+        badge.setText("OpenPnP Pro 2.6P3-beta22 · 界面导览 · 步骤 " + (stepIndex + 1));
             title.setText(step.title);
             String foreground = ModernTheme.isDark() ? "#E7EDF4" : "#26323A";
             description.setText("<html><body style='font-family:sans-serif;font-size:14px;"
@@ -615,7 +615,7 @@ public final class FirstUseGuideDialog {
                 g.drawString(labels[index], bx + 15, 71);
             }
             g.setColor(ModernTheme.mutedForeground());
-            g.drawString("2.6  →  2.6P2", x + 151, 120);
+        g.drawString("2.6  →  2.6P3-beta22", x + 151, 120);
         }
     }
 

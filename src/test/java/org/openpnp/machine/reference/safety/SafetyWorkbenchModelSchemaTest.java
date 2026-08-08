@@ -23,12 +23,27 @@ class SafetyWorkbenchModelSchemaTest {
     }
 
     @Test
-    void certificationAndToolSynchronizationKeepSchemaThree() {
+    void certificationAndToolSynchronizationKeepCurrentSchema() {
         SafetyWorkbenchModel model = new SafetyWorkbenchModel();
         model.ensureToolProfile("H1", "N1", "H1 · N1");
         model.certify("checked");
 
-        assertEquals(3, model.getSchemaVersion());
+        assertEquals(4, model.getSchemaVersion());
+        assertTrue(model.isCertified());
+    }
+
+    @Test
+    void heightCompensationIsPersistedAndRequiresRecertification() {
+        SafetyWorkbenchModel model = new SafetyWorkbenchModel();
+        model.ensureToolProfile("H1", "N1", "H1 · N1");
+        model.certify("checked");
+
+        model.setVisionHeightCompensationEnabled(true);
+        String json = new Gson().toJson(model);
+
+        assertTrue(json.contains("\"visionHeightCompensationEnabled\":true"));
+        assertFalse(model.isCertified());
+        model.certify("height checked");
         assertTrue(model.isCertified());
     }
 }

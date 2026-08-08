@@ -4,7 +4,7 @@
 
 	<groupId>org.openpnp</groupId>
 	<artifactId>openpnp-gui</artifactId>
-	<version>2.6P2</version>
+	<version>2.6P3-beta45</version>
 	<packaging>jar</packaging>
 	<name>openpnp-gui</name>
 	<url>http://openpnp.org</url>
@@ -353,6 +353,29 @@
 				<configuration>
 					<encoding>UTF-8</encoding>
 				</configuration>
+				<executions>
+					<!-- Copy only the About Markdown files. Declaring the repository root as a
+						 Maven resource directory would make Checkstyle inspect generated target files. -->
+					<execution>
+						<id>copy-about-markdown</id>
+						<phase>process-resources</phase>
+						<goals>
+							<goal>copy-resources</goal>
+						</goals>
+						<configuration>
+							<outputDirectory>${project.build.outputDirectory}</outputDirectory>
+							<resources>
+								<resource>
+									<directory>${project.basedir}</directory>
+									<includes>
+										<include>CHANGES.md</include>
+										<include>SPONSORS.md</include>
+									</includes>
+								</resource>
+							</resources>
+						</configuration>
+					</execution>
+				</executions>
 			</plugin>
 
 			<!-- Checks source code for common format violations and stops the build

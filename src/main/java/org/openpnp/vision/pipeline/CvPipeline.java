@@ -361,6 +361,7 @@ public class CvPipeline implements AutoCloseable {
             }
         }
         workingModel = null;
+        lastCapturedImage = null;
         results.clear();
     }
     
@@ -383,6 +384,21 @@ public class CvPipeline implements AutoCloseable {
      */
     public String toXmlString() throws Exception {
         resetToDefaults();
+        return serializeToXml();
+    }
+
+    /**
+     * Serialize the stages exactly as they are currently configured, without
+     * converting externally assigned parameters back through camera-dependent
+     * units. This is intended for offline editors that must snapshot a
+     * pipeline even when no camera is configured. Runtime properties are not
+     * serialized.
+     */
+    public String toXmlStringPreservingRuntimeStageValues() throws Exception {
+        return serializeToXml();
+    }
+
+    private String serializeToXml() throws Exception {
         Serializer ser = createSerializer();
         StringWriter sw = new StringWriter();
         ser.write(this, sw);
@@ -453,6 +469,20 @@ public class CvPipeline implements AutoCloseable {
         if (pipelineParameterAssignments != null) {
             properties.putAll(pipelineParameterAssignments);
         }
+    }
+
+    /**
+     * Copy the prepared runtime properties into another pipeline instance.
+     * This is intended for isolated preview/analysis clones. Pipeline stages
+     * and shot motion are deliberately not copied here.
+     *
+     * @param target receiving pipeline
+     */
+    public void copyPropertiesTo(CvPipeline target) {
+        if (target == null) {
+            throw new IllegalArgumentException("Target pipeline must not be null.");
+        }
+        target.properties.putAll(properties);
     }
 
     public void resetReusedPipeline() {

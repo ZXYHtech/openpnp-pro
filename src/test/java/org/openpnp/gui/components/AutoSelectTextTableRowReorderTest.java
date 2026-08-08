@@ -19,6 +19,68 @@ import org.openpnp.gui.support.RowReorderSupport;
 
 class AutoSelectTextTableRowReorderTest {
     @Test
+    void sortingKeepsTheSelectedDataRowInsteadOfTheOldViewPosition() throws Exception {
+        AtomicReference<String> selectedValue = new AtomicReference<>();
+
+        SwingUtilities.invokeAndWait(() -> {
+            AutoSelectTextTable table = new AutoSelectTextTable(
+                    new DefaultTableModel(new Object[][] {{"C"}, {"A"}, {"B"}},
+                            new Object[] {"ID"}));
+            table.setAutoCreateRowSorter(true);
+            // Reproduce tables/themes that preserve the old view position during sorting.
+            table.setUpdateSelectionOnSort(false);
+            table.setSize(300, table.getRowHeight() * 3);
+            table.getTableHeader().setSize(300, 24);
+            table.setRowSelectionInterval(0, 0);
+
+            long now = System.currentTimeMillis();
+            table.getTableHeader().dispatchEvent(new MouseEvent(table.getTableHeader(),
+                    MouseEvent.MOUSE_PRESSED, now, InputEvent.BUTTON1_DOWN_MASK,
+                    20, 12, 1, false, MouseEvent.BUTTON1));
+            table.getTableHeader().dispatchEvent(new MouseEvent(table.getTableHeader(),
+                    MouseEvent.MOUSE_CLICKED, now + 1, 0,
+                    20, 12, 1, false, MouseEvent.BUTTON1));
+
+            selectedValue.set(String.valueOf(table.getValueAt(table.getSelectedRow(), 0)));
+        });
+
+        assertEquals("C", selectedValue.get());
+    }
+
+    @Test
+    void sortingKeepsEverySelectedDataRow() throws Exception {
+        AtomicReference<List<String>> selectedValues = new AtomicReference<>();
+
+        SwingUtilities.invokeAndWait(() -> {
+            AutoSelectTextTable table = new AutoSelectTextTable(
+                    new DefaultTableModel(new Object[][] {{"C"}, {"A"}, {"B"}},
+                            new Object[] {"ID"}));
+            table.setAutoCreateRowSorter(true);
+            table.setUpdateSelectionOnSort(false);
+            table.setSize(300, table.getRowHeight() * 3);
+            table.getTableHeader().setSize(300, 24);
+            table.setRowSelectionInterval(0, 0);
+            table.addRowSelectionInterval(2, 2);
+
+            long now = System.currentTimeMillis();
+            table.getTableHeader().dispatchEvent(new MouseEvent(table.getTableHeader(),
+                    MouseEvent.MOUSE_PRESSED, now, InputEvent.BUTTON1_DOWN_MASK,
+                    20, 12, 1, false, MouseEvent.BUTTON1));
+            table.getTableHeader().dispatchEvent(new MouseEvent(table.getTableHeader(),
+                    MouseEvent.MOUSE_CLICKED, now + 1, 0,
+                    20, 12, 1, false, MouseEvent.BUTTON1));
+
+            List<String> values = new ArrayList<>();
+            for (int viewRow : table.getSelectedRows()) {
+                values.add(String.valueOf(table.getValueAt(viewRow, 0)));
+            }
+            selectedValues.set(values);
+        });
+
+        assertEquals(Arrays.asList("B", "C"), selectedValues.get());
+    }
+
+    @Test
     void rightButtonDragInvokesPersistentReorderHandler() throws Exception {
         AtomicReference<List<String>> order =
                 new AtomicReference<>(new ArrayList<>(Arrays.asList("A", "B", "C")));

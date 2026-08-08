@@ -19,6 +19,7 @@ public class SafetyWorkbenchModel {
         LOOSE_PARTS_FEEDER("散料飞达"),
         BOARD("待贴电路板"),
         KEEP_OUT("禁入区"),
+        NOZZLE_CHANGER("自动换嘴坞"),
         HOME_POINT("Home 点"),
         PARK_POINT("停靠点"),
         NOZZLE_CHANGER_POINT("自动换吸嘴点"),
@@ -141,6 +142,8 @@ public class SafetyWorkbenchModel {
         public boolean obstacle = true;
         public boolean enabled = true;
         public boolean locked;
+        /** Rear-side feeders are mirrored along Y so their pick end faces the work area. */
+        public boolean rearFacing;
         public int colorRgb = 0x71879A;
         public String sourceKey = "";
         public List<Point2> polygon = new ArrayList<>();
@@ -163,6 +166,7 @@ public class SafetyWorkbenchModel {
             copy.obstacle = obstacle;
             copy.enabled = enabled;
             copy.locked = false;
+            copy.rearFacing = rearFacing;
             copy.colorRgb = colorRgb;
             for (Point2 point : polygon) {
                 copy.polygon.add(new Point2(point.x, point.y));
@@ -171,7 +175,7 @@ public class SafetyWorkbenchModel {
         }
     }
 
-    private int schemaVersion = 3;
+    private int schemaVersion = 4;
     private long revision = 1;
     private long certifiedRevision;
     private long certifiedAt;
@@ -185,6 +189,7 @@ public class SafetyWorkbenchModel {
     private double maxZ = 150;
     private Double importedSafeZLow;
     private Double importedSafeZHigh;
+    private boolean visionHeightCompensationEnabled;
 
     private double toolRadiusX = 15;
     private double toolRadiusY = 15;
@@ -257,17 +262,30 @@ public class SafetyWorkbenchModel {
                 object.clearance = 0;
                 object.colorRgb = 0x8A5656;
                 break;
+            case NOZZLE_CHANGER:
+                object.width = 30;
+                object.depth = 42;
+                object.height = 32;
+                object.apertureWidth = 12;
+                object.apertureDepth = 26;
+                object.clearance = 2;
+                object.colorRgb = 0x52585C;
+                break;
             case HOME_POINT:
-                configureReferencePoint(object, 0x5D8FB5, 10, 6);
+                configureReferencePoint(object, 0x4E83A8, 36, 8);
+                object.shape = Shape.BOX;
                 break;
             case PARK_POINT:
-                configureReferencePoint(object, 0x6B879A, 10, 6);
+                configureReferencePoint(object, 0x607F94, 48, 10);
+                object.shape = Shape.BOX;
                 break;
             case NOZZLE_CHANGER_POINT:
                 configureReferencePoint(object, 0x8D739E, 9, 7);
                 break;
             case DISCARD_POINT:
-                configureReferencePoint(object, 0xA17A62, 12, 5);
+                configureReferencePoint(object, 0xA26F50, 52, 24);
+                object.apertureWidth = 26;
+                object.apertureDepth = 26;
                 break;
             case FEEDER_PICK_POINT:
                 configureReferencePoint(object, 0x6F9A78, 7, 4);
@@ -311,7 +329,7 @@ public class SafetyWorkbenchModel {
     }
 
     public void certify(String note) {
-        schemaVersion = 3;
+        schemaVersion = 4;
         certifiedRevision = revision;
         certifiedAt = System.currentTimeMillis();
         certificationNote = note == null ? "" : note;
@@ -409,6 +427,18 @@ public class SafetyWorkbenchModel {
         return importedSafeZHigh;
     }
 
+    public boolean isVisionHeightCompensationEnabled() {
+        return visionHeightCompensationEnabled;
+    }
+
+    public void setVisionHeightCompensationEnabled(boolean enabled) {
+        if (visionHeightCompensationEnabled != enabled) {
+            visionHeightCompensationEnabled = enabled;
+            schemaVersion = 4;
+            touch();
+        }
+    }
+
     public void setImportedSafeZ(double low, double high) {
         importedSafeZLow = Math.min(low, high);
         importedSafeZHigh = Math.max(low, high);
@@ -479,7 +509,7 @@ public class SafetyWorkbenchModel {
         if (profile != null) {
             return profile;
         }
-        schemaVersion = 3;
+        schemaVersion = 4;
         profile = new ToolProfile();
         profile.headId = headId == null ? "" : headId;
         profile.toolId = toolId == null ? "" : toolId;
@@ -491,5 +521,35 @@ public class SafetyWorkbenchModel {
     }
     public List<SafetyObject> getObjects() {
         return objects;
+    }
+
+    /** Restores an editor snapshot while forcing renewed safety certification. */
+    void restoreFrom(SafetyWorkbenchModel source) {
+        if (source == null) {
+            throw new IllegalArgumentException("工作台历史快照不能为空。");
+        }
+        schemaVersion = Math.max(4, source.schemaVersion);
+        minX = source.minX;
+        maxX = source.maxX;
+        minY = source.minY;
+        maxY = source.maxY;
+        minZ = source.minZ;
+        maxZ = source.maxZ;
+        importedSafeZLow = source.importedSafeZLow;
+        importedSafeZHigh = source.importedSafeZHigh;
+        visionHeightCompensationEnabled = source.visionHeightCompensationEnabled;
+        toolRadiusX = source.toolRadiusX;
+        toolRadiusY = source.toolRadiusY;
+        toolMinZOffset = source.toolMinZOffset;
+        toolMaxZOffset = source.toolMaxZOffset;
+        sampleStep = source.sampleStep;
+        toolProfiles.clear();
+        toolProfiles.addAll(source.toolProfiles);
+        objects.clear();
+        objects.addAll(source.objects);
+        revision = Math.max(revision, source.revision) + 1;
+        certifiedRevision = 0;
+        certifiedAt = 0;
+        certificationNote = "";
     }
 }

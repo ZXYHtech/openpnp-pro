@@ -40,6 +40,7 @@ import org.jdesktop.beansbinding.AutoBinding.UpdateStrategy;
 import org.jdesktop.beansbinding.Binding;
 import org.openpnp.gui.components.ComponentDecorators;
 import org.openpnp.gui.components.LocationButtonsPanel;
+import org.openpnp.gui.components.RotationDialButton;
 import org.openpnp.gui.support.*;
 import org.openpnp.gui.support.JBindings.Wrapper;
 import org.openpnp.machine.reference.feeder.ReferenceSlotAutoFeeder;
@@ -352,7 +353,7 @@ public class ReferenceSlotAutoFeederConfigurationWizard
         pickLocButtons = new LocationButtonsPanel(xPickLocTf, yPickLocTf, zPickLocTf, rotPickLocTf);
         
         rotPickLocTf = new JTextField();
-        whateverPanel.add(rotPickLocTf, "10, 6");
+        whateverPanel.add(RotationDialButton.wrap(rotPickLocTf), "10, 6");
         rotPickLocTf.setColumns(10);
         whateverPanel.add(pickLocButtons, "12, 6");
         

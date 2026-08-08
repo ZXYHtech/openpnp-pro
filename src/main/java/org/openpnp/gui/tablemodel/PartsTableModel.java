@@ -50,9 +50,9 @@ public class PartsTableModel extends AbstractObjectTableModel
                     Translations.getString("PartsTableModel.ColumnName.FiducialVision"), //$NON-NLS-1$
                     Translations.getString("PartsTableModel.ColumnName.Placements"), //$NON-NLS-1$
                     Translations.getString("PartsTableModel.ColumnName.Feeders"), //$NON-NLS-1$
-                    "Display ID",
-                    "Variant",
-                    "Aliases"
+                    "通用归类名（相同即可共用飞达）",
+                    "规格/变体（仅说明）",
+                    "调配别名（逗号或分号分隔）"
     };
     private Class[] columnTypes = new Class[] {String.class, String.class, LengthCellValue.class, LengthCellValue.class,
             Package.class, String.class, BottomVisionSettings.class, FiducialVisionSettings.class, Integer.class, Integer.class,
@@ -225,13 +225,13 @@ public class PartsTableModel extends AbstractObjectTableModel
                     fireTableCellUpdated(rowIdx, 9);
                     break;
                 case "displayId":
-                    fireTableCellUpdated(rowIdx, 10);
+                    fireTableRowsUpdated(0, Math.max(0, getRowCount() - 1));
                     break;
                 case "variant":
                     fireTableCellUpdated(rowIdx, 11);
                     break;
                 case "aliases":
-                    fireTableCellUpdated(rowIdx, 12);
+                    fireTableRowsUpdated(0, Math.max(0, getRowCount() - 1));
                     break;
                 default:
                     //ok - property is not visible in the table so no need to update the table

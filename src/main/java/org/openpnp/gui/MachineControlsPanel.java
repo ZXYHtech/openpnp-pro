@@ -19,7 +19,6 @@
 
 package org.openpnp.gui;
 
-import java.awt.EventQueue;
 import java.awt.Toolkit;
 import java.awt.event.ActionEvent;
 import java.awt.event.ActionListener;
@@ -51,6 +50,7 @@ import org.openpnp.ConfigurationListener;
 import org.openpnp.Translations;
 import org.openpnp.gui.support.ActuatorItem;
 import org.openpnp.gui.support.CameraItem;
+import org.openpnp.gui.support.CoalescingUiUpdate;
 import org.openpnp.gui.support.HeadMountableItem;
 import org.openpnp.gui.support.Icons;
 import org.openpnp.gui.support.NozzleItem;
@@ -97,6 +97,8 @@ public class MachineControlsPanel extends JPanel {
 
     private JogControlsPanel jogControlsPanel;
 
+    private CoalescingUiUpdate headActivityUiUpdate;
+
     private Location markLocation = null;
 
     /**
@@ -109,6 +111,11 @@ public class MachineControlsPanel extends JPanel {
         this.jobPanel = jobPanel;
 
         createUi();
+
+        headActivityUiUpdate = new CoalescingUiUpdate(() -> {
+            updateDros();
+            comboBoxHeadMountable.repaint();
+        });
 
         configuration.addListener(configurationListener);
     }
@@ -501,15 +508,14 @@ public class MachineControlsPanel extends JPanel {
 
         @Override
         public void machineHeadActivity(Machine machine, Head head) {
-            EventQueue.invokeLater(() -> updateDros());
-            EventQueue.invokeLater(() -> comboBoxHeadMountable.repaint());
+            headActivityUiUpdate.request();
         }
 
         @Override
         public void machineEnabled(Machine machine) {
             updateStartStopButton(machine.isEnabled());
             setEnabled(true);
-            EventQueue.invokeLater(() -> updateDros());
+            headActivityUiUpdate.request();
         }
 
         @Override

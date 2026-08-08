@@ -54,16 +54,22 @@ import org.openpnp.gui.support.MessageBoxes;
 /** Full-page production history, efficiency, quality and error-analysis dashboard. */
 @SuppressWarnings("serial")
 public class ProductionDashboardPanel extends JPanel {
+    private static final String AGGREGATE_DETAILS_KEY = "aggregate";
+
     private final JobPanel jobPanel;
     private final JobTelemetryManager telemetry;
     private final JPanel metricGrid = new JPanel(new GridLayout(0, 5, 10, 10));
     private final HistoryTableModel historyModel = new HistoryTableModel();
     private final JTable historyTable = new AutoSelectTextTable(historyModel);
     private final JTextPane details = new JTextPane();
+    private final JScrollPane detailsScroll = new JScrollPane(details);
     private final JTextField filter = new JTextField(18);
     private final JLabel currentSummary = new JLabel();
     private final TrendPanel trendPanel = new TrendPanel();
     private final Timer refreshTimer;
+    private boolean refreshingHistory;
+    private String renderedDetailsKey;
+    private String renderedDetailsHtml;
 
     public ProductionDashboardPanel(JobPanel jobPanel) {
         this.jobPanel = jobPanel;
@@ -165,7 +171,11 @@ public class ProductionDashboardPanel extends JPanel {
         historyTable.setSelectionMode(ListSelectionModel.SINGLE_SELECTION);
         historyTable.setRowHeight(27);
         historyTable.setAutoCreateRowSorter(true);
-        historyTable.getSelectionModel().addListSelectionListener(event -> updateDetails());
+        historyTable.getSelectionModel().addListSelectionListener(event -> {
+            if (!event.getValueIsAdjusting() && !refreshingHistory) {
+                updateDetails(false);
+            }
+        });
         historyTable.addMouseListener(new MouseAdapter() {
             @Override
             public void mouseClicked(MouseEvent event) {
@@ -184,7 +194,7 @@ public class ProductionDashboardPanel extends JPanel {
         details.setContentType("text/html");
         details.setEditable(false);
         details.putClientProperty("JEditorPane.honorDisplayProperties", Boolean.TRUE);
-        panel.add(new JScrollPane(details), BorderLayout.CENTER);
+        panel.add(detailsScroll, BorderLayout.CENTER);
         return panel;
     }
 
@@ -288,6 +298,7 @@ public class ProductionDashboardPanel extends JPanel {
     }
 
     private void refreshHistory() {
+        String previousKey = detailsKey(selectedRecord());
         String query = filter.getText().trim().toLowerCase(Locale.ROOT);
         List<JobRunRecord> available = mergeRecentJobs(telemetry.getHistory(),
                 jobPanel.getRecentJobs());
@@ -299,11 +310,24 @@ public class ProductionDashboardPanel extends JPanel {
                 records.add(record);
             }
         }
-        historyModel.setRecords(records);
-        if (historyTable.getSelectedRow() < 0 && historyModel.getRowCount() > 0) {
-            historyTable.setRowSelectionInterval(0, 0);
+        refreshingHistory = true;
+        try {
+            historyModel.setRecords(records);
+            int selectedModelRow = historyModel.findRecord(previousKey);
+            if (selectedModelRow >= 0) {
+                int selectedViewRow = historyTable.convertRowIndexToView(selectedModelRow);
+                if (selectedViewRow >= 0) {
+                    historyTable.setRowSelectionInterval(selectedViewRow, selectedViewRow);
+                }
+            }
+            else if (historyModel.getRowCount() > 0) {
+                historyTable.setRowSelectionInterval(0, 0);
+            }
         }
-        updateDetails();
+        finally {
+            refreshingHistory = false;
+        }
+        updateDetails(previousKey.equals(detailsKey(selectedRecord())));
     }
 
     static List<JobRunRecord> mergeRecentJobs(List<JobRunRecord> history,
@@ -341,10 +365,10 @@ public class ProductionDashboardPanel extends JPanel {
             return file.getAbsolutePath().toLowerCase(Locale.ROOT);
         }
     }
-    private void updateDetails() {
+    private void updateDetails(boolean preserveView) {
         JobRunRecord record = selectedRecord();
         if (record == null) {
-            showAggregateErrors();
+            showAggregateErrors(preserveView);
             return;
         }
         StringBuilder html = new StringBuilder("<html><body style='font-family:sans-serif'>");
@@ -442,10 +466,9 @@ public class ProductionDashboardPanel extends JPanel {
             }
         }
         html.append("</body></html>");
-        details.setText(html.toString());
-        details.setCaretPosition(0);
+        setDetailsHtml(detailsKey(record), html.toString(), preserveView);
     }
-    private void showAggregateErrors() {
+    private void showAggregateErrors(boolean preserveView) {
         List<Map.Entry<String, Integer>> entries = new ArrayList<>(
                 telemetry.getErrorCategoryCounts().entrySet());
         entries.sort(Collections.reverseOrder(Comparator.comparingInt(Map.Entry::getValue)));
@@ -463,7 +486,49 @@ public class ProductionDashboardPanel extends JPanel {
             html.append("</ol>");
         }
         html.append("</body></html>");
-        details.setText(html.toString());
+        setDetailsHtml(AGGREGATE_DETAILS_KEY, html.toString(), preserveView);
+    }
+
+    private void setDetailsHtml(String key, String html, boolean preserveView) {
+        if (!detailsChanged(key, html, renderedDetailsKey, renderedDetailsHtml)) {
+            return;
+        }
+        int scrollValue = detailsScroll.getVerticalScrollBar().getValue();
+        int caretPosition = details.getCaretPosition();
+        boolean sameRecord = key.equals(renderedDetailsKey);
+        renderedDetailsKey = key;
+        renderedDetailsHtml = html;
+        details.setText(html);
+        if (!preserveView || !sameRecord) {
+            details.setCaretPosition(0);
+            detailsScroll.getVerticalScrollBar().setValue(0);
+            return;
+        }
+        SwingUtilities.invokeLater(() -> {
+            details.setCaretPosition(Math.min(caretPosition, details.getDocument().getLength()));
+            detailsScroll.getVerticalScrollBar().setValue(clampScrollValue(scrollValue,
+                    detailsScroll.getVerticalScrollBar().getMaximum(),
+                    detailsScroll.getVerticalScrollBar().getVisibleAmount()));
+        });
+    }
+
+    static boolean detailsChanged(String key, String html, String previousKey,
+            String previousHtml) {
+        return !key.equals(previousKey) || !html.equals(previousHtml);
+    }
+
+    static int clampScrollValue(int requested, int maximum, int visibleAmount) {
+        return Math.max(0, Math.min(requested, Math.max(0, maximum - visibleAmount)));
+    }
+
+    static String detailsKey(JobRunRecord record) {
+        if (record == null) {
+            return AGGREGATE_DETAILS_KEY;
+        }
+        if (record.id != null && !record.id.trim().isEmpty()) {
+            return "id:" + record.id;
+        }
+        return "run:" + String.valueOf(record.jobPath) + ":" + record.startTime;
     }
 
     private JobRunRecord selectedRecord() {
@@ -555,6 +620,15 @@ public class ProductionDashboardPanel extends JPanel {
 
         JobRunRecord getRecord(int row) {
             return row < 0 || row >= records.size() ? null : records.get(row);
+        }
+
+        int findRecord(String key) {
+            for (int row = 0; row < records.size(); row++) {
+                if (key.equals(detailsKey(records.get(row)))) {
+                    return row;
+                }
+            }
+            return -1;
         }
 
         @Override

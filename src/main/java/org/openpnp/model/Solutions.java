@@ -42,6 +42,7 @@ import org.apache.commons.codec.digest.DigestUtils;
 import org.openpnp.Translations;
 import org.openpnp.gui.MainFrame;
 import org.openpnp.gui.components.AutoSelectTextTable;
+import org.openpnp.gui.support.ChineseUiLocalizer;
 import org.openpnp.gui.support.Icons;
 import org.openpnp.machine.reference.driver.NullDriver;
 import org.openpnp.machine.reference.driver.NullMotionPlanner;
@@ -787,9 +788,9 @@ public class Solutions extends AbstractTableModel {
             case 1:
                 return issue.getSeverity();
             case 2:
-                return issue.getIssue();
+                return ChineseUiLocalizer.translateIssueText(issue.getIssue());
             case 3:
-                return issue.getSolution();
+                return ChineseUiLocalizer.translateIssueText(issue.getSolution());
             case 4:
                 return issue.getState();
             default:
@@ -800,9 +801,9 @@ public class Solutions extends AbstractTableModel {
         Issue issue = getIssue(rowIndex); 
         switch (columnIndex) {
             case 2:
-                return issue.getIssue();
+                return ChineseUiLocalizer.translateIssueText(issue.getIssue());
             case 3:
-                return issue.getSolution();
+                return ChineseUiLocalizer.translateIssueText(issue.getSolution());
         }
         return null;
     }
@@ -813,7 +814,7 @@ public class Solutions extends AbstractTableModel {
                 return;
             }
             Subject subject = (Subject) value; 
-            setText(subject.getSubjectText());
+            setText(ChineseUiLocalizer.translateIssueText(subject.getSubjectText()));
         }
     }
 
@@ -825,7 +826,7 @@ public class Solutions extends AbstractTableModel {
             Severity severity = (Severity) value; 
             setForeground(Color.black);
             setBackground(severity.color);
-            setText(severity.toString());
+            setText(ChineseUiLocalizer.translateSeverityOrState(severity));
             setBorder(new LineBorder(getBackground()));
         }
     }
@@ -838,7 +839,7 @@ public class Solutions extends AbstractTableModel {
             State state = (State) value; 
             setForeground(Color.black);
             setBackground(state.color);
-            setText(state.toString());
+            setText(ChineseUiLocalizer.translateSeverityOrState(state));
             setBorder(new LineBorder(getBackground()));
         }
     }

@@ -29,7 +29,6 @@ import java.util.zip.ZipOutputStream;
 
 import javax.swing.JButton;
 import javax.swing.JDialog;
-import javax.swing.JFileChooser;
 import javax.swing.JLabel;
 import javax.swing.JOptionPane;
 import javax.swing.JPanel;
@@ -37,6 +36,7 @@ import javax.swing.JScrollPane;
 import javax.swing.JTable;
 import javax.swing.ListSelectionModel;
 import javax.swing.table.AbstractTableModel;
+import javax.swing.filechooser.FileNameExtensionFilter;
 
 import org.openpnp.gui.JobPanel;
 import org.openpnp.model.Board;
@@ -180,20 +180,22 @@ public class BackupRestoreDialog extends JDialog {
     }
 
     private void chooseBackup() {
-        JFileChooser chooser = new JFileChooser();
-        chooser.setDialogTitle("保存 OpenPnP Pro 备份");
-        chooser.setSelectedFile(new File("OpenPnP-Pro-"
-                + DateTimeFormatter.ofPattern("yyyyMMdd-HHmmss")
-                        .format(LocalDateTime.now()) + ".zip"));
-        if (chooser.showSaveDialog(this) == JFileChooser.APPROVE_OPTION) {
-            try {
-                File output = ensureZip(chooser.getSelectedFile());
-                createBackup(output, model.selectedItems());
-                JOptionPane.showMessageDialog(this, "备份完成：\n" + output);
-            }
-            catch (Exception exception) {
-                MessageBoxes.errorBox(this, "备份失败", exception);
-            }
+        File selected = PathSelectionDialog.chooseSave(this, "pro-backup-save",
+                "保存 OpenPnP Pro 备份",
+                new File("OpenPnP-Pro-" + DateTimeFormatter.ofPattern("yyyyMMdd-HHmmss")
+                        .format(LocalDateTime.now()) + ".zip"),
+                configuration.getConfigurationDirectory(),
+                new FileNameExtensionFilter("OpenPnP Pro 备份 (*.zip)", "zip"));
+        if (selected == null) {
+            return;
+        }
+        try {
+            File output = ensureZip(selected);
+            createBackup(output, model.selectedItems());
+            JOptionPane.showMessageDialog(this, "备份完成：\n" + output);
+        }
+        catch (Exception exception) {
+            MessageBoxes.errorBox(this, "备份失败", exception);
         }
     }
 
@@ -272,13 +274,15 @@ public class BackupRestoreDialog extends JDialog {
         return properties.size();
     }
     private void chooseArchive() {
-        JFileChooser chooser = new JFileChooser();
-        chooser.setDialogTitle("加载 OpenPnP Pro 备份清单");
-        if (chooser.showOpenDialog(this) != JFileChooser.APPROVE_OPTION) {
+        File[] selected = PathSelectionDialog.chooseOpen(this, "pro-backup-restore",
+                "加载 OpenPnP Pro 备份清单", PathSelectionDialog.Mode.FILES, false,
+                configuration.getConfigurationDirectory(),
+                new FileNameExtensionFilter("OpenPnP Pro 备份 (*.zip)", "zip"));
+        if (selected == null) {
             return;
         }
         try {
-            loadedArchive = chooser.getSelectedFile();
+            loadedArchive = selected[0];
             model.setItems(readArchiveItems(loadedArchive));
         }
         catch (Exception exception) {

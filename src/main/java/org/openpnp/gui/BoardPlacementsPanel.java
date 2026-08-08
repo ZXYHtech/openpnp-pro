@@ -176,7 +176,8 @@ public class BoardPlacementsPanel extends JPanel {
         configuration = Configuration.get();
         
         singleSelectionActionGroup = new ActionGroup(removeAction, 
-                setTypeAction, setSideAction, setErrorHandlingAction, setEnabledAction);
+                setTypeAction, setSideAction, setErrorHandlingAction, setEnabledAction,
+                editPlacementFeederAction, replacePlacementFeederAction);
         singleSelectionActionGroup.setEnabled(false);
 
         multiSelectionActionGroup = new ActionGroup(removeAction,
@@ -300,6 +301,13 @@ public class BoardPlacementsPanel extends JPanel {
         
         JPopupMenu popupMenu = new JPopupMenu();
 
+        popupMenu.add(new SetEnabledAction(true));
+        popupMenu.add(new SetEnabledAction(false));
+        popupMenu.addSeparator();
+        popupMenu.add(replacePlacementFeederAction);
+        popupMenu.add(editPlacementFeederAction);
+        popupMenu.addSeparator();
+
         JMenu setTypeMenu = new JMenu(setTypeAction);
         setTypeMenu.add(new SetTypeAction(Placement.Type.Placement));
         setTypeMenu.add(new SetTypeAction(Placement.Type.Fiducial));
@@ -310,11 +318,6 @@ public class BoardPlacementsPanel extends JPanel {
             setSideMenu.add(new SetSideAction(side));
         }
         popupMenu.add(setSideMenu);
-
-        JMenu setEnabledMenu = new JMenu(setEnabledAction);
-        setEnabledMenu.add(new SetEnabledAction(true));
-        setEnabledMenu.add(new SetEnabledAction(false));
-        popupMenu.add(setEnabledMenu);
 
         JMenu setErrorHandlingMenu = new JMenu(setErrorHandlingAction);
         setErrorHandlingMenu.add(new SetErrorHandlingAction(ErrorHandling.Default));
@@ -679,6 +682,43 @@ public class BoardPlacementsPanel extends JPanel {
                 boardViewer.setExtendedState(Frame.NORMAL);
             }
             boardViewer.setVisible(true);
+        }
+    };
+
+    public final Action editPlacementFeederAction = new AbstractAction() {
+        {
+            putValue(SMALL_ICON, Icons.editFeeder);
+            putValue(NAME, "编辑贴片项所用飞达");
+            putValue(SHORT_DESCRIPTION, "打开飞达页面并选中与当前贴片项物料匹配的飞达。");
+        }
+
+        @Override
+        public void actionPerformed(ActionEvent event) {
+            Placement placement = getSelection();
+            if (placement != null && placement.getPart() != null) {
+                MainFrame.get().getFeedersTab().showFeederForPart(placement.getPart());
+            }
+        }
+    };
+
+    public final Action replacePlacementFeederAction = new AbstractAction() {
+        {
+            putValue(SMALL_ICON, Icons.editFeeder);
+            putValue(NAME, "替换到飞达...");
+            putValue(SHORT_DESCRIPTION, "不离开单板编辑，选择飞达并把当前贴片项物料写入飞达配置。");
+        }
+
+        @Override
+        public void actionPerformed(ActionEvent event) {
+            org.openpnp.util.UiUtils.messageBoxOnException(() -> {
+                Placement placement = getSelection();
+                if (placement == null || placement.getType() != Placement.Type.Placement) {
+                    throw new Exception("请先选择一个贴片元件。");
+                }
+                PlacementFeederAssignmentDialog dialog =
+                        new PlacementFeederAssignmentDialog(BoardPlacementsPanel.this, placement);
+                dialog.setVisible(true);
+            });
         }
     };
 

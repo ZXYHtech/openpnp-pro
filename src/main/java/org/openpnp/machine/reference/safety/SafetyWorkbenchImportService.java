@@ -5,7 +5,9 @@ package org.openpnp.machine.reference.safety;
 
 import java.util.ArrayList;
 import java.util.EnumSet;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 
 import org.openpnp.machine.reference.ReferenceNozzleTip;
@@ -16,6 +18,7 @@ import org.openpnp.model.Length;
 import org.openpnp.model.LengthUnit;
 import org.openpnp.model.Location;
 import org.openpnp.spi.Axis;
+import org.openpnp.spi.Camera;
 import org.openpnp.spi.Feeder;
 import org.openpnp.spi.Head;
 import org.openpnp.spi.Machine;
@@ -25,8 +28,8 @@ import org.openpnp.spi.base.AbstractHead;
 
 /**
  * Imports existing machine configuration into the Pro safety workbench. Imported
- * point objects have stable source keys, so running the import again updates them
- * instead of creating duplicates.
+ * reference points and physical bodies have stable source keys, so running the
+ * import again updates them instead of creating duplicates.
  */
 public final class SafetyWorkbenchImportService {
     public enum Category {
@@ -34,7 +37,8 @@ public final class SafetyWorkbenchImportService {
         HOME_AND_PARK,
         NOZZLE_CHANGER,
         DISCARD,
-        FEEDER_PICK_POINTS
+        FEEDER_PICK_POINTS,
+        BOTTOM_CAMERAS
     }
 
     public static final class Summary {
@@ -72,11 +76,44 @@ public final class SafetyWorkbenchImportService {
         }
     }
 
+    public static final class FeederType {
+        private final String key;
+        private final String label;
+        private int count;
+        private int enabledCount;
+
+        private FeederType(String key, String label) {
+            this.key = key;
+            this.label = label;
+        }
+
+        public String getKey() {
+            return key;
+        }
+
+        public String getLabel() {
+            return label;
+        }
+
+        public int getCount() {
+            return count;
+        }
+
+        public int getEnabledCount() {
+            return enabledCount;
+        }
+    }
+
     private SafetyWorkbenchImportService() {
     }
 
     public static Summary importConfiguration(SafetyWorkbenchModel model, Machine machine,
             Nozzle selectedNozzle, Set<Category> categories) {
+        return importConfiguration(model, machine, selectedNozzle, categories, null);
+    }
+
+    public static Summary importConfiguration(SafetyWorkbenchModel model, Machine machine,
+            Nozzle selectedNozzle, Set<Category> categories, Set<String> feederTypeKeys) {
         Summary summary = new Summary();
         if (categories.contains(Category.WORK_AREA)) {
             importWorkArea(model, machine, selectedNozzle, summary);
@@ -99,13 +136,95 @@ public final class SafetyWorkbenchImportService {
             }
         }
         if (categories.contains(Category.FEEDER_PICK_POINTS)) {
-            importFeederPickPoints(model, machine, summary);
+            importFeederPickPoints(model, machine, feederTypeKeys, summary);
+        }
+        if (categories.contains(Category.BOTTOM_CAMERAS)) {
+            importBottomCameras(model, machine, summary);
         }
         return summary;
     }
 
     public static EnumSet<Category> allCategories() {
         return EnumSet.allOf(Category.class);
+    }
+
+    public static List<FeederType> feederTypes(Machine machine) {
+        Map<String, FeederType> grouped = new LinkedHashMap<>();
+        for (Feeder feeder : machine.getFeeders()) {
+            String key = feederTypeKey(feeder);
+            FeederType type = grouped.computeIfAbsent(key,
+                    ignored -> new FeederType(key, feederTypeLabel(feeder)));
+            type.count++;
+            if (feeder.isEnabled()) {
+                type.enabledCount++;
+            }
+        }
+        return new ArrayList<>(grouped.values());
+    }
+
+    public static String feederTypeKey(Feeder feeder) {
+        return feederTypeClass(feeder).getName();
+    }
+
+    private static String feederTypeLabel(Feeder feeder) {
+        Class<?> type = feederTypeClass(feeder);
+        String simpleName = type.getSimpleName();
+        String name;
+        switch (simpleName) {
+            case "ReferenceStripFeeder":
+                name = "条带飞达";
+                break;
+            case "ReferenceTrayFeeder":
+            case "ReferenceRotatedTrayFeeder":
+                name = "托盘飞达";
+                break;
+            case "ReferenceTubeFeeder":
+                name = "管式飞达";
+                break;
+            case "ReferenceAutoFeeder":
+            case "ReferenceSlotAutoFeeder":
+                name = "自动飞达";
+                break;
+            case "ReferencePushPullFeeder":
+            case "ReferenceDragFeeder":
+            case "ReferenceLeverFeeder":
+                name = "机械送料飞达";
+                break;
+            case "ReferenceLoosePartFeeder":
+            case "AdvancedLoosePartFeeder":
+            case "ReferenceHeapFeeder":
+                name = "散料飞达";
+                break;
+            case "BlindsFeeder":
+                name = "百叶窗飞达";
+                break;
+            case "PhotonFeeder":
+                name = "Photon 智能飞达";
+                break;
+            case "Neoden4Feeder":
+                name = "NeoDen 4 飞达";
+                break;
+            case "RapidFeeder":
+                name = "Rapid 飞达";
+                break;
+            case "SchultzFeeder":
+            case "SlotSchultzFeeder":
+                name = "Schultz 飞达";
+                break;
+            default:
+                return simpleName.isEmpty() ? type.getName() : simpleName;
+        }
+        return name + "（" + simpleName + "）";
+    }
+
+    private static Class<?> feederTypeClass(Feeder feeder) {
+        Class<?> type = feeder.getClass();
+        while (type.getSuperclass() != null
+                && Feeder.class.isAssignableFrom(type.getSuperclass())
+                && (type.isSynthetic() || type.getName().contains("MockitoMock"))) {
+            type = type.getSuperclass();
+        }
+        return type;
     }
 
     private static void importWorkArea(SafetyWorkbenchModel model, Machine machine,
@@ -206,7 +325,17 @@ public final class SafetyWorkbenchImportService {
 
     private static void importNozzleChanger(SafetyWorkbenchModel model, Machine machine,
             Summary summary) {
-        int points = 0;
+        int before = model.getObjects().size();
+        model.getObjects().removeIf(object -> object != null
+                && object.type == ObjectType.NOZZLE_CHANGER_POINT
+                && object.sourceKey != null && object.sourceKey.contains(":changer:"));
+        int removed = before - model.getObjects().size();
+        if (removed > 0) {
+            summary.updated += removed;
+            model.touch();
+        }
+
+        int docks = 0;
         for (NozzleTip nozzleTip : machine.getNozzleTips()) {
             if (!(nozzleTip instanceof ReferenceNozzleTip)) {
                 continue;
@@ -214,48 +343,103 @@ public final class SafetyWorkbenchImportService {
             ReferenceNozzleTip tip = (ReferenceNozzleTip) nozzleTip;
             Location[] locations = {tip.getChangerStartLocation(), tip.getChangerMidLocation(),
                     tip.getChangerMidLocation2(), tip.getChangerEndLocation()};
-            String[] labels = {"起点", "中点 1", "中点 2", "终点"};
-            boolean configured = false;
-            for (Location location : locations) {
-                configured |= isUsable(location) && !isOrigin(location);
-            }
-            if (!configured) {
+            Location docking = lastConfiguredLocation(locations);
+            if (docking == null) {
                 continue;
             }
-            for (int index = 0; index < locations.length; index++) {
-                if (!isUsable(locations[index])) {
-                    continue;
-                }
-                upsert(model, ObjectType.NOZZLE_CHANGER_POINT,
-                        "nozzle-tip:" + nozzleTip.getId() + ":changer:" + index,
-                        nozzleTip.getName() + " · 换嘴" + labels[index],
-                        locations[index], summary);
-                points++;
+            Location approach = firstDistinctLocation(locations, docking);
+            upsertNozzleChanger(model, nozzleTip, docking, approach, summary);
+            docks++;
+        }
+        if (docks > 0) {
+            summary.details.add("已同步带 U 形入口的自动换嘴实体坞 " + docks + " 个");
+            if (removed > 0) {
+                summary.details.add("已移除旧版自动换嘴路径点 " + removed + " 个");
             }
         }
-        if (points > 0) {
-            summary.details.add("已同步自动换吸嘴路径点 " + points + " 个");
-        }
         else {
-            summary.warnings.add("没有找到已配置的自动换吸嘴路径");
+            summary.warnings.add("没有找到已配置的自动换吸嘴位置");
         }
     }
 
+    private static Location lastConfiguredLocation(Location[] locations) {
+        for (int index = locations.length - 1; index >= 0; index--) {
+            if (isUsable(locations[index]) && !isOrigin(locations[index])) {
+                return locations[index];
+            }
+        }
+        return null;
+    }
+
+    private static Location firstDistinctLocation(Location[] locations, Location docking) {
+        Location end = docking.convertToUnits(LengthUnit.Millimeters);
+        for (Location candidate : locations) {
+            if (!isUsable(candidate) || isOrigin(candidate)) {
+                continue;
+            }
+            Location current = candidate.convertToUnits(LengthUnit.Millimeters);
+            if (Math.abs(current.getX() - end.getX()) > 0.001
+                    || Math.abs(current.getY() - end.getY()) > 0.001) {
+                return candidate;
+            }
+        }
+        return docking;
+    }
+
+    private static void upsertNozzleChanger(SafetyWorkbenchModel model, NozzleTip nozzleTip,
+            Location docking, Location approach, Summary summary) {
+        Location end = docking.convertToUnits(LengthUnit.Millimeters);
+        Location start = approach.convertToUnits(LengthUnit.Millimeters);
+        boolean approachAlongX = Math.abs(end.getX() - start.getX())
+                > Math.abs(end.getY() - start.getY());
+        SafetyObject object = findOrCreate(model,
+                "nozzle-tip:" + nozzleTip.getId() + ":changer:body", "", summary);
+        object.type = ObjectType.NOZZLE_CHANGER;
+        object.name = nozzleTip.getName() + " · 自动换嘴坞";
+        object.shape = SafetyWorkbenchModel.Shape.BOX;
+        object.width = approachAlongX ? 42 : 30;
+        object.depth = approachAlongX ? 30 : 42;
+        object.height = 32;
+        object.x = end.getX() - object.width / 2.0;
+        object.y = end.getY() - object.depth / 2.0;
+        object.z = finiteZ(end, model) - object.height;
+        object.apertureWidth = approachAlongX ? 26 : 12;
+        object.apertureDepth = approachAlongX ? 12 : 26;
+        object.clearance = 2;
+        object.obstacle = true;
+        object.locked = true;
+        object.enabled = true;
+        object.colorRgb = 0x52585C;
+        model.touch();
+    }
+
     private static void importFeederPickPoints(SafetyWorkbenchModel model, Machine machine,
-            Summary summary) {
+            Set<String> feederTypeKeys, Summary summary) {
+        if (feederTypeKeys != null && feederTypeKeys.isEmpty()) {
+            summary.warnings.add("没有选择任何飞达类型，已跳过飞达导入");
+            return;
+        }
         int points = 0;
+        int rearFacing = 0;
+        Map<String, Integer> importedByType = new LinkedHashMap<>();
+        Map<String, String> labelsByType = new LinkedHashMap<>();
         for (Feeder feeder : machine.getFeeders()) {
+            String typeKey = feederTypeKey(feeder);
+            if (feederTypeKeys != null && !feederTypeKeys.contains(typeKey)) {
+                continue;
+            }
             try {
                 Location location = feeder.getPickLocation();
                 if (!isUsable(location)) {
                     continue;
                 }
-                upsert(model, ObjectType.FEEDER_PICK_POINT,
-                        "feeder:" + feeder.getId() + ":pick",
-                        feeder.getName() + " · 取料点"
-                                + (feeder.isEnabled() ? "" : "（未启用）"),
-                        location, summary);
+                upsertFeeder(model, feeder, location, summary);
                 points++;
+                if (isRearFeeder(model, location)) {
+                    rearFacing++;
+                }
+                labelsByType.put(typeKey, feederTypeLabel(feeder));
+                importedByType.put(typeKey, importedByType.getOrDefault(typeKey, 0) + 1);
             }
             catch (Exception error) {
                 summary.warnings.add("飞达“" + feeder.getName() + "”取料点读取失败："
@@ -263,11 +447,124 @@ public final class SafetyWorkbenchImportService {
             }
         }
         if (points > 0) {
-            summary.details.add("已同步飞达取料点 " + points + " 个");
+            summary.details.add("已同步飞达实体与取料位置 " + points + " 个");
+            for (Map.Entry<String, Integer> entry : importedByType.entrySet()) {
+                summary.details.add("  " + labelsByType.get(entry.getKey())
+                        + "：" + entry.getValue() + " 个");
+            }
+            if (rearFacing > 0) {
+                summary.details.add("已识别并翻转后侧飞达 " + rearFacing
+                        + " 个，使取料端朝向工作区");
+            }
         }
         else {
-            summary.warnings.add("没有读取到可用的飞达取料点");
+            summary.warnings.add(feederTypeKeys == null
+                    ? "没有读取到可用的飞达取料点"
+                    : "所选飞达类型没有读取到可用的取料点");
         }
+    }
+
+    private static void importBottomCameras(SafetyWorkbenchModel model, Machine machine,
+            Summary summary) {
+        int cameras = 0;
+        for (Camera camera : machine.getCameras()) {
+            if (camera.getLooking() != Camera.Looking.Up) {
+                continue;
+            }
+            try {
+                Location location = camera.getLocation();
+                if (!isUsable(location)) {
+                    continue;
+                }
+                upsertBottomCamera(model, camera, location, summary);
+                cameras++;
+            }
+            catch (Exception error) {
+                summary.warnings.add("底部相机“" + camera.getName() + "”坐标读取失败："
+                        + error.getMessage());
+            }
+        }
+        if (cameras > 0) {
+            summary.details.add("已同步底部相机实体 " + cameras + " 个");
+        }
+        else {
+            summary.warnings.add("没有读取到向上看的底部相机");
+        }
+    }
+
+    private static void upsertFeeder(SafetyWorkbenchModel model, Feeder feeder,
+            Location location, Summary summary) {
+        Location millimeters = location.convertToUnits(LengthUnit.Millimeters);
+        SafetyObject object = findOrCreate(model, "feeder:" + feeder.getId() + ":body",
+                "feeder:" + feeder.getId() + ":pick", summary);
+        object.type = ObjectType.FEEDER;
+        object.name = feeder.getName() + (feeder.isEnabled() ? "" : "（未启用）");
+        object.shape = SafetyWorkbenchModel.Shape.BOX;
+        object.width = 24;
+        object.depth = 120;
+        object.height = 18;
+        object.x = millimeters.getX() - object.width / 2.0;
+        object.rearFacing = isRearFeeder(model, millimeters);
+        object.y = millimeters.getY() - object.depth
+                * (object.rearFacing ? 0.90 : 0.10);
+        object.z = finiteZ(millimeters, model) - object.height;
+        object.clearance = 3;
+        object.obstacle = true;
+        object.locked = true;
+        object.enabled = true;
+        object.colorRgb = 0x6E786F;
+        model.touch();
+    }
+
+    static boolean isRearFeeder(SafetyWorkbenchModel model, Location location) {
+        Location millimeters = location.convertToUnits(LengthUnit.Millimeters);
+        double middleY = (model.getMinY() + model.getMaxY()) / 2.0;
+        return Double.isFinite(millimeters.getY()) && millimeters.getY() > middleY;
+    }
+
+    private static void upsertBottomCamera(SafetyWorkbenchModel model, Camera camera,
+            Location location, Summary summary) {
+        Location millimeters = location.convertToUnits(LengthUnit.Millimeters);
+        SafetyObject object = findOrCreate(model, "camera:" + camera.getId() + ":body",
+                "", summary);
+        object.type = ObjectType.BOTTOM_CAMERA;
+        object.name = camera.getName();
+        object.shape = SafetyWorkbenchModel.Shape.BOX;
+        object.width = 70;
+        object.depth = 70;
+        object.height = 25;
+        object.x = millimeters.getX() - object.width / 2.0;
+        object.y = millimeters.getY() - object.depth / 2.0;
+        object.z = finiteZ(millimeters, model) - object.height;
+        object.apertureWidth = 28;
+        object.apertureDepth = 28;
+        object.clearance = 3;
+        object.obstacle = true;
+        object.locked = true;
+        object.enabled = true;
+        object.colorRgb = 0x526774;
+        model.touch();
+    }
+
+    private static SafetyObject findOrCreate(SafetyWorkbenchModel model, String sourceKey,
+            String legacySourceKey, Summary summary) {
+        for (SafetyObject candidate : model.getObjects()) {
+            if (sourceKey.equals(candidate.sourceKey)
+                    || (!legacySourceKey.isEmpty() && legacySourceKey.equals(candidate.sourceKey))) {
+                candidate.sourceKey = sourceKey;
+                summary.updated++;
+                return candidate;
+            }
+        }
+        SafetyObject object = model.createObject(ObjectType.CUSTOM);
+        object.sourceKey = sourceKey;
+        model.getObjects().add(object);
+        summary.created++;
+        return object;
+    }
+
+    private static double finiteZ(Location location, SafetyWorkbenchModel model) {
+        return Double.isFinite(location.getZ()) ? location.getZ() : model.getMinZ();
     }
 
     private static void upsert(SafetyWorkbenchModel model, ObjectType type, String sourceKey,
@@ -294,10 +591,40 @@ public final class SafetyWorkbenchImportService {
         object.x = millimeters.getX();
         object.y = millimeters.getY();
         object.z = Double.isFinite(millimeters.getZ()) ? millimeters.getZ() : model.getMinZ();
+        configureImportedReferenceEntity(object);
         object.obstacle = false;
         object.locked = true;
         object.enabled = true;
         model.touch();
+    }
+
+    private static void configureImportedReferenceEntity(SafetyObject object) {
+        object.clearance = 0;
+        object.apertureWidth = 0;
+        object.apertureDepth = 0;
+        if (object.type == ObjectType.HOME_POINT) {
+            object.shape = SafetyWorkbenchModel.Shape.BOX;
+            object.width = 36;
+            object.depth = 36;
+            object.height = 8;
+            object.colorRgb = 0x4E83A8;
+        }
+        else if (object.type == ObjectType.PARK_POINT) {
+            object.shape = SafetyWorkbenchModel.Shape.BOX;
+            object.width = 48;
+            object.depth = 48;
+            object.height = 10;
+            object.colorRgb = 0x607F94;
+        }
+        else if (object.type == ObjectType.DISCARD_POINT) {
+            object.shape = SafetyWorkbenchModel.Shape.CYLINDER;
+            object.width = 52;
+            object.depth = 52;
+            object.height = 24;
+            object.apertureWidth = 26;
+            object.apertureDepth = 26;
+            object.colorRgb = 0xA26F50;
+        }
     }
 
     private static Location axesHome(Machine machine) {

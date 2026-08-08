@@ -12,7 +12,6 @@ import java.util.Comparator;
 import java.util.Date;
 import java.util.List;
 import java.util.Locale;
-import java.util.concurrent.CopyOnWriteArrayList;
 
 import javax.imageio.ImageIO;
 
@@ -24,16 +23,19 @@ import org.openpnp.machine.reference.safety.SafetyCollisionEngine.ValidationResu
 import org.openpnp.machine.reference.safety.SafetyCollisionEngine.Waypoint;
 import org.openpnp.machine.reference.safety.SafetyWorkbenchModel;
 import org.openpnp.machine.reference.safety.SafetyWorkbenchStore;
+import org.openpnp.model.BoardLocation;
 import org.openpnp.model.BottomVisionSettings;
 import org.openpnp.model.Configuration;
 import org.openpnp.model.LengthUnit;
 import org.openpnp.model.Location;
 import org.openpnp.model.Part;
+import org.openpnp.model.Placement;
 import org.openpnp.spi.Camera;
 import org.openpnp.spi.MotionPlanner.CompletionType;
 import org.openpnp.spi.Nozzle;
 import org.openpnp.spi.PartAlignment.PartAlignmentOffset;
 import org.openpnp.util.MovableUtils;
+import org.openpnp.util.Utils2D;
 import org.openpnp.util.VisionUtils;
 import org.pmw.tinylog.Logger;
 
@@ -44,6 +46,9 @@ import org.pmw.tinylog.Logger;
  * bottom-vision path.
  */
 public final class FlyingBottomVisionService {
+    private static final long MIN_FRAME_BUFFER_BYTES = 48L * 1024 * 1024;
+    private static final long MAX_FRAME_BUFFER_BYTES = 128L * 1024 * 1024;
+
     public static final class FrameSample {
         private final BufferedImage image;
         private final long nanoTime;
@@ -79,14 +84,19 @@ public final class FlyingBottomVisionService {
         private final int successfulFrames;
         private final double sharpness;
         private final double elapsedMs;
+        private final boolean preRotated;
+        private final double wantedAngle;
 
         Result(PartAlignmentOffset offsets, int capturedFrames, int successfulFrames,
-                double sharpness, double elapsedMs) {
+                double sharpness, double elapsedMs, boolean preRotated,
+                double wantedAngle) {
             this.offsets = offsets;
             this.capturedFrames = capturedFrames;
             this.successfulFrames = successfulFrames;
             this.sharpness = sharpness;
             this.elapsedMs = elapsedMs;
+            this.preRotated = preRotated;
+            this.wantedAngle = wantedAngle;
         }
 
         public PartAlignmentOffset getOffsets() {
@@ -108,6 +118,14 @@ public final class FlyingBottomVisionService {
         public double getElapsedMs() {
             return elapsedMs;
         }
+
+        public boolean isPreRotated() {
+            return preRotated;
+        }
+
+        public double getWantedAngle() {
+            return wantedAngle;
+        }
     }
 
     private FlyingBottomVisionService() {
@@ -120,28 +138,30 @@ public final class FlyingBottomVisionService {
 
     public static Result execute(ReferenceBottomVision alignment, Part part,
             Nozzle nozzle) throws Exception {
+        return execute(alignment, part, null, null, nozzle);
+    }
+
+    public static Result execute(ReferenceBottomVision alignment, Part part,
+            BoardLocation boardLocation, Placement placement, Nozzle nozzle) throws Exception {
         if (!Configuration.get().getMachine().isEnabled()) {
             throw new Exception("Flying vision requires an enabled machine.");
         }
         if (!Configuration.get().getMachine().isHomed()) {
             throw new Exception("Flying vision requires a homed machine.");
         }
-        if (part == null || nozzle == null || nozzle.getPart() != part) {
+        if (part == null || nozzle == null
+                || !part.isInterchangeableWith(nozzle.getPart())) {
             throw new Exception("Flying vision requires the selected part on the nozzle.");
         }
         BottomVisionSettings visionSettings = alignment.getInheritedVisionSettings(part);
-        boolean preRotate = visionSettings.getPreRotateUsage()
-                == ReferenceBottomVision.PreRotateUsage.AlwaysOn
-                || (visionSettings.getPreRotateUsage()
-                        == ReferenceBottomVision.PreRotateUsage.Default
-                        && alignment.isPreRotate());
-        if (preRotate) {
-            throw new Exception("Flying vision currently requires post-rotate bottom vision.");
-        }
+        boolean preRotate = usesPreRotate(alignment, visionSettings);
+        double currentNozzleAngle = nozzle.getLocation().getRotation();
+        double wantedAngle = calculateWantedAngle(preRotate, boardLocation, placement,
+                currentNozzleAngle);
 
         Camera camera = VisionUtils.getBottomVisionCamera();
         long operationStarted = System.nanoTime();
-        List<FrameSample> frames = capturePass(alignment, part, nozzle, camera);
+        List<FrameSample> frames = capturePass(alignment, part, nozzle, camera, wantedAngle);
         if (frames.isEmpty()) {
             throw new Exception("No camera frames were received during the flying pass.");
         }
@@ -164,7 +184,7 @@ public final class FlyingBottomVisionService {
             }
             try {
                 PartAlignmentOffset offsets = alignment.analyzeExperimentalFrame(
-                        part, nozzle, camera, frame.getImage());
+                        part, nozzle, camera, frame.getImage(), wantedAngle, preRotate);
                 offsets = correctForMotion(offsets, frame);
                 validateOffsets(offsets);
                 successful++;
@@ -189,18 +209,25 @@ public final class FlyingBottomVisionService {
             saveFrames(part, candidates, bestFrame);
         }
         double elapsedMs = (System.nanoTime() - operationStarted) / 1_000_000.0;
-        Logger.info("Flying bottom vision part={} frames={} valid={} sharpness={} elapsedMs={}",
-                part.getId(), frames.size(), successful,
+        Logger.info("Flying bottom vision part={} mode={} angle={} frames={} valid={} sharpness={} elapsedMs={}",
+                part.getId(), preRotate ? "pre-rotate" : "post-rotate",
+                String.format(Locale.ROOT, "%.2f", wantedAngle),
+                frames.size(), successful,
                 String.format(Locale.ROOT, "%.2f", bestFrame.getSharpness()),
                 String.format(Locale.ROOT, "%.1f", elapsedMs));
         return new Result(bestOffsets, frames.size(), successful,
-                bestFrame.getSharpness(), elapsedMs);
+                bestFrame.getSharpness(), elapsedMs, preRotate, wantedAngle);
     }
 
     public static List<FrameSample> capturePass(ReferenceBottomVision alignment,
             Part part, Nozzle nozzle, Camera camera) throws Exception {
+        return capturePass(alignment, part, nozzle, camera, 0.0);
+    }
+
+    public static List<FrameSample> capturePass(ReferenceBottomVision alignment,
+            Part part, Nozzle nozzle, Camera camera, double wantedAngle) throws Exception {
         double speed = FlyingVisionSettings.getSpeed();
-        Location center = alignment.getCameraLocationAtPartHeight(part, camera, nozzle, 0.)
+        Location center = alignment.getCameraLocationAtPartHeight(part, camera, nozzle, wantedAngle)
                 .convertToUnits(LengthUnit.Millimeters);
         Location approach = center.derive(
                 center.getX() - FlyingVisionSettings.getApproachDistanceMm(),
@@ -237,11 +264,11 @@ public final class FlyingBottomVisionService {
 
         MovableUtils.moveToLocationAtSafeZ(nozzle, approach, Math.min(speed, 0.20));
         nozzle.waitForCompletion(CompletionType.WaitForStillstand);
-        List<FrameSample> frames = new CopyOnWriteArrayList<>();
-        int captureLimit = Math.max(30, FlyingVisionSettings.getFrameCount() * 5);
+        BoundedFrameCollector frames = new BoundedFrameCollector(
+                FlyingVisionSettings.getFrameCount(), Runtime.getRuntime().maxMemory());
         CameraListener listener = image -> {
-            if (image != null && frames.size() < captureLimit) {
-                frames.add(new FrameSample(copy(image), System.nanoTime()));
+            if (image != null) {
+                frames.offer(image, System.nanoTime());
             }
         };
         try {
@@ -256,20 +283,22 @@ public final class FlyingBottomVisionService {
             while (frames.size() < 3 && System.currentTimeMillis() < timeoutAt) {
                 Thread.sleep(20);
             }
-            frames.removeIf(frame -> frame.getNanoTime() < started
+            List<FrameSample> captured = frames.snapshot();
+            captured.removeIf(frame -> frame.getNanoTime() < started
                     || frame.getNanoTime() > finished + 150_000_000L);
             double duration = Math.max(1, finished - started);
             double latencyNs = FlyingVisionSettings.isTimestampCompensationEnabled()
                     ? FlyingVisionSettings.getCameraLatencyMs() * 1_000_000.0 : 0;
             double distance = FlyingVisionSettings.getApproachDistanceMm()
                     + FlyingVisionSettings.getExitDistanceMm();
-            for (FrameSample frame : frames) {
+            for (FrameSample frame : captured) {
                 double exposureTime = frame.getNanoTime() - latencyNs;
                 double fraction = Math.max(0, Math.min(1,
                         (exposureTime - started) / duration));
                 frame.pathOffsetXmm = -FlyingVisionSettings.getApproachDistanceMm()
                         + distance * fraction;
             }
+            return captured;
         }
         finally {
             try {
@@ -285,7 +314,107 @@ public final class FlyingBottomVisionService {
                 }
             }
         }
-        return new ArrayList<>(frames);
+    }
+
+    /**
+     * Bounds retained flying-vision frames by both the requested candidate count and a small
+     * fraction of the Java heap. A 4K BGR frame is roughly 24 MiB, so the previous fixed
+     * 30..150-frame buffer could exhaust a 768 MiB heap in a single pass.
+     */
+    static int frameBufferCapacity(int width, int height, int requestedFrames,
+            long maximumHeapBytes) {
+        long pixels = Math.max(1L, width) * Math.max(1L, height);
+        long estimatedFrameBytes = pixels > Long.MAX_VALUE / 3L
+                ? Long.MAX_VALUE : pixels * 3L;
+        long heapBudget = Math.max(MIN_FRAME_BUFFER_BYTES,
+                Math.min(MAX_FRAME_BUFFER_BYTES, Math.max(1L, maximumHeapBytes) / 8L));
+        long byMemory = Math.max(3L, heapBudget / Math.max(1L, estimatedFrameBytes));
+        long desired = Math.max(3L, Math.min(60L, Math.max(1L, requestedFrames) * 2L));
+        return (int) Math.max(3L, Math.min(desired, byMemory));
+    }
+
+    /** Thread-safe temporal decimator. It never queues unbounded camera frames. */
+    static final class BoundedFrameCollector {
+        private final int requestedFrames;
+        private final long maximumHeapBytes;
+        private final List<FrameSample> retained = new ArrayList<>();
+        private int capacity;
+        private long received;
+        private long stride = 1;
+
+        BoundedFrameCollector(int requestedFrames, long maximumHeapBytes) {
+            this.requestedFrames = requestedFrames;
+            this.maximumHeapBytes = maximumHeapBytes;
+        }
+
+        synchronized void offer(BufferedImage image, long nanoTime) {
+            if (image == null) {
+                return;
+            }
+            long index = received++;
+            if (capacity == 0) {
+                capacity = frameBufferCapacity(image.getWidth(), image.getHeight(),
+                        requestedFrames, maximumHeapBytes);
+            }
+            if (index % stride != 0) {
+                return;
+            }
+            if (retained.size() >= capacity) {
+                compact();
+                if (index % stride != 0) {
+                    return;
+                }
+            }
+            retained.add(new FrameSample(copy(image), nanoTime));
+        }
+
+        private void compact() {
+            List<FrameSample> compacted = new ArrayList<>((retained.size() + 1) / 2);
+            for (int index = 0; index < retained.size(); index += 2) {
+                compacted.add(retained.get(index));
+            }
+            retained.clear();
+            retained.addAll(compacted);
+            stride = Math.min(Long.MAX_VALUE / 2, stride * 2);
+        }
+
+        synchronized int size() {
+            return retained.size();
+        }
+
+        synchronized List<FrameSample> snapshot() {
+            return new ArrayList<>(retained);
+        }
+    }
+
+    static boolean usesPreRotate(ReferenceBottomVision alignment,
+            BottomVisionSettings settings) {
+        return usesPreRotate(settings.getPreRotateUsage(), alignment.isPreRotate());
+    }
+
+    static boolean usesPreRotate(ReferenceBottomVision.PreRotateUsage usage,
+            boolean defaultPreRotate) {
+        return usage == ReferenceBottomVision.PreRotateUsage.AlwaysOn
+                || (usage == ReferenceBottomVision.PreRotateUsage.Default && defaultPreRotate);
+    }
+
+    static double calculateWantedAngle(boolean preRotate, BoardLocation boardLocation,
+            Placement placement, double currentNozzleAngle) {
+        if (!preRotate) {
+            return 0.0;
+        }
+        double wantedAngle = currentNozzleAngle;
+        if (placement != null) {
+            wantedAngle = placement.getLocation().getRotation();
+            if (boardLocation != null) {
+                wantedAngle = Utils2D.calculateBoardPlacementLocation(
+                        boardLocation, placement.getLocation()).getRotation();
+            }
+        }
+        if (!Double.isFinite(wantedAngle)) {
+            wantedAngle = 0.0;
+        }
+        return Utils2D.angleNorm(wantedAngle, 180.0);
     }
 
     private static long estimateCenterTime(List<FrameSample> frames) {
@@ -309,9 +438,23 @@ public final class FlyingBottomVisionService {
 
     private static PartAlignmentOffset correctForMotion(PartAlignmentOffset result,
             FrameSample frame) {
+        return correctForMotion(result, frame.getPathOffsetXmm());
+    }
+
+    static PartAlignmentOffset correctForMotion(PartAlignmentOffset result,
+            double pathOffsetXmm) {
         Location location = result.getLocation().convertToUnits(LengthUnit.Millimeters);
+        Location pathOffset = new Location(LengthUnit.Millimeters,
+                pathOffsetXmm, 0, 0, 0);
+        if (result.getPreRotated()) {
+            // Pre-rotate analysis rotates the observed center offset by the
+            // residual angle. Apply the same transform to the known path motion
+            // before removing it, otherwise X travel leaks into Y correction.
+            pathOffset = pathOffset.rotateXy(-location.getRotation());
+        }
         Location corrected = location.derive(
-                location.getX() - frame.getPathOffsetXmm(), null, null, null);
+                location.getX() - pathOffset.getX(),
+                location.getY() - pathOffset.getY(), null, null);
         return new PartAlignmentOffset(corrected, result.getPreRotated());
     }
 

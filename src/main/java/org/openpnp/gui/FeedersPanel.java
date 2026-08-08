@@ -127,6 +127,7 @@ public class FeedersPanel extends JPanel implements WizardContainer {
     private String priorFeederId;
     private HashMap<Class, Integer> lastSelectedTabIndex = new HashMap<>();
     private Boolean applyChangesDialogPending = false;
+    private TaskFeederInspectionDialog taskFeederInspectionDialog;
     
     public FeedersPanel(Configuration configuration, MainFrame mainFrame) {
         this.configuration = configuration;
@@ -156,6 +157,8 @@ public class FeedersPanel extends JPanel implements WizardContainer {
         toolBar.add(feedFeederAction);
         toolBar.add(moveCameraToPickLocation);
         toolBar.add(moveToolToPickLocation);
+        toolBar.addSeparator();
+        toolBar.add(taskFeederInspectionAction);
 
         JPanel panel_1 = new JPanel();
         panel.add(panel_1, BorderLayout.EAST);
@@ -438,7 +441,7 @@ public class FeedersPanel extends JPanel implements WizardContainer {
             return;
         }
         SwingUtilities.invokeLater(() -> {
-            mainFrame.showTab("Feeders");
+            mainFrame.showTab(FeedersPanel.this);
             
             for (int i = 0; i < tableModel.getRowCount(); i++) {
                 if (tableModel.getRowObjectAt(i) == event.feeder) {
@@ -458,7 +461,7 @@ public class FeedersPanel extends JPanel implements WizardContainer {
      * @param part
      */
     public void showFeederForPart(Part part) {
-        mainFrame.showTab("Feeders");
+        mainFrame.showTab(this);
         searchTextField.setText("");
         search();
 
@@ -478,7 +481,8 @@ public class FeedersPanel extends JPanel implements WizardContainer {
     private Feeder findFeeder(Part part, boolean enabled) {
         for (int i = 0; i < tableModel.getRowCount(); i++) {
             Feeder feeder = tableModel.getRowObjectAt(i); 
-            if (feeder.getPart() == part && feeder.isEnabled() == enabled) {
+            if (part != null && part.isInterchangeableWith(feeder.getPart())
+                    && feeder.isEnabled() == enabled) {
                 return feeder;
             }
         }
@@ -610,6 +614,41 @@ public class FeedersPanel extends JPanel implements WizardContainer {
         @Override
         public void actionPerformed(ActionEvent arg0) {
             newFeeder(null);
+        }
+    };
+
+    public Action taskFeederInspectionAction = new AbstractAction() {
+        {
+            putValue(SMALL_ICON, Icons.feederInspect);
+            putValue(NAME, "检验");
+            putValue(SHORT_DESCRIPTION,
+                    "按当前任务逐个用顶部相机检验飞达拾取点，只保存 XY 和可选的四向角度");
+        }
+
+        @Override
+        public void actionPerformed(ActionEvent event) {
+            if (taskFeederInspectionDialog != null
+                    && taskFeederInspectionDialog.isDisplayable()) {
+                taskFeederInspectionDialog.setVisible(true);
+                taskFeederInspectionDialog.toFront();
+                return;
+            }
+            if (keepUnAppliedFeederConfigurationChanges()) {
+                return;
+            }
+            refreshUsageSnapshot();
+            List<Feeder> taskFeeders = configuration.getMachine().getFeeders().stream()
+                    .filter(feeder -> usageSnapshot != null && usageSnapshot.isUsed(feeder))
+                    .collect(Collectors.toList());
+            if (taskFeeders.isEmpty()) {
+                JOptionPane.showMessageDialog(FeedersPanel.this,
+                        "当前任务没有可匹配的飞达。请先加载任务，并为已启用贴装元件配置飞达。",
+                        "仅任务飞达检验", JOptionPane.INFORMATION_MESSAGE);
+                return;
+            }
+            taskFeederInspectionDialog = new TaskFeederInspectionDialog(mainFrame,
+                    FeedersPanel.this, taskFeeders, () -> taskFeederInspectionDialog = null);
+            taskFeederInspectionDialog.setVisible(true);
         }
     };
 
@@ -950,7 +989,8 @@ public class FeedersPanel extends JPanel implements WizardContainer {
         Helpers.selectObjectTableRow(table, feeder);
     }
     public void selectFeederForPart(Part part) {
-        if (getSelection() == null || getSelection().getPart() != part) {
+        if (getSelection() == null
+                || !part.isInterchangeableWith(getSelection().getPart())) {
             Feeder feeder = findFeeder(part, true);
             // Prefer enabled feeders but fall back to disabled ones.
             if (feeder == null) {

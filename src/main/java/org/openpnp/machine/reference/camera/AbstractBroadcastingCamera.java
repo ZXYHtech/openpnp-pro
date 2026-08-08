@@ -65,6 +65,7 @@ public abstract class AbstractBroadcastingCamera extends AbstractSettlingCamera 
     private volatile long previewCaptureSequence;
     private volatile long lastPreviewCaptureDurationNanos = -1;
     private volatile long lastPreviewLoopDurationNanos = -1;
+    private volatile long nextOpenRetryNanos;
 
     private static BufferedImage CAPTURE_ERROR_IMAGE = null;
 
@@ -301,6 +302,7 @@ public abstract class AbstractBroadcastingCamera extends AbstractSettlingCamera 
      */
     public synchronized void reinitialize() throws Exception {
         stop();
+        resetOpenRetry();
         ensureOpen();
         MovableUtils.fireTargetedUserAction(this);
     }
@@ -327,16 +329,45 @@ public abstract class AbstractBroadcastingCamera extends AbstractSettlingCamera 
             // we get calls to internalCapture() with an uninitialized Machine. 
             return false;
         }
-        if (!isOpen()) {
-            try {
-                open();
-            }
-            catch (Exception e) {
-                Logger.error(e);
-                return false;
-            }
+        if (isOpen()) {
+            nextOpenRetryNanos = 0;
+            return true;
         }
+
+        long now = System.nanoTime();
+        if (nextOpenRetryNanos != 0 && now < nextOpenRetryNanos) {
+            return false;
+        }
+        try {
+            open();
+        }
+        catch (Exception e) {
+            scheduleOpenRetry();
+            Logger.error(e);
+            return false;
+        }
+        if (!isOpen()) {
+            // Some camera backends report an unavailable device by returning from open()
+            // without creating a stream. Do not enumerate USB devices again for every preview
+            // frame and every safe-capture retry.
+            scheduleOpenRetry();
+            return false;
+        }
+        nextOpenRetryNanos = 0;
         return true;
+    }
+
+    protected long getOpenRetryDelayMillis() {
+        return 1000;
+    }
+
+    protected synchronized void resetOpenRetry() {
+        nextOpenRetryNanos = 0;
+    }
+
+    private void scheduleOpenRetry() {
+        nextOpenRetryNanos = System.nanoTime()
+                + Math.max(1, getOpenRetryDelayMillis()) * 1_000_000L;
     }
 
     public synchronized void open() throws Exception {

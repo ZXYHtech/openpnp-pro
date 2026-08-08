@@ -28,6 +28,7 @@ import javax.swing.border.TitledBorder;
 import org.jdesktop.beansbinding.AutoBinding.UpdateStrategy;
 import org.openpnp.gui.components.ComponentDecorators;
 import org.openpnp.gui.components.LocationButtonsPanel;
+import org.openpnp.gui.components.RotationDialButton;
 import org.openpnp.gui.support.AbstractConfigurationWizard;
 import org.openpnp.gui.support.DoubleConverter;
 import org.openpnp.gui.support.IdentifiableListCellRenderer;
@@ -184,7 +185,7 @@ public abstract class AbstractReferenceFeederConfigurationWizard
             textFieldLocationZ.setColumns(8);
 
             textFieldLocationC = new JTextField();
-            panelLocation.add(textFieldLocationC, "8, 4");
+            panelLocation.add(RotationDialButton.wrap(textFieldLocationC), "8, 4");
             textFieldLocationC.setColumns(8);
 
             locationButtonsPanel = new LocationButtonsPanel(textFieldLocationX, textFieldLocationY,

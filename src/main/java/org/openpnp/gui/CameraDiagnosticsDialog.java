@@ -6,6 +6,7 @@ package org.openpnp.gui;
 import java.awt.BorderLayout;
 import java.awt.Color;
 import java.awt.Dimension;
+import java.awt.Desktop;
 import java.awt.FlowLayout;
 import java.awt.FontMetrics;
 import java.awt.Graphics;
@@ -15,8 +16,10 @@ import java.awt.event.WindowAdapter;
 import java.awt.event.WindowEvent;
 import java.awt.image.BufferedImage;
 import java.io.File;
+import java.lang.management.ManagementFactory;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
+import java.nio.file.Path;
 import java.text.SimpleDateFormat;
 import java.util.ArrayList;
 import java.util.Date;
@@ -33,7 +36,6 @@ import javax.swing.JButton;
 import javax.swing.JCheckBox;
 import javax.swing.JComboBox;
 import javax.swing.JDialog;
-import javax.swing.JFileChooser;
 import javax.swing.JLabel;
 import javax.swing.JOptionPane;
 import javax.swing.JPanel;
@@ -46,8 +48,14 @@ import javax.swing.table.DefaultTableModel;
 
 import org.openpnp.CameraListener;
 import org.openpnp.gui.support.CameraPreviewMetrics;
+import org.openpnp.gui.support.CameraDiagnosticReport;
+import org.openpnp.gui.support.CameraDiagnosticReport.Phase;
+import org.openpnp.gui.support.CameraDiagnosticReport.Sample;
+import org.openpnp.gui.support.ExperimentalGuide;
+import org.openpnp.gui.support.ExperimentalGuide.Step;
 import org.openpnp.gui.support.CameraPreviewMetrics.Snapshot;
 import org.openpnp.gui.support.ModernTheme;
+import org.openpnp.gui.support.PathSelectionDialog;
 import org.openpnp.machine.reference.camera.AbstractBroadcastingCamera;
 import org.openpnp.machine.reference.camera.OpenCvCamera;
 import org.openpnp.machine.reference.camera.OpenCvCamera.OpenCvCaptureProperty;
@@ -91,7 +99,9 @@ public class CameraDiagnosticsDialog extends JDialog {
     private final JCheckBox monitorAll = new JCheckBox("同时监测全部相机（USB 带宽对比）");
     private final JCheckBox keepLightOn = new JCheckBox("预览期间保持所选相机灯光常亮");
     private final JButton start = new JButton("▶ 启动高速预览测试");
+    private final JButton oneClick = new JButton("一键完整诊断（约 1 分钟）");
     private final JButton stop = new JButton("■ 停止并恢复");
+    private final JButton openReport = new JButton("打开报告目录");
     private final JLabel state = new JLabel("尚未开始。诊断功能不会运行视觉 Pipeline。");
     private final PreviewSurface preview = new PreviewSurface();
     private final DefaultTableModel metricModel =
@@ -123,8 +133,13 @@ public class CameraDiagnosticsDialog extends JDialog {
     private volatile Map<Camera, Probe> lastProbes = new LinkedHashMap<>();
     private volatile Camera displayCamera;
     private volatile boolean sessionRequested;
+    private volatile boolean suiteRequested;
+    private volatile boolean suiteRunning;
+    private volatile double suiteDisplayFps = 30;
+    private volatile Path lastReportDirectory;
     private volatile boolean closing;
     private long lastLoggedSecond = -1;
+    private ExperimentalGuide guide;
 
     public CameraDiagnosticsDialog(MainFrame owner) {
         super(owner, "实验模式 · 相机诊断与高速预览", false);
@@ -142,11 +157,13 @@ public class CameraDiagnosticsDialog extends JDialog {
         buildUi();
         loadCameras();
         wireActions();
-        statsTimer.start();
+        guide = createGuide();
+        guide.startOnFirstOpen();
         addWindowListener(new WindowAdapter() {
             @Override
             public void windowClosed(WindowEvent event) {
                 closing = true;
+                suiteRequested = false;
                 stopSession();
                 statsTimer.stop();
                 displayTimer.stop();
@@ -175,6 +192,8 @@ public class CameraDiagnosticsDialog extends JDialog {
         controls.add(first);
 
         JPanel second = new JPanel(new FlowLayout(FlowLayout.LEFT, 10, 2));
+        oneClick.setToolTipText("自动运行固定对比矩阵并保存逐秒、汇总和中文分析报告");
+        second.add(oneClick);
         second.add(monitorAll);
         second.add(keepLightOn);
         JLabel warning = new JLabel("灯光常亮仅用于实验，注意温升；停止或异常时恢复进入测试前的状态。");
@@ -212,11 +231,16 @@ public class CameraDiagnosticsDialog extends JDialog {
         bottom.add(lights, BorderLayout.CENTER);
 
         JPanel actions = new JPanel(new FlowLayout(FlowLayout.RIGHT, 8, 2));
+        JButton followGuide = new JButton("跟着做");
+        followGuide.addActionListener(event -> guide.start());
         JButton export = new JButton("导出 CSV");
         export.addActionListener(event -> exportCsv());
         JButton close = new JButton("关闭");
         close.addActionListener(event -> dispose());
+        actions.add(followGuide);
         actions.add(export);
+        openReport.setEnabled(false);
+        actions.add(openReport);
         actions.add(close);
         bottom.add(actions, BorderLayout.EAST);
         root.add(bottom, BorderLayout.SOUTH);
@@ -227,6 +251,30 @@ public class CameraDiagnosticsDialog extends JDialog {
         metricTable.getColumnModel().getColumn(2).setPreferredWidth(260);
     }
 
+    private ExperimentalGuide createGuide() {
+        return new ExperimentalGuide(this, "camera-diagnostics", "相机诊断与高速预览",
+                new Step("选择要诊断的相机",
+                        "选择作为主对比对象的顶部或底部相机。诊断只监听连续预览，不运行视觉 Pipeline。",
+                        () -> cameraChoice, () -> cameraChoice.getSelectedItem() != null),
+                new Step("启动一键完整诊断",
+                        "推荐直接点击“一键完整诊断”。它会自动比较单相机、全部相机和显示负载，约一分钟后生成三份报告。",
+                        () -> oneClick, () -> sessionRequested || lastReportDirectory != null),
+                new Step("等待自动阶段完成",
+                        "每阶段先预热再逐秒采样。期间不会开灯、移动贴装头或运行视觉 Pipeline；可随时点击停止安全取消。",
+                        () -> state, () -> lastReportDirectory != null),
+                new Step("观察实时数据",
+                        "运行时可观察接收 FPS、抖动、最大卡顿、原始取帧、图像变换、预览循环和 UI 绘制耗时。",
+                        () -> metricTable, () -> metricTable.getRowCount() > 0),
+                new Step("查看全部相机对比",
+                        "全部相机阶段会同时记录每台相机。若 FPS 同时下降或抖动升高，报告会提示 USB、解码或 CPU 竞争。",
+                        () -> camerasTable, () -> camerasTable.getRowCount() > 0),
+                new Step("打开完整报告",
+                        "完成后点击“打开报告目录”。summary.csv 用于横向对比，timeseries.csv 用于定位秒级卡顿，analysis.txt 给出中文结论。",
+                        () -> openReport, () -> lastReportDirectory != null),
+                new Step("按需手动复测",
+                        "需要验证特殊帧率时，再使用上方目标采集、目标显示和“启动高速预览测试”。灯光常亮只用于短时画质检查。",
+                        () -> start, () -> true));
+    }
     private void loadCameras() {
         Camera current = owner.getCameraViews().getSelectedCamera();
         for (Camera camera : Configuration.get().getMachine().getAllCameras()) {
@@ -244,7 +292,9 @@ public class CameraDiagnosticsDialog extends JDialog {
 
     private void wireActions() {
         start.addActionListener(event -> startSession());
+        oneClick.addActionListener(event -> runCompleteDiagnostics());
         stop.addActionListener(event -> stopSession());
+        openReport.addActionListener(event -> openReportDirectory());
         displayRate.addActionListener(event -> {
             displayTimer.setDelay(displayDelay());
             displayTimer.setInitialDelay(displayDelay());
@@ -263,9 +313,309 @@ public class CameraDiagnosticsDialog extends JDialog {
     }
 
     private int displayDelay() {
+        if (suiteRunning) {
+            return Math.max(8, (int) Math.round(1000.0 / suiteDisplayFps));
+        }
         RateOption option = (RateOption) displayRate.getSelectedItem();
         double rate = option == null ? 30 : option.fps;
         return Math.max(8, (int) Math.round(1000.0 / rate));
+    }
+
+    private void runCompleteDiagnostics() {
+        if (!ExperimentalMotionCenterDialog.isExperimentalModeEnabled()) {
+            JOptionPane.showMessageDialog(this, "请先在“窗口”菜单中启用实验模式。",
+                    "实验模式未开启", JOptionPane.WARNING_MESSAGE);
+            return;
+        }
+        Camera selected = (Camera) cameraChoice.getSelectedItem();
+        if (selected == null || sessionRequested || suiteRunning) {
+            return;
+        }
+        List<Camera> allCameras = new ArrayList<>(
+                Configuration.get().getMachine().getAllCameras());
+        List<Phase> phases = CameraDiagnosticReport.standardPlan(allCameras.size());
+        sessionRequested = true;
+        suiteRequested = true;
+        suiteRunning = true;
+        displayCamera = selected;
+        lastReportDirectory = null;
+        openReport.setEnabled(false);
+        start.setEnabled(false);
+        oneClick.setEnabled(false);
+        stop.setEnabled(true);
+        captureRate.setEnabled(false);
+        displayRate.setEnabled(false);
+        monitorAll.setEnabled(false);
+        keepLightOn.setEnabled(false);
+        cameraChoice.setEnabled(false);
+        preview.clear();
+        state.setText("正在准备一键完整诊断；不会移动机器或运行视觉 Pipeline…");
+        cameraControl.submit(() -> executeCompleteDiagnostics(selected, allCameras, phases));
+    }
+
+    private void executeCompleteDiagnostics(Camera selected, List<Camera> allCameras,
+            List<Phase> phases) {
+        List<Sample> samples = new ArrayList<>();
+        Path reportDirectory = null;
+        boolean completed = true;
+        String failure = null;
+        try {
+            String folder = new SimpleDateFormat("yyyyMMdd-HHmmss").format(new Date());
+            reportDirectory = Configuration.get().getConfigurationDirectory().toPath()
+                    .resolve("camera-diagnostics").resolve(folder);
+            Files.createDirectories(reportDirectory);
+            for (int phaseIndex = 0; phaseIndex < phases.size(); phaseIndex++) {
+                if (!suiteRequested || closing) {
+                    completed = false;
+                    break;
+                }
+                Phase phase = phases.get(phaseIndex);
+                suiteDisplayFps = phase.displayFps;
+                List<Camera> phaseCameras = new ArrayList<>();
+                if (phase.allCameras) {
+                    phaseCameras.addAll(allCameras);
+                }
+                else {
+                    phaseCameras.add(selected);
+                }
+                Map<Camera, Probe> opened = new LinkedHashMap<>();
+                for (Camera camera : phaseCameras) {
+                    Probe probe = new Probe(camera, phase.captureFps);
+                    probe.open();
+                    opened.put(camera, probe);
+                }
+                probes = opened;
+                lastProbes = new LinkedHashMap<>();
+                int displayDelayMs = Math.max(8,
+                        (int) Math.round(1000.0 / phase.displayFps));
+                int currentPhase = phaseIndex + 1;
+                SwingUtilities.invokeLater(() -> {
+                    displayTimer.setDelay(displayDelayMs);
+                    displayTimer.setInitialDelay(displayDelayMs);
+                    preview.setMetrics(opened.get(displayCamera) == null ? null
+                            : opened.get(displayCamera).metrics);
+                    displayTimer.start();
+                    statsTimer.start();
+                    state.setText("完整诊断 " + currentPhase + "/" + phases.size() + "："
+                            + phase.name + "，预热 "
+                            + CameraDiagnosticReport.WARMUP_SECONDS + " 秒…");
+                });
+                if (!waitSeconds(CameraDiagnosticReport.WARMUP_SECONDS)) {
+                    completed = false;
+                }
+                if (completed) {
+                    long measurementStart = System.nanoTime();
+                    for (Probe probe : opened.values()) {
+                        probe.metrics.reset(measurementStart);
+                    }
+                }
+                for (int second = 1; completed
+                        && second <= CameraDiagnosticReport.SAMPLE_SECONDS; second++) {
+                    if (!waitSeconds(1)) {
+                        completed = false;
+                        break;
+                    }
+                    samples.addAll(captureSamples(opened, selected, phase, currentPhase,
+                            phases.size(), second));
+                    int sampledSecond = second;
+                    SwingUtilities.invokeLater(() -> state.setText("完整诊断 "
+                            + currentPhase + "/" + phases.size() + "：" + phase.name
+                            + "，采样 " + sampledSecond + "/"
+                            + CameraDiagnosticReport.SAMPLE_SECONDS + " 秒"));
+                }
+                probes = new LinkedHashMap<>();
+                lastProbes = opened;
+                closeProbes(opened);
+                if (!completed) {
+                    break;
+                }
+            }
+            if (!samples.isEmpty()) {
+                String environment = environmentDescription(completed, phases.size(),
+                        allCameras.size());
+                List<CameraDiagnosticReport.Summary> summaries =
+                        CameraDiagnosticReport.summarize(samples);
+                writeUtf8Bom(reportDirectory.resolve("timeseries.csv"),
+                        CameraDiagnosticReport.timeSeriesCsv(samples));
+                writeUtf8Bom(reportDirectory.resolve("summary.csv"),
+                        CameraDiagnosticReport.summaryCsv(summaries));
+                Files.write(reportDirectory.resolve("analysis.txt"),
+                        CameraDiagnosticReport.analysisText(summaries, environment)
+                                .getBytes(StandardCharsets.UTF_8));
+                lastReportDirectory = reportDirectory;
+            }
+        }
+        catch (Exception error) {
+            completed = false;
+            failure = shortError(error);
+            Logger.error(error);
+        }
+        finally {
+            Map<Camera, Probe> remaining = probes;
+            probes = new LinkedHashMap<>();
+            if (!remaining.isEmpty()) {
+                lastProbes = remaining;
+                closeProbes(remaining);
+            }
+            sessionRequested = false;
+            suiteRequested = false;
+            suiteRunning = false;
+            String finalFailure = failure;
+            boolean finalCompleted = completed;
+            SwingUtilities.invokeLater(() -> finishCompleteDiagnostics(finalCompleted,
+                    finalFailure));
+        }
+    }
+
+    private List<Sample> captureSamples(Map<Camera, Probe> opened, Camera selected,
+            Phase phase, int phaseIndex, int phaseTotal, int sampleSecond) {
+        List<Sample> samples = new ArrayList<>();
+        double[] load = systemLoad();
+        double heapUsed = ManagementFactory.getMemoryMXBean().getHeapMemoryUsage().getUsed()
+                / (1024.0 * 1024.0);
+        String now = new SimpleDateFormat("yyyy-MM-dd HH:mm:ss.SSS").format(new Date());
+        for (Probe probe : opened.values()) {
+            Snapshot snapshot = probe.metrics.snapshot(System.nanoTime());
+            BufferedImage image = probe.lastFrame;
+            Sample sample = new Sample();
+            sample.time = now;
+            sample.phaseId = phase.id;
+            sample.phaseName = phase.name;
+            sample.phaseIndex = phaseIndex;
+            sample.phaseTotal = phaseTotal;
+            sample.allCameras = phase.allCameras;
+            sample.sampleSecond = sampleSecond;
+            sample.camera = probe.camera.getName();
+            sample.primaryCamera = probe.camera == selected;
+            sample.looking = String.valueOf(probe.camera.getLooking());
+            sample.driver = probe.camera.getClass().getSimpleName();
+            sample.configuredResolution = probe.camera.getWidth() + "x"
+                    + probe.camera.getHeight();
+            sample.outputResolution = image == null ? sample.configuredResolution
+                    : image.getWidth() + "x" + image.getHeight();
+            sample.format = describeFormat(probe.camera);
+            sample.captureTargetFps = phase.captureFps;
+            sample.displayTargetFps = phase.displayFps;
+            sample.captureFps = snapshot.captureFps;
+            sample.displayFps = snapshot.displayFps;
+            sample.rawCaptureAverageMs = snapshot.rawCaptureAverageMs;
+            sample.captureAverageMs = snapshot.captureAverageMs;
+            sample.processingAverageMs = snapshot.processingAverageMs;
+            sample.previewLoopAverageMs = snapshot.previewLoopAverageMs;
+            sample.renderAverageMs = snapshot.renderAverageMs;
+            sample.frameIntervalAverageMs = snapshot.frameIntervalAverageMs;
+            sample.jitterMs = snapshot.frameIntervalJitterMs;
+            sample.maximumStallMs = snapshot.maximumStallMs;
+            sample.receivedFrames = snapshot.receivedFrames;
+            sample.displayedFrames = snapshot.displayedFrames;
+            sample.droppedFrames = snapshot.droppedFrames;
+            sample.duplicateFrames = snapshot.duplicateFrames;
+            sample.processCpuPercent = load[0];
+            sample.systemCpuPercent = load[1];
+            sample.heapUsedMb = heapUsed;
+            sample.exposure = describeExposure(probe.camera);
+            sample.gain = describeGain(probe.camera);
+            sample.brightness = describeBrightness(probe.camera);
+            sample.light = describeLight(probe.camera);
+            sample.error = probe.error == null ? "" : probe.error;
+            samples.add(sample);
+        }
+        return samples;
+    }
+
+    private boolean waitSeconds(int seconds) {
+        for (int tick = 0; tick < seconds * 10; tick++) {
+            if (!suiteRequested || closing) {
+                return false;
+            }
+            try {
+                Thread.sleep(100);
+            }
+            catch (InterruptedException error) {
+                Thread.currentThread().interrupt();
+                return false;
+            }
+        }
+        return suiteRequested && !closing;
+    }
+
+    private void finishCompleteDiagnostics(boolean completed, String failure) {
+        displayTimer.stop();
+        statsTimer.stop();
+        start.setEnabled(cameraChoice.getItemCount() > 0 && !closing);
+        oneClick.setEnabled(cameraChoice.getItemCount() > 0 && !closing);
+        stop.setEnabled(false);
+        captureRate.setEnabled(true);
+        displayRate.setEnabled(true);
+        monitorAll.setEnabled(true);
+        keepLightOn.setEnabled(true);
+        cameraChoice.setEnabled(true);
+        openReport.setEnabled(lastReportDirectory != null);
+        refreshStatistics();
+        if (closing) {
+            return;
+        }
+        if (failure != null) {
+            state.setText("完整诊断失败：" + failure);
+        }
+        else if (lastReportDirectory == null) {
+            state.setText("完整诊断已取消，尚未形成有效采样。");
+        }
+        else {
+            state.setText((completed ? "完整诊断完成：" : "完整诊断已取消，部分报告已保存：")
+                    + lastReportDirectory.toAbsolutePath());
+        }
+    }
+
+    private void openReportDirectory() {
+        Path directory = lastReportDirectory;
+        if (directory == null || !Files.isDirectory(directory)) {
+            state.setText("尚未生成一键诊断报告。");
+            return;
+        }
+        try {
+            if (!Desktop.isDesktopSupported()) {
+                throw new IllegalStateException("当前系统不支持打开目录");
+            }
+            Desktop.getDesktop().open(directory.toFile());
+        }
+        catch (Exception error) {
+            UiUtils.showError(this, "打开诊断报告目录失败", error);
+        }
+    }
+
+    private static double[] systemLoad() {
+        java.lang.management.OperatingSystemMXBean bean =
+                ManagementFactory.getOperatingSystemMXBean();
+        if (bean instanceof com.sun.management.OperatingSystemMXBean) {
+            com.sun.management.OperatingSystemMXBean extended =
+                    (com.sun.management.OperatingSystemMXBean) bean;
+            return new double[] {percent(extended.getProcessCpuLoad()),
+                    percent(extended.getSystemCpuLoad())};
+        }
+        return new double[] {Double.NaN, Double.NaN};
+    }
+
+    private static double percent(double load) {
+        return load < 0 || !Double.isFinite(load) ? Double.NaN : load * 100;
+    }
+
+    private static String environmentDescription(boolean completed, int phaseCount,
+            int cameraCount) {
+        Runtime runtime = Runtime.getRuntime();
+        return "状态=" + (completed ? "完成" : "部分/已取消") + "\r\n"
+                + "阶段数=" + phaseCount + "\r\n"
+                + "相机数=" + cameraCount + "\r\n"
+                + "操作系统=" + System.getProperty("os.name") + " "
+                + System.getProperty("os.version") + " " + System.getProperty("os.arch")
+                + "\r\nJava=" + System.getProperty("java.version")
+                + "\r\n逻辑处理器=" + runtime.availableProcessors()
+                + "\r\nJVM最大内存MB="
+                + String.format(Locale.US, "%.0f", runtime.maxMemory() / (1024.0 * 1024.0));
+    }
+
+    private static void writeUtf8Bom(Path path, String content) throws Exception {
+        Files.write(path, ("\ufeff" + content).getBytes(StandardCharsets.UTF_8));
     }
 
     private void startSession() {
@@ -281,6 +631,7 @@ public class CameraDiagnosticsDialog extends JDialog {
         sessionRequested = true;
         displayCamera = selected;
         start.setEnabled(false);
+        oneClick.setEnabled(false);
         stop.setEnabled(true);
         captureRate.setEnabled(false);
         monitorAll.setEnabled(false);
@@ -326,6 +677,7 @@ public class CameraDiagnosticsDialog extends JDialog {
                 preview.setMetrics(opened.get(displayCamera) == null ? null
                         : opened.get(displayCamera).metrics);
                 displayTimer.start();
+                statsTimer.start();
                 state.setText(all
                         ? "正在同时监测全部相机；预览区只绘制当前所选相机的最新帧。"
                         : "高速预览测试运行中；旧帧不会排队，UI 跟不上时自动丢弃。");
@@ -336,9 +688,19 @@ public class CameraDiagnosticsDialog extends JDialog {
     }
 
     private void stopSession() {
+        if (suiteRunning) {
+            suiteRequested = false;
+            sessionRequested = false;
+            displayTimer.stop();
+            statsTimer.stop();
+            stop.setEnabled(false);
+            state.setText("正在取消完整诊断并恢复全部相机状态…");
+            return;
+        }
         boolean wasRequested = sessionRequested;
         sessionRequested = false;
         displayTimer.stop();
+        statsTimer.stop();
         Map<Camera, Probe> toClose = probes;
         probes = new LinkedHashMap<>();
         if (!toClose.isEmpty()) {
@@ -348,6 +710,7 @@ public class CameraDiagnosticsDialog extends JDialog {
             state.setText("正在停止并恢复相机预览参数与灯光状态…");
         }
         start.setEnabled(cameraChoice.getItemCount() > 0 && !closing);
+        oneClick.setEnabled(cameraChoice.getItemCount() > 0 && !closing);
         stop.setEnabled(false);
         captureRate.setEnabled(true);
         monitorAll.setEnabled(true);
@@ -356,6 +719,7 @@ public class CameraDiagnosticsDialog extends JDialog {
             closeProbes(toClose);
             Logger.info("OpenPnP Pro camera diagnostics stopped.");
             SwingUtilities.invokeLater(() -> {
+                refreshStatistics();
                 if (!closing) {
                     state.setText("测试已停止；相机预览帧率和灯光已恢复。");
                 }
@@ -416,6 +780,15 @@ public class CameraDiagnosticsDialog extends JDialog {
                                 snapshot.captureAverageMs, snapshot.captureMinimumMs,
                                 snapshot.captureMaximumMs),
                 "仅统计预览线程主动 captureTransformed 的耗时");
+        addMetric("原始取帧耗时", snapshot.rawCaptureAverageMs <= 0 ? "驱动未提供"
+                : formatNumber(snapshot.rawCaptureAverageMs) + " ms",
+                "从相机驱动取得原始图像，不包含后续变换");
+        addMetric("图像变换耗时", snapshot.processingAverageMs <= 0 ? "驱动未提供"
+                : formatNumber(snapshot.processingAverageMs) + " ms",
+                "旋转、裁剪、镜头校正及颜色变换的平均耗时");
+        addMetric("预览循环耗时", snapshot.previewLoopAverageMs <= 0 ? "驱动未提供"
+                : formatNumber(snapshot.previewLoopAverageMs) + " ms",
+                "取帧、变换和广播完成前的线程占用时间");
         addMetric("帧间隔平均值", formatNumber(snapshot.frameIntervalAverageMs) + " ms",
                 "相机回调之间的平均间隔");
         addMetric("帧间隔抖动", formatNumber(snapshot.frameIntervalJitterMs) + " ms",
@@ -456,9 +829,6 @@ public class CameraDiagnosticsDialog extends JDialog {
                     probe.error == null ? "正常" : probe.error
             });
         }
-        addMetric("图像变换耗时", snapshot.processingAverageMs <= 0 ? "驱动未提供"
-                : formatNumber(snapshot.processingAverageMs) + " ms",
-                "旋转、裁剪、镜头校正及颜色变换的平均耗时");
         if (sessionRequested && selected != null) {
             long elapsedSecond = snapshot.elapsedMillis / 1000;
             if (elapsedSecond != lastLoggedSecond) {
@@ -543,18 +913,23 @@ public class CameraDiagnosticsDialog extends JDialog {
                     "相机诊断", JOptionPane.INFORMATION_MESSAGE);
             return;
         }
-        JFileChooser chooser = new JFileChooser(Configuration.get().getConfigurationDirectory());
-        chooser.setSelectedFile(new File("camera-diagnostics-"
-                + new SimpleDateFormat("yyyyMMdd-HHmmss").format(new Date()) + ".csv"));
-        if (chooser.showSaveDialog(this) != JFileChooser.APPROVE_OPTION) {
+        File file = PathSelectionDialog.chooseSave(this, "camera-diagnostics-export",
+                "导出相机诊断数据",
+                new File("camera-diagnostics-"
+                        + new SimpleDateFormat("yyyyMMdd-HHmmss").format(new Date()) + ".csv"),
+                Configuration.get().getConfigurationDirectory(),
+                new javax.swing.filechooser.FileNameExtensionFilter("CSV 数据 (*.csv)", "csv"));
+        if (file == null) {
             return;
         }
         try {
             StringBuilder csv = new StringBuilder();
             csv.append("time,camera,looking,driver,resolution,format,configured_fps,")
-                    .append("capture_fps,display_fps,capture_avg_ms,processing_avg_ms,")
+                    .append("capture_fps,display_fps,raw_capture_avg_ms,capture_avg_ms,")
+                    .append("processing_avg_ms,preview_loop_avg_ms,render_avg_ms,")
                     .append("frame_interval_ms,")
-                    .append("jitter_ms,max_stall_ms,dropped_frames,duplicate_frames,")
+                    .append("jitter_ms,max_stall_ms,received_frames,displayed_frames,")
+                    .append("dropped_frames,duplicate_frames,")
                     .append("exposure,gain,light,pipeline_enabled,test_duration_ms,error\n");
             String now = new SimpleDateFormat("yyyy-MM-dd HH:mm:ss").format(new Date());
             for (Probe probe : source.values()) {
@@ -572,11 +947,16 @@ public class CameraDiagnosticsDialog extends JDialog {
                         .append(formatNumber(probe.targetFps)).append(',')
                         .append(formatNumber(snapshot.captureFps)).append(',')
                         .append(formatNumber(snapshot.displayFps)).append(',')
+                        .append(formatNumber(snapshot.rawCaptureAverageMs)).append(',')
                         .append(formatNumber(snapshot.captureAverageMs)).append(',')
                         .append(formatNumber(snapshot.processingAverageMs)).append(',')
+                        .append(formatNumber(snapshot.previewLoopAverageMs)).append(',')
+                        .append(formatNumber(snapshot.renderAverageMs)).append(',')
                         .append(formatNumber(snapshot.frameIntervalAverageMs)).append(',')
                         .append(formatNumber(snapshot.frameIntervalJitterMs)).append(',')
                         .append(formatNumber(snapshot.maximumStallMs)).append(',')
+                        .append(snapshot.receivedFrames).append(',')
+                        .append(snapshot.displayedFrames).append(',')
                         .append(snapshot.droppedFrames).append(',')
                         .append(snapshot.duplicateFrames).append(',')
                         .append(csv(describeExposure(probe.camera))).append(',')
@@ -586,9 +966,9 @@ public class CameraDiagnosticsDialog extends JDialog {
                         .append(snapshot.elapsedMillis).append(',')
                         .append(csv(probe.error == null ? "" : probe.error)).append('\n');
             }
-            Files.write(chooser.getSelectedFile().toPath(),
+            Files.write(file.toPath(),
                     ("\ufeff" + csv).getBytes(StandardCharsets.UTF_8));
-            state.setText("诊断报告已导出：" + chooser.getSelectedFile().getAbsolutePath());
+            state.setText("诊断报告已导出：" + file.getAbsolutePath());
         }
         catch (Exception error) {
             UiUtils.showError(this, "导出相机诊断失败", error);
@@ -792,9 +1172,14 @@ public class CameraDiagnosticsDialog extends JDialog {
                     lastCaptureSequence = sequence;
                     metrics.recordCaptureDuration(
                             broadcasting.getLastPreviewCaptureDurationMillis(), now);
+                    metrics.recordPreviewLoopDuration(
+                            broadcasting.getLastPreviewLoopDurationMillis(), now);
                     if (camera instanceof ReferenceCamera) {
-                        metrics.recordProcessingDuration(((ReferenceCamera) camera)
-                                .getLastImageTransformDurationMillis(), now);
+                        ReferenceCamera reference = (ReferenceCamera) camera;
+                        metrics.recordRawCaptureDuration(
+                                reference.getLastRawCaptureDurationMillis(), now);
+                        metrics.recordProcessingDuration(
+                                reference.getLastImageTransformDurationMillis(), now);
                     }
                 }
             }
@@ -818,6 +1203,7 @@ public class CameraDiagnosticsDialog extends JDialog {
             finally {
                 listenerStarted = false;
                 pending.set(null);
+                lastFrame = null;
                 restoreFps();
                 if (lightManaged) {
                     restoreLight(this);

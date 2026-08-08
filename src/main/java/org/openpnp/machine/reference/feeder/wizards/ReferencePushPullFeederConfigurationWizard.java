@@ -48,6 +48,7 @@ import org.openpnp.events.FeederSelectedEvent;
 import org.openpnp.gui.MainFrame;
 import org.openpnp.gui.components.ComponentDecorators;
 import org.openpnp.gui.components.LocationButtonsPanel;
+import org.openpnp.gui.components.RotationDialButton;
 import org.openpnp.gui.processes.RegionOfInterestProcess;
 import org.openpnp.gui.support.DoubleConverter;
 import org.openpnp.gui.support.Icons;
@@ -242,7 +243,7 @@ extends AbstractReferenceFeederConfigurationWizard {
         lblRotation.setToolTipText("<html>Rotation of the part inside the tape as seen when the sprocket holes <br/>\r\nare on top. Your E-CAD part orientation is the reference.<br/>\r\nSee also: \r\n<ul>\r\n<li>EIA-481</li>\r\n<li>Component Zero Orientations for CAD Libraries</li>\r\n</ul>\r\n</html>");
 
         textFieldRotationInTape = new JTextField();
-        panelTape.add(textFieldRotationInTape, "8, 2");
+        panelTape.add(RotationDialButton.wrap(textFieldRotationInTape), "8, 2");
         textFieldRotationInTape.setToolTipText("<html>\n<p>The <strong>Rotation in Tape</strong> setting must be interpreted relative to the tape's orientation, <br/>\nregardless of how the feeder/tape is oriented on the machine. </p>\n<ol>\n<li>\n<p>Look at the <strong>neutral</strong> upright orientation of the part package/footprint <br/>\nas drawn inside your E-CAD <strong>library</strong>.</p>\n</li>\n<li>\n<p>Note how pin 1, polarity, cathode etc. are oriented.  <br/>\nThis is your 0° for the part.</p>\n</li>\n<li>\n<p>Look at the tape so that the sprocket holes are at the top. <br/>\nThis is your 0° tape orientation (per EIA-481 industry standard).</p>\n</li>\n<li>\n<p>Determine how the part is rotated inside the tape pocket, <em>relative</em> from  <br/>\nits upright orientation in (1).  Positive rotation goes counter-clockwise.<br/>\nThis is your <strong>Rotation in Tape</strong>.</p>\n</li>\n</ol>\n</html>");
         textFieldRotationInTape.setColumns(10);
 

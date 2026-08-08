@@ -535,7 +535,11 @@ public class Footprint extends AbstractModelObject{
             case Kicad:
             {
                 KicadModImporter importer = new KicadModImporter();
-                for (Pad pad : importer.getPads()) {
+                Footprint imported = importer.getFootprint();
+                setUnits(imported.getUnits());
+                setBodyWidth(imported.getBodyWidth());
+                setBodyHeight(imported.getBodyHeight());
+                for (Pad pad : imported.getPads()) {
                     addPad(pad);
                 }
                 break;

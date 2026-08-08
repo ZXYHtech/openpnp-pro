@@ -1108,7 +1108,7 @@ public class MainFrame extends JFrame {
     }
 
     private javax.swing.Icon navigationIcon(int index) {
-        javax.swing.Icon[] icons = {Icons.start, Icons.panel, Icons.board, Icons.pick,
+        javax.swing.Icon[] icons = {Icons.job, Icons.panel, Icons.board, Icons.pick,
                 Icons.footprintQuad, Icons.captureCamera, Icons.feeder, Icons.driver,
                 Icons.solutions, Icons.info};
         return index >= 0 && index < icons.length ? icons[index] : null;
@@ -1789,7 +1789,22 @@ public class MainFrame extends JFrame {
 
     public void showTab(String title) {
         int index = tabs.indexOfTab(title);
+        if (index >= 0) {
+            tabs.setSelectedIndex(index);
+        }
+    }
+
+    /**
+     * Select a main tab by its component identity. Unlike the title based overload this remains
+     * reliable when tab captions are translated or customized.
+     */
+    public boolean showTab(Component component) {
+        int index = tabs.indexOfComponent(component);
+        if (index < 0) {
+            return false;
+        }
         tabs.setSelectedIndex(index);
+        return true;
     }
 
     private ComponentListener mainFrameListener = new ComponentAdapter() {
@@ -1937,9 +1952,9 @@ public class MainFrame extends JFrame {
             new SafetyWorkbenchDialog(MainFrame.this).setVisible(true);
         }
     };
-    private Action motionPerformanceCenterAction = new AbstractAction("运动性能与补偿中心...") {
+    private Action motionPerformanceCenterAction = new AbstractAction("运动提速验证中心...") {
         {
-            putValue(SHORT_DESCRIPTION, "异步驱动、运动基线、降噪与精度补偿实验入口");
+            putValue(SHORT_DESCRIPTION, "分级测速、异步队列等待对比、理论效率与结果导出");
         }
 
         @Override

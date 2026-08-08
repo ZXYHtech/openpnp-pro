@@ -82,7 +82,7 @@ public class Main {
         }
 
         if (version == null || version.isBlank()) {
-            version = "2.6P2";
+            version = "2.6P3-beta34";
         }
 
         return version.strip();
@@ -224,6 +224,11 @@ public class Main {
                     StartupSplash.update(100, "Ready");
                     StartupSplash.close();
                     Logger.info(String.format("Bienvenue, Bienvenido, Willkommen, Hello, Namaskar, Welkom, Bonjour to OpenPnP version %s.", Main.getVersion()));
+                    Runtime runtime = Runtime.getRuntime();
+                    Logger.info("JVM memory: maxHeap={} MiB, initialHeap={} MiB, availableProcessors={}",
+                            runtime.maxMemory() / (1024 * 1024),
+                            runtime.totalMemory() / (1024 * 1024),
+                            runtime.availableProcessors());
                     // Give the main window one paint cycle before running optional startup scripts.
                     EventQueue.invokeLater(() -> {
                         try {

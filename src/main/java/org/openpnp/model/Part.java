@@ -19,6 +19,12 @@
 
 package org.openpnp.model;
 
+import java.text.Normalizer;
+import java.util.Collections;
+import java.util.LinkedHashSet;
+import java.util.Locale;
+import java.util.Set;
+
 import org.openpnp.ConfigurationListener;
 import org.openpnp.machine.reference.vision.AbstractPartSettingsHolder;
 import org.openpnp.spi.Feeder;
@@ -38,14 +44,15 @@ public class Part extends AbstractPartSettingsHolder {
 
     @Attribute
     private LengthUnit heightUnits = LengthUnit.Millimeters;
-    /** Operator-facing ID. Unlike the internal id this value may be shared by variants. */
+    /** Common material group. Parts sharing this value may use the same feeder. */
     @Attribute(required = false)
     private String displayId;
     @Attribute(required = false)
     private String variant;
-    /** Comma or semicolon separated ERP, customer and manufacturer aliases. */
+    /** Comma or semicolon separated names that actively participate in feeder matching. */
     @Attribute(required = false)
     private String aliases;
+    private transient volatile Set<String> feederMatchingIdentifiers;
 
     @Attribute
     private double height;
@@ -99,6 +106,7 @@ public class Part extends AbstractPartSettingsHolder {
      */
     public void setId(String id) {
         this.id = id;
+        feederMatchingIdentifiers = null;
     }
 
     public String getName() {
@@ -112,6 +120,7 @@ public class Part extends AbstractPartSettingsHolder {
     public void setDisplayId(String displayId) {
         Object oldValue = getDisplayId();
         this.displayId = displayId;
+        feederMatchingIdentifiers = null;
         firePropertyChange("displayId", oldValue, getDisplayId());
     }
 
@@ -132,7 +141,59 @@ public class Part extends AbstractPartSettingsHolder {
     public void setAliases(String aliases) {
         Object oldValue = this.aliases;
         this.aliases = aliases;
+        feederMatchingIdentifiers = null;
         firePropertyChange("aliases", oldValue, aliases);
+    }
+
+    /**
+     * Returns true when two Part records describe interchangeable material for feeder dispatch.
+     * Exact object identity remains compatible. Otherwise IDs, the common display ID and each
+     * explicitly entered alias are compared case-insensitively. Variant is deliberately excluded:
+     * it describes a member of a group but does not make two different groups interchangeable.
+     */
+    public boolean isInterchangeableWith(Part other) {
+        if (this == other) {
+            return true;
+        }
+        if (other == null) {
+            return false;
+        }
+        Set<String> identifiers = getFeederMatchingIdentifiers();
+        for (String identifier : other.getFeederMatchingIdentifiers()) {
+            if (identifiers.contains(identifier)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private Set<String> getFeederMatchingIdentifiers() {
+        Set<String> cached = feederMatchingIdentifiers;
+        if (cached != null) {
+            return cached;
+        }
+        Set<String> identifiers = new LinkedHashSet<>();
+        addMatchingIdentifier(identifiers, id);
+        addMatchingIdentifier(identifiers, getDisplayId());
+        if (aliases != null) {
+            for (String alias : aliases.split("[,;，；|\\r\\n]+")) {
+                addMatchingIdentifier(identifiers, alias);
+            }
+        }
+        cached = Collections.unmodifiableSet(identifiers);
+        feederMatchingIdentifiers = cached;
+        return cached;
+    }
+
+    private static void addMatchingIdentifier(Set<String> identifiers, String value) {
+        if (value == null) {
+            return;
+        }
+        String normalized = Normalizer.normalize(value, Normalizer.Form.NFKC)
+                .trim().replaceAll("\\s+", " ").toLowerCase(Locale.ROOT);
+        if (!normalized.isEmpty()) {
+            identifiers.add(normalized);
+        }
     }
 
 
@@ -241,7 +302,7 @@ public class Part extends AbstractPartSettingsHolder {
     public int getAssignedFeeders() {
         int n = 0;
         for (Feeder feeder : Configuration.get().getMachine().getFeeders()) {
-            if (feeder.getPart() == this) {
+            if (isInterchangeableWith(feeder.getPart())) {
                 n++;
             }
         }

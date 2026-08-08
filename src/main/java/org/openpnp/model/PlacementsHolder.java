@@ -22,6 +22,8 @@ package org.openpnp.model;
 import java.awt.geom.Rectangle2D;
 import java.beans.PropertyChangeListener;
 import java.io.File;
+import java.util.HashSet;
+import java.util.Set;
 import org.openpnp.spi.Definable;
 import org.openpnp.util.IdentifiableList;
 import org.simpleframework.xml.Attribute;
@@ -66,6 +68,7 @@ public abstract class PlacementsHolder<T extends PlacementsHolder<T>>
 
     @Commit
     protected void commit() {
+        ensureUniquePlacementIds();
         for (Placement placement : placements) {
             placement.addPropertyChangeListener(this);
         }
@@ -194,6 +197,7 @@ public abstract class PlacementsHolder<T extends PlacementsHolder<T>>
     public void setPlacements(IdentifiableList<Placement> placements) {
         Object oldValue = this.placements;
         this.placements = placements;
+        ensureUniquePlacementIds();
         firePropertyChange("placements", oldValue, placements);
     }
 
@@ -215,6 +219,9 @@ public abstract class PlacementsHolder<T extends PlacementsHolder<T>>
     public void setPlacement(int index, Placement placement) {
         if (placement != null) {
             placement = new Placement(placement);
+            Placement replacedPlacement = index >= 0 && index < placements.size()
+                    ? placements.get(index) : null;
+            ensureUniquePlacementId(placement, replacedPlacement);
             if (index >= placements.size()) {
                 placements.add(placement);
             }
@@ -244,11 +251,74 @@ public abstract class PlacementsHolder<T extends PlacementsHolder<T>>
      */
     public void addPlacement(Placement placement) {
         if (placement != null) {
+            ensureUniquePlacementId(placement, null);
             placements.add(placement);
             fireIndexedPropertyChange("placement", placements.indexOf(placement), null, placement);
             placement.addPropertyChangeListener(this);
         }
         
+    }
+
+    /**
+     * Repairs legacy/imported duplicate placement IDs while preserving their original reference
+     * designator for display. The first occurrence keeps the original internal ID and subsequent
+     * occurrences receive deterministic suffixes such as {@code C1#2} and {@code C1#3}.
+     *
+     * @return number of internal IDs repaired
+     */
+    public int ensureUniquePlacementIds() {
+        int repaired = 0;
+        Set<String> seen = new HashSet<>();
+        for (Placement placement : placements) {
+            String id = placement.getId();
+            if (id == null || id.trim().isEmpty() || seen.contains(id)) {
+                ensureUniquePlacementId(placement, null);
+                repaired++;
+            }
+            seen.add(placement.getId());
+        }
+        return repaired;
+    }
+
+    private void ensureUniquePlacementId(Placement placement, Placement ignoredPlacement) {
+        String originalId = placement.getId();
+        if (originalId == null || originalId.trim().isEmpty()) {
+            originalId = "PLACEMENT";
+            placement.setDisplayId(originalId);
+        }
+
+        Placement duplicate = findPlacementById(originalId, placement, ignoredPlacement);
+        if (duplicate == null) {
+            if (!originalId.equals(placement.getId())) {
+                placement.setId(originalId);
+            }
+            return;
+        }
+
+        if (duplicate.getDisplayId().equals(duplicate.getId())) {
+            duplicate.setDisplayId(duplicate.getId());
+        }
+        if (placement.getDisplayId() == null || placement.getDisplayId().trim().isEmpty()
+                || placement.getDisplayId().equals(placement.getId())) {
+            placement.setDisplayId(originalId);
+        }
+
+        int occurrence = 2;
+        String uniqueId;
+        do {
+            uniqueId = originalId + "#" + occurrence++;
+        }
+        while (findPlacementById(uniqueId, placement, ignoredPlacement) != null);
+        placement.setId(uniqueId);
+    }
+
+    private Placement findPlacementById(String id, Placement placement, Placement ignoredPlacement) {
+        for (Placement candidate : placements) {
+            if (candidate != placement && candidate != ignoredPlacement && id.equals(candidate.getId())) {
+                return candidate;
+            }
+        }
+        return null;
     }
     
     /**

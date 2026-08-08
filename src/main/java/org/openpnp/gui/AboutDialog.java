@@ -29,6 +29,8 @@ import java.awt.event.ActionListener;
 import java.io.File;
 import java.io.InputStream;
 import java.net.URI;
+import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
 
 import javax.swing.BoxLayout;
 import javax.swing.JButton;
@@ -38,7 +40,6 @@ import javax.swing.JPanel;
 import javax.swing.JTabbedPane;
 import javax.swing.border.EmptyBorder;
 
-import org.apache.commons.io.FileUtils;
 import org.apache.commons.io.IOUtils;
 import org.openpnp.Main;
 import org.openpnp.gui.components.MarkupTextPane;
@@ -56,40 +57,14 @@ public class AboutDialog extends JDialog {
         super(frame, true);
         createUi();
 
-        try {
-            String s = FileUtils.readFileToString(new File("CHANGES.md"));
-            releaseNotes.setText(s);
-            releaseNotes.setUri(new URI(Main.getSourceUri()+"CHANGES.md"));
-        }
-        catch (Exception e) {
-        }
-        try {
-            String s = FileUtils.readFileToString(new File("SPONSORS.md"));
-            credits.setText(s);
-            credits.setUri(new URI(Main.getSourceUri()+"SPONSORS.md"));
-        }
-        catch (Exception e) {
-        }
-        try {
-            String s = FileUtils.readFileToString(new File("OPENPNP_PRO_CHANGELOG_CN.md"));
-            proChangeLog.setText(s);
-        }
-        catch (Exception fileException) {
-            try (InputStream stream = AboutDialog.class.getResourceAsStream(
-                    "/OPENPNP_PRO_CHANGELOG_CN.md")) {
-                if (stream != null) {
-                    proChangeLog.setText(IOUtils.toString(stream, "UTF-8"));
-                }
-                else {
-                    proChangeLog.setText("# OpenPnP Pro " + Main.getVersionString()
-                            + "\n\n未找到 Pro 更新日志。");
-                }
-            }
-            catch (Exception resourceException) {
-                proChangeLog.setText("# OpenPnP Pro " + Main.getVersionString()
-                        + "\n\nPro 更新日志读取失败。");
-            }
-        }
+        releaseNotes.setText(loadMarkdown("CHANGES.md",
+                "# OpenPnP Release Notes\n\n未找到内置原生更新日志。"));
+        releaseNotes.setUri(sourceUri("CHANGES.md"));
+        credits.setText(loadMarkdown("SPONSORS.md",
+                "# OpenPnP Credits\n\n未找到内置贡献者信息。"));
+        credits.setUri(sourceUri("SPONSORS.md"));
+        proChangeLog.setText(loadMarkdown("OPENPNP_PRO_CHANGELOG_CN.md",
+                "# OpenPnP Pro " + Main.getVersionString() + "\n\n未找到 Pro 更新日志。"));
     }
 
     private void createUi() {
@@ -141,5 +116,40 @@ public class AboutDialog extends JDialog {
 
     public void showProChangeLog() {
         tabbedPane.setSelectedComponent(proChangeLog);
+    }
+
+    static String loadMarkdown(String fileName, String fallback) {
+        try {
+            File file = new File(fileName);
+            if (file.isFile()) {
+                String text = new String(Files.readAllBytes(file.toPath()), StandardCharsets.UTF_8);
+                if (!text.trim().isEmpty()) {
+                    return text;
+                }
+            }
+        }
+        catch (Exception ignored) {
+        }
+        String bundled = loadBundledMarkdown(fileName);
+        return bundled == null || bundled.trim().isEmpty() ? fallback : bundled;
+    }
+
+    static String loadBundledMarkdown(String fileName) {
+        String resourceName = fileName.startsWith("/") ? fileName : "/" + fileName;
+        try (InputStream stream = AboutDialog.class.getResourceAsStream(resourceName)) {
+            return stream == null ? null : IOUtils.toString(stream, StandardCharsets.UTF_8.name());
+        }
+        catch (Exception ignored) {
+            return null;
+        }
+    }
+
+    private static URI sourceUri(String fileName) {
+        try {
+            return new URI(Main.getSourceUri() + fileName);
+        }
+        catch (Exception ignored) {
+            return null;
+        }
     }
 }

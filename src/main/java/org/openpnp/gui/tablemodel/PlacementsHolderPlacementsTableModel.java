@@ -394,7 +394,7 @@ public class PlacementsHolderPlacementsTableModel extends AbstractObjectTableMod
 			case 0:
 				return placement.isEnabled();
             case 1:
-                return new PartCellValue(placement.getId());
+                return new PartCellValue(placement.getDisplayId());
             case 2:
                 return placement.getPart();
             case 3:
@@ -439,7 +439,8 @@ public class PlacementsHolderPlacementsTableModel extends AbstractObjectTableMod
         if (placement.getType() == Placement.Type.Placement && placement.isEnabled()) {
             boolean found = false;
             for (Feeder feeder : Configuration.get().getMachine().getFeeders()) {
-                if (feeder.getPart() == placement.getPart() && feeder.isEnabled()) {
+                if (placement.getPart().isInterchangeableWith(feeder.getPart())
+                        && feeder.isEnabled()) {
                     found = true;
                     break;
                 }

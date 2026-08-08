@@ -1,7 +1,9 @@
 package org.openpnp.gui;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.io.File;
 import java.nio.file.Files;
@@ -62,6 +64,28 @@ class ProductionDashboardPanelTest {
         assertEquals(1, merged.get(0).getErrorCount());
         assertNotNull(merged.get(0).errors.get(0).jobName);
         assertEquals(1, merged.get(2).getRunCount());
+    }
+
+    @Test
+    void refreshedDetailsKeepStableIdentityAndSkipUnchangedHtml() {
+        JobRunRecord beforeRefresh = run("board.job.xml", 1000, 1, 10);
+        beforeRefresh.id = "run-42";
+        JobRunRecord afterRefresh = run("board.job.xml", 2500, 1, 10);
+        afterRefresh.id = "run-42";
+
+        String beforeKey = ProductionDashboardPanel.detailsKey(beforeRefresh);
+        String afterKey = ProductionDashboardPanel.detailsKey(afterRefresh);
+        assertEquals(beforeKey, afterKey);
+        assertFalse(ProductionDashboardPanel.detailsChanged(afterKey, "same", beforeKey, "same"));
+        assertTrue(ProductionDashboardPanel.detailsChanged(afterKey, "updated", beforeKey, "same"));
+        assertTrue(ProductionDashboardPanel.detailsChanged("id:run-99", "same", beforeKey, "same"));
+    }
+
+    @Test
+    void restoredScrollPositionIsClampedToTheCurrentDocument() {
+        assertEquals(320, ProductionDashboardPanel.clampScrollValue(320, 1000, 200));
+        assertEquals(800, ProductionDashboardPanel.clampScrollValue(900, 1000, 200));
+        assertEquals(0, ProductionDashboardPanel.clampScrollValue(-10, 1000, 200));
     }
 
     private JobRunRecord run(String name, long elapsed, int boards, int placements) {

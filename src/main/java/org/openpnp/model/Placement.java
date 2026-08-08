@@ -59,6 +59,14 @@ public class Placement extends Abstract2DLocatable<Placement> {
     @Attribute(required = false)
     private String partId;
 
+    /**
+     * User-facing reference designator. The inherited {@code id} remains the stable, unique key
+     * used by job planning and placed-status persistence. This lets imported lists contain repeated
+     * reference designators while keeping every physical placement independently addressable.
+     */
+    @Attribute(required = false)
+    private String displayId;
+
     @Attribute(required = false)
     private Type type;
 
@@ -86,6 +94,7 @@ public class Placement extends Abstract2DLocatable<Placement> {
     public Placement(Placement placement) {
         super(placement);
         this.comments = placement.comments;
+        this.displayId = placement.displayId;
         this.enabled = placement.enabled;
         this.errorHandling = placement.errorHandling;
         this.part = placement.part;
@@ -124,6 +133,16 @@ public class Placement extends Abstract2DLocatable<Placement> {
 
     public Part getPart() {
         return part;
+    }
+
+    public String getDisplayId() {
+        return displayId == null || displayId.trim().isEmpty() ? id : displayId;
+    }
+
+    public void setDisplayId(String displayId) {
+        String oldValue = getDisplayId();
+        this.displayId = displayId;
+        firePropertyChange("displayId", oldValue, getDisplayId());
     }
 
     public void setPart(Part part) {

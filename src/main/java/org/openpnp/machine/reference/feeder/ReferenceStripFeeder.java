@@ -21,6 +21,7 @@ package org.openpnp.machine.reference.feeder;
 
 
 
+import java.util.ArrayList;
 import java.util.List;
 
 import javax.swing.Action;
@@ -437,10 +438,15 @@ public class ReferenceStripFeeder extends ReferenceFeeder {
     }
 
     private Location findClosestHole(Camera camera, Location expectedLocation) throws Exception {
+        return findClosestHole(camera, expectedLocation, false);
+    }
+
+    private Location findClosestHole(Camera camera, Location expectedLocation,
+            boolean calibration) throws Exception {
         if (getParallaxDiameter().getValue() == 0) {
             // no parallax
             MovableUtils.moveToLocationAtSafeZ(camera, expectedLocation);
-            return findClosestHoleFromViewpoint(camera, expectedLocation);
+            return findClosestHoleFromViewpoint(camera, expectedLocation, calibration);
         } else {
             // parallax
             Location parallaxDisplacement = new Location(getParallaxDiameter().getUnits(),
@@ -456,21 +462,43 @@ public class ReferenceStripFeeder extends ReferenceFeeder {
 
             Location viewPointLocation = expectedLocation.add(parallaxDisplacement);
             MovableUtils.moveToLocationAtSafeZ(camera, viewPointLocation);
-            Location locationA = findClosestHoleFromViewpoint(camera, expectedLocation);
+            Location locationA = findClosestHoleFromViewpoint(camera, expectedLocation,
+                    calibration);
 
             viewPointLocation = expectedLocation.subtract(parallaxDisplacement);
             MovableUtils.moveToLocationAtSafeZ(camera, viewPointLocation);
-            Location locationB = findClosestHoleFromViewpoint(camera, expectedLocation);
+            Location locationB = findClosestHoleFromViewpoint(camera, expectedLocation,
+                    calibration);
 
             return locationA.add(locationB).multiply(0.5); // midpoint
         }
     }
 
-    private Location findClosestHoleFromViewpoint(Camera camera, Location expectedLocation) throws Exception {
+    /**
+     * Locates one configured EIA-481 sprocket-hole calibration target. This intentionally reuses
+     * the same pipeline, parallax compensation and safe-Z motion as normal strip feeding. The
+     * caller must validate the returned pair before changing the configured strip geometry.
+     */
+    public Location locateSprocketHoleForCalibration(Camera camera, Location expectedLocation)
+            throws Exception {
+        ensureFeederZ(camera);
+        Location actualLocation = findClosestHole(camera, expectedLocation, true);
+        if (actualLocation == null) {
+            throw new FeederEmptyException("Feeder " + getName() + ": No tape hole found near calibration target.");
+        }
+        return actualLocation;
+    }
+
+    private Location findClosestHoleFromViewpoint(Camera camera, Location expectedLocation,
+            boolean calibration) throws Exception {
         try (CvPipeline pipeline = getPipeline()) {
             Integer pxMinDistance = (int) VisionUtils.toPixels(getHolePitchMin(), camera);
-            Integer pxMinDiameter = (int) VisionUtils.toPixels(getHoleDiameterMin(), camera);
-            Integer pxMaxDiameter = (int) VisionUtils.toPixels(getHoleDiameterMax(), camera);
+            Length minimumDiameter = calibration ? getHoleDiameter().multiply(0.72)
+                    : getHoleDiameterMin();
+            Length maximumDiameter = calibration ? getHoleDiameter().multiply(1.35)
+                    : getHoleDiameterMax();
+            Integer pxMinDiameter = (int) VisionUtils.toPixels(minimumDiameter, camera);
+            Integer pxMaxDiameter = (int) VisionUtils.toPixels(maximumDiameter, camera);
 
             // Process the pipeline to clean up the image and detect the tape holes
             pipeline.setProperty("camera", camera);
@@ -479,8 +507,11 @@ public class ReferenceStripFeeder extends ReferenceFeeder {
             pipeline.setProperty("DetectFixedCirclesHough.minDiameter", pxMinDiameter);
             pipeline.setProperty("DetectFixedCirclesHough.maxDiameter", pxMaxDiameter);
             pipeline.setProperty("sprocketHole.diameter", getHoleDiameter());
-            // Search range is half-way to the next hole. 
-            pipeline.setProperty("sprocketHole.maxDistance", getHolePitch().multiply(0.5));
+            // Calibration is an anchored micro-adjustment, not a broad tape search. Keeping the
+            // radius close to the configured hole prevents black/white pocket contrast changes
+            // from snapping to a neighboring component, empty pocket or another feeder.
+            pipeline.setProperty("sprocketHole.maxDistance", calibration
+                    ? getHolePitch().multiply(0.55) : getHolePitch().multiply(0.5));
             // Parallax data
             pipeline.setProperty("sprocketHole.center", expectedLocation);
             pipeline.setProperty("MaskCircle.center", expectedLocation);
@@ -502,7 +533,16 @@ public class ReferenceStripFeeder extends ReferenceFeeder {
                     .getExpectedListModel(CvStage.Result.Circle.class, 
                             new FeederEmptyException("Feeder " + getName() + ": No tape holes found."));
 
-            // Find the closest result
+            if (calibration) {
+                List<Location> holeCandidates = new ArrayList<>();
+                for (CvStage.Result.Circle result : results) {
+                    holeCandidates.add(VisionUtils.getPixelLocation(camera, result.x, result.y));
+                }
+                return StripFeederCalibrationVision.select(holeCandidates, expectedLocation,
+                        getHolePitch().convertToUnits(LengthUnit.Millimeters).getValue()).location;
+            }
+
+            // Find the closest result for normal feeding.
             results.sort((a, b) -> {
                 Double da = VisionUtils.getPixelLocation(camera, a.x, a.y)
                         .getLinearDistanceTo(expectedLocation);
@@ -551,8 +591,12 @@ public class ReferenceStripFeeder extends ReferenceFeeder {
     }
 
     private Length getHoleToPartLateral() {
-        Length tapeWidth = this.tapeWidth.convertToUnits(LengthUnit.Millimeters);
-        return new Length(tapeWidth.getValue() / 2 - 0.5, LengthUnit.Millimeters);
+        return calculateHoleToPartLateral(tapeWidth);
+    }
+
+    static Length calculateHoleToPartLateral(Length configuredTapeWidth) {
+        Length tapeWidthMm = configuredTapeWidth.convertToUnits(LengthUnit.Millimeters);
+        return new Length(tapeWidthMm.getValue() / 2 - 0.5, LengthUnit.Millimeters);
     }
 
     public TapeType getTapeType() {

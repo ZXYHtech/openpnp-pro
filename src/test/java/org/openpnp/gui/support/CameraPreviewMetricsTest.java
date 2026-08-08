@@ -24,10 +24,14 @@ class CameraPreviewMetricsTest {
         metrics.recordDisplay(start + 50_000_000L);
         metrics.recordDisplay(start + 100_000_000L);
         metrics.recordDroppedFrame();
+        metrics.recordRawCaptureDuration(4, start);
+        metrics.recordRawCaptureDuration(6, start + 100_000_000L);
         metrics.recordCaptureDuration(5, start);
         metrics.recordCaptureDuration(7, start + 100_000_000L);
         metrics.recordProcessingDuration(1, start);
         metrics.recordProcessingDuration(3, start + 100_000_000L);
+        metrics.recordPreviewLoopDuration(8, start);
+        metrics.recordPreviewLoopDuration(10, start + 100_000_000L);
         metrics.recordRenderDuration(2, start);
         metrics.recordRenderDuration(4, start + 100_000_000L);
 
@@ -38,10 +42,12 @@ class CameraPreviewMetricsTest {
         assertEquals(100, snapshot.frameIntervalAverageMs, 0.001);
         assertEquals(0, snapshot.frameIntervalJitterMs, 0.001);
         assertEquals(100, snapshot.maximumStallMs, 0.001);
+        assertEquals(5, snapshot.rawCaptureAverageMs, 0.001);
         assertEquals(6, snapshot.captureAverageMs, 0.001);
         assertEquals(5, snapshot.captureMinimumMs, 0.001);
         assertEquals(7, snapshot.captureMaximumMs, 0.001);
         assertEquals(2, snapshot.processingAverageMs, 0.001);
+        assertEquals(9, snapshot.previewLoopAverageMs, 0.001);
         assertEquals(3, snapshot.renderAverageMs, 0.001);
         assertEquals(1, snapshot.droppedFrames);
         assertEquals(2, snapshot.duplicateFrames);

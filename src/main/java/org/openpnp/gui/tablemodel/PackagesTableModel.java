@@ -29,6 +29,8 @@ import org.openpnp.model.BottomVisionSettings;
 import org.openpnp.model.Configuration;
 import org.openpnp.model.FiducialVisionSettings;
 import org.openpnp.model.Package;
+import org.openpnp.packageimport.PackageCategoryRegistry;
+import org.openpnp.packageimport.PackageCategoryRegistry.Category;
 import org.openpnp.gui.components.RowReorderableTableModel;
 import org.openpnp.gui.support.RowReorderSupport;
 
@@ -43,10 +45,16 @@ public class PackagesTableModel extends AbstractObjectTableModel
             Translations.getString("PackagesTableModel.ColumnName.TapeSpecification"), //$NON-NLS-1$
             Translations.getString("PackagesTableModel.ColumnName.BottomVision"), //$NON-NLS-1$
             Translations.getString("PackagesTableModel.ColumnName.FiducialVision"), //$NON-NLS-1$
-            "Standard Name",
-            "Aliases"
+            "标准名",
+            "别名",
+            "分类",
+            "审核状态",
+            "来源",
+            "重复组"
     };
-    private Class[] columnTypes = new Class[] {String.class, String.class, String.class, BottomVisionSettings.class, FiducialVisionSettings.class, String.class, String.class};
+    private Class[] columnTypes = new Class[] {String.class, String.class, String.class,
+            BottomVisionSettings.class, FiducialVisionSettings.class, String.class, String.class,
+            Category.class, Package.ReviewState.class, Package.SourceType.class, String.class};
     private List<Package> packages;
 
     public PackagesTableModel(Configuration configuration) {
@@ -76,7 +84,7 @@ public class PackagesTableModel extends AbstractObjectTableModel
 
     @Override
     public boolean isCellEditable(int rowIndex, int columnIndex) {
-        return columnIndex != 0;
+        return columnIndex != 0 && columnIndex != 9 && columnIndex != 10;
     }
 
     @Override
@@ -96,21 +104,33 @@ public class PackagesTableModel extends AbstractObjectTableModel
             if (columnIndex == 1) {
                 this_package.setDescription((String) aValue);
             }
-            else if (columnIndex == 2) {
+            else { if (columnIndex == 2) {
                 this_package.setTapeSpecification((String) aValue);
             }
-            else if (columnIndex == 3) {
+            else { if (columnIndex == 3) {
                 this_package.setBottomVisionSettings((BottomVisionSettings) aValue);
             }
-            else if (columnIndex == 4) {
+            else { if (columnIndex == 4) {
                 this_package.setFiducialVisionSettings((FiducialVisionSettings) aValue);
             }
-            else if (columnIndex == 5) {
+            else { if (columnIndex == 5) {
                 this_package.setStandardName((String) aValue);
             }
-            else if (columnIndex == 6) {
+            else { if (columnIndex == 6) {
                 this_package.setAliases((String) aValue);
             }
+            else { if (columnIndex == 7) {
+                Category category = (Category) aValue;
+                this_package.setCategoryId(category == null ? null : category.id);
+                this_package.setClassificationConfidence(1.0);
+                this_package.setClassificationReason("用户手工分类");
+                if (this_package.getReviewState() != Package.ReviewState.VERIFIED) {
+                    this_package.setReviewState(Package.ReviewState.NEEDS_REVIEW);
+                }
+            }
+            else { if (columnIndex == 8) {
+                this_package.setReviewState((Package.ReviewState) aValue);
+            } } } } } } } }
         }
         catch (Exception e) {
             // TODO: dialog, bad input
@@ -134,6 +154,14 @@ public class PackagesTableModel extends AbstractObjectTableModel
                 return this_package.getStandardName();
             case 6:
                 return this_package.getAliases();
+            case 7:
+                return PackageCategoryRegistry.get(this_package.getCategoryId());
+            case 8:
+                return this_package.getReviewState();
+            case 9:
+                return this_package.getSourceType();
+            case 10:
+                return this_package.getDuplicateGroupId();
             default:
                 return null;
         }

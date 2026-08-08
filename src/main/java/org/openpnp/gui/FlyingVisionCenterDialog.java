@@ -12,6 +12,8 @@ import java.awt.Font;
 import java.awt.Graphics;
 import java.awt.Graphics2D;
 import java.awt.RenderingHints;
+import java.awt.event.WindowAdapter;
+import java.awt.event.WindowEvent;
 import java.awt.image.BufferedImage;
 import java.io.File;
 import java.nio.charset.StandardCharsets;
@@ -38,6 +40,8 @@ import javax.swing.ListSelectionModel;
 import javax.swing.SpinnerNumberModel;
 import javax.swing.Timer;
 
+import org.openpnp.gui.support.ExperimentalGuide;
+import org.openpnp.gui.support.ExperimentalGuide.Step;
 import org.openpnp.machine.reference.vision.FlyingBottomVisionService;
 import org.openpnp.machine.reference.vision.FlyingVisionFrameEvaluator;
 import org.openpnp.machine.reference.vision.FlyingVisionSettings;
@@ -97,6 +101,8 @@ public class FlyingVisionCenterDialog extends JDialog {
     private final JButton staticTest = new JButton("静止连拍基线");
     private final JButton flightTest = new JButton("低速飞拍测试");
     private PartAlignmentOffset lastStaticOffset;
+    private ExperimentalGuide guide;
+    private Timer autoGuideTimer;
 
     public FlyingVisionCenterDialog(MainFrame owner) {
         super(owner, "实验模式 · 飞拍视觉中心", false);
@@ -108,6 +114,17 @@ public class FlyingVisionCenterDialog extends JDialog {
         buildUi();
         loadValues();
         showStep(0);
+        guide = createGuide();
+        guide.startOnFirstOpen();
+        addWindowListener(new WindowAdapter() {
+            @Override
+            public void windowClosed(WindowEvent event) {
+                animation.stop();
+                if (autoGuideTimer != null) {
+                    autoGuideTimer.stop();
+                }
+            }
+        });
     }
 
     private void buildUi() {
@@ -146,6 +163,8 @@ public class FlyingVisionCenterDialog extends JDialog {
         root.add(center, BorderLayout.CENTER);
 
         JPanel buttons = new JPanel(new FlowLayout(FlowLayout.RIGHT));
+        JButton followGuide = new JButton("跟着做");
+        followGuide.addActionListener(event -> guide.start());
         JButton autoGuide = new JButton("▶ 自动演示流程");
         autoGuide.addActionListener(event -> playGuide());
         JButton save = new JButton("保存实验设置");
@@ -156,6 +175,7 @@ public class FlyingVisionCenterDialog extends JDialog {
         flightTest.addActionListener(event -> runFlightTest());
         JButton close = new JButton("关闭");
         close.addActionListener(event -> dispose());
+        buttons.add(followGuide);
         buttons.add(autoGuide);
         buttons.add(save);
         buttons.add(export);
@@ -165,6 +185,44 @@ public class FlyingVisionCenterDialog extends JDialog {
         root.add(buttons, BorderLayout.SOUTH);
     }
 
+    private ExperimentalGuide createGuide() {
+        return new ExperimentalGuide(this, "flying-vision", "飞拍视觉中心",
+                new Step("理解飞拍边界",
+                        "先看原理和安全说明。引导不会自动运动、拾料、开灯或启用正式任务。",
+                        () -> explanation, () -> stepList.getSelectedIndex() >= 0,
+                        "显示安全说明", () -> stepList.setSelectedIndex(0)),
+                new Step("先启用实验但保持正式接入关闭",
+                        "勾选飞拍实验用于测试；在完成重复验证前不要开启正式任务接入。",
+                        () -> enabled, enabled::isSelected,
+                        "显示参数步骤", () -> stepList.setSelectedIndex(1)),
+                new Step("设置保守参数",
+                        "首次建议速度 0.10、进入和离开各 12 mm、8 帧、重复 1 次。",
+                        () -> speed,
+                        () -> ((Number) speed.getValue()).doubleValue() <= 0.10),
+                new Step("配置失败回退",
+                        "保持失败自动回退普通停拍，避免实验识别失败后继续使用无效结果。",
+                        () -> fallback, fallback::isSelected),
+                new Step("准备测试元件和现场",
+                        "只有吸嘴携带测试元件、路径清空且急停可用时才勾选。引导不会替你确认现场。",
+                        () -> safety, safety::isSelected),
+                new Step("建立静止连拍基线",
+                        "该按钮会移动到普通底部相机位置。请在确认真机安全后手动执行，也可以先跳过。",
+                        () -> staticTest, () -> lastStaticOffset != null,
+                        "显示基线步骤", () -> stepList.setSelectedIndex(2)),
+                new Step("运行低速飞拍",
+                        "先有稳定静止基线，再主动执行低速飞拍。异常会保留普通停拍回退。",
+                        () -> flightTest,
+                        () -> results.getText().contains("低速飞拍完成"),
+                        "显示飞拍步骤", () -> stepList.setSelectedIndex(3)),
+                new Step("比较结果后再决定接入",
+                        "检查多次偏移、角度、清晰度和耗时。正式接入必须使用明确 Part ID 白名单。",
+                        () -> partIds,
+                        () -> !production.isSelected() || !partIds.getText().trim().isEmpty(),
+                        "显示正式接入说明", () -> stepList.setSelectedIndex(4)),
+                new Step("保存实验设置",
+                        "保存前再次确认正式接入开关。beta 阶段建议保持关闭，仅保留测试功能。",
+                        () -> production, () -> !production.isSelected()));
+    }
     private JPanel buildSettings() {
         JPanel panel = new JPanel();
         panel.setLayout(new BoxLayout(panel, BoxLayout.Y_AXIS));
@@ -313,9 +371,11 @@ public class FlyingVisionCenterDialog extends JDialog {
             FlyingBottomVisionService.Result result = batch.get(batch.size() - 1);
             String comparison = summarizeBatch(batch, lastStaticOffset);
             results.setText(String.format(Locale.ROOT,
-                    "低速飞拍完成：重复 %d 次；末次采集 %d 帧，Pipeline 有效 %d 帧，"
+                    "低速飞拍完成：%s（目标角 %.2f°）；重复 %d 次；末次采集 %d 帧，Pipeline 有效 %d 帧，"
                             + "最佳清晰度 %.2f，末次耗时 %.1f ms\n末次偏移：%s%s",
-                    batch.size(), result.getCapturedFrames(), result.getSuccessfulFrames(),
+                    result.isPreRotated() ? "预旋转兼容模式" : "后旋转模式",
+                    result.getWantedAngle(), batch.size(), result.getCapturedFrames(),
+                    result.getSuccessfulFrames(),
                     result.getSharpness(), result.getElapsedMs(),
                     result.getOffsets().getLocation(), comparison));
             stepList.setSelectedIndex(4);
@@ -455,15 +515,18 @@ public class FlyingVisionCenterDialog extends JDialog {
 
     private void playGuide() {
         final int[] step = {0};
-        Timer timer = new Timer(1800, null);
-        timer.addActionListener(event -> {
+        if (autoGuideTimer != null) {
+            autoGuideTimer.stop();
+        }
+        autoGuideTimer = new Timer(1800, null);
+        autoGuideTimer.addActionListener(event -> {
             stepList.setSelectedIndex(step[0]++);
             if (step[0] >= steps.length) {
                 ((Timer) event.getSource()).stop();
             }
         });
-        timer.setInitialDelay(0);
-        timer.start();
+        autoGuideTimer.setInitialDelay(0);
+        autoGuideTimer.start();
     }
 
     private static double number(JSpinner spinner) {
@@ -493,6 +556,10 @@ public class FlyingVisionCenterDialog extends JDialog {
         FlightAnimation() {
             setOpaque(false);
             timer.start();
+        }
+
+        void stop() {
+            timer.stop();
         }
 
         void setStage(int stage) {

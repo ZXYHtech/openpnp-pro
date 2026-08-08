@@ -80,7 +80,9 @@ import org.openpnp.events.PlacementSelectedEvent;
 import org.openpnp.events.PlacementsHolderLocationChangedEvent;
 import org.openpnp.gui.JobPanel.OpenRecentJobAction;
 import org.openpnp.gui.components.AutoSelectTextTable;
+import org.openpnp.gui.components.CameraView;
 import org.openpnp.gui.components.ExistingBoardOrPanelDialog;
+import org.openpnp.gui.components.reticle.BoardPlacementReticle;
 import org.openpnp.gui.processes.MultiPlacementBoardLocationProcess;
 import org.openpnp.gui.support.ActionGroup;
 import org.openpnp.gui.support.CustomBooleanRenderer;
@@ -155,6 +157,10 @@ public class JobPanel extends JPanel {
     private JSplitPane splitPane;
 
     private PlacementsHolderLocationViewerDialog jobViewer;
+    private static final String BOARD_PLACEMENT_RETICLE_KEY =
+            JobPanel.class.getName() + ".boardPlacementProjection";
+    private CameraView boardPlacementCameraView;
+    private BoardPlacementReticle boardPlacementReticle;
     
     private ActionGroup singleSelectionActionGroup;
     private ActionGroup multiSelectionActionGroup;
@@ -271,6 +277,7 @@ public class JobPanel extends JPanel {
             public void tableChanged(TableModelEvent e) {
                 SwingUtilities.invokeLater(() -> {
                     jobPlacementsPanel.refresh();
+                    refreshBoardPlacementProjection();
                 });
             }
         });
@@ -356,6 +363,7 @@ public class JobPanel extends JPanel {
                         if (jobViewer != null) {
                             jobViewer.setPlacementsHolder(job.getRootPanelLocation().getPlacementsHolder(), getSelections());
                         }
+                        refreshBoardPlacementProjection();
                     }
                 });
 
@@ -458,9 +466,10 @@ public class JobPanel extends JPanel {
         toolBarBoards.add(btnFiducialCheck);
         btnFiducialCheck.setHideActionText(true);
 
-        JButton btnPackageAlignmentCheck = new JButton(packageAlignmentCheckAction);
+        JToggleButton btnPackageAlignmentCheck = new JToggleButton(packageAlignmentCheckAction);
+        btnPackageAlignmentCheck.setText("顶部视觉投射");
         toolBarBoards.add(btnPackageAlignmentCheck);
-        btnPackageAlignmentCheck.setHideActionText(true);
+        btnPackageAlignmentCheck.setHideActionText(false);
         
         toolBarBoards.addSeparator();
         
@@ -538,6 +547,10 @@ public class JobPanel extends JPanel {
         updateJobActions();
     }
 
+    public boolean isJobInMotion() {
+        return state == State.Running || state == State.Pausing || state == State.Stopping;
+    }
+
     private void setPauseWhenNozzlesEmptyRequested(boolean requested) {
         pauseWhenNozzlesEmptyRequested = requested;
         pauseWhenNozzlesEmptyAction.putValue(Action.SELECTED_KEY, requested);
@@ -599,6 +612,7 @@ public class JobPanel extends JPanel {
     public void selectPlacementsHolderLocation(PlacementsHolderLocation<?> placementsHolderLocation) {
         if (placementsHolderLocation == null) {
             jobTable.getSelectionModel().clearSelection();
+            return;
         }
         for (int i = 0; i < jobTableModel.getRowCount(); i++) {
             if (job.getBoardAndPanelLocations().get(i).getDefinition() == placementsHolderLocation) {
@@ -611,11 +625,37 @@ public class JobPanel extends JPanel {
         }
     }
 
+    /**
+     * Selects one concrete board/panel instance from a panelized job. Unlike definition linking,
+     * this deliberately distinguishes multiple instances that share the same definition.
+     */
+    public boolean selectPlacementsHolderLocationInstance(
+            PlacementsHolderLocation<?> placementsHolderLocation) {
+        if (placementsHolderLocation == null) {
+            jobTable.getSelectionModel().clearSelection();
+            return false;
+        }
+        for (int i = 0; i < jobTableModel.getRowCount(); i++) {
+            if (jobTableModel.getRowObjectAt(i) == placementsHolderLocation) {
+                int index = jobTable.convertRowIndexToView(i);
+                if (index < 0) {
+                    return false;
+                }
+                jobTable.getSelectionModel().setSelectionInterval(index, index);
+                jobTable.scrollRectToVisible(
+                        new Rectangle(jobTable.getCellRect(index, 0, true)));
+                return true;
+            }
+        }
+        return false;
+    }
+
     public Job getJob() {
         return job;
     }
 
     public void setJob(Job job) {
+        disableBoardPlacementProjection();
         if (this.job != null) {
             this.job.removePropertyChangeListener("dirty", titlePropertyChangeListener); //$NON-NLS-1$
             this.job.removePropertyChangeListener("file", titlePropertyChangeListener); //$NON-NLS-1$
@@ -1004,6 +1044,42 @@ public class JobPanel extends JPanel {
             setState(State.Stopped);
             throw exception;
         }
+    }
+
+    /** Starts a complete native PnP cycle for exactly one selected placement. */
+    public void startTrialPlacement(BoardLocation boardLocation, Placement placement)
+            throws Exception {
+        if (state != State.Stopped) {
+            throw new Exception("请先停止当前任务，再开始试贴纠偏。");
+        }
+        Machine machine = configuration.getMachine();
+        if (!machine.isEnabled()) {
+            throw new Exception("机器尚未启动，请先启用机器。");
+        }
+        if (!machine.isHomed()) {
+            throw new Exception("机器尚未回零，请先完成 Home。");
+        }
+        if (!boardLocation.isEnabled()) {
+            throw new Exception("所选单板已禁用，不能执行试贴。");
+        }
+        if (!placement.isEnabled() || placement.getType() != Placement.Type.Placement
+                || placement.getSide() != boardLocation.getGlobalSide()
+                || placement.getPart() == null) {
+            throw new Exception("所选行不是当前板面的可用贴装器件。");
+        }
+        if (job.retrievePlacedStatus(boardLocation, placement.getId())) {
+            throw new Exception("所选器件已经标记为已贴，请选择一个未贴器件。");
+        }
+        JobProcessor selectedProcessor = machine.getPnpJobProcessor();
+        if (!(selectedProcessor instanceof ReferencePnpJobProcessor)) {
+            throw new Exception("试贴纠偏目前需要 Reference PnP Job Processor。");
+        }
+        jobProcessor = selectedProcessor;
+        telemetryManager.start(job);
+        ((ReferencePnpJobProcessor) jobProcessor).initializeTrialPlacement(job,
+                boardLocation, placement);
+        setState(State.Running);
+        jobRun();
     }
     
     public void jobRun() {
@@ -1608,42 +1684,91 @@ public class JobPanel extends JPanel {
                     });
                 }
             };
+    private void enableBoardPlacementProjection() throws Exception {
+        PlacementsHolderLocation<?> selection = getSelection();
+        if (!(selection instanceof BoardLocation)) {
+            throw new Exception("请先在贴片板列表中只选择一块单板。");
+        }
+        if (selection.getPlacementsTransformStatus()
+                == PlacementsHolderLocation.PlacementsTransformStatus.NotSet) {
+            throw new Exception("所选单板还没有定义坐标原点和方向，请先完成单板定位。");
+        }
+        BoardLocation boardLocation = (BoardLocation) selection;
+        Head head = configuration.getMachine().getDefaultHead();
+        if (head == null || head.getDefaultCamera() == null) {
+            throw new Exception("当前机器没有可用的默认顶部相机。");
+        }
+        Camera camera = head.getDefaultCamera();
+        if (camera.getLooking() != Camera.Looking.Down) {
+            throw new Exception("默认相机不是向下的顶部相机，不能执行整板投射。");
+        }
+        CameraView cameraView = mainFrame.getCameraViews().ensureCameraVisible(camera);
+        if (cameraView == null) {
+            throw new Exception("无法打开顶部相机画面。");
+        }
+        BoardPlacementReticle reticle = new BoardPlacementReticle(camera, boardLocation, job);
+        cameraView.setReticle(BOARD_PLACEMENT_RETICLE_KEY, reticle);
+        cameraView.repaint();
+        boardPlacementCameraView = cameraView;
+        boardPlacementReticle = reticle;
+        packageAlignmentCheckAction.putValue(Action.SELECTED_KEY, true);
+    }
+
+    private void refreshBoardPlacementProjection() {
+        if (boardPlacementReticle == null) {
+            return;
+        }
+        PlacementsHolderLocation<?> selection = getSelection();
+        if (!(selection instanceof BoardLocation)
+                || selection.getPlacementsTransformStatus()
+                        == PlacementsHolderLocation.PlacementsTransformStatus.NotSet) {
+            disableBoardPlacementProjection();
+            return;
+        }
+        try {
+            BoardLocation boardLocation = (BoardLocation) selection;
+            Camera camera = boardPlacementCameraView.getCamera();
+            BoardPlacementReticle reticle = new BoardPlacementReticle(camera, boardLocation, job);
+            boardPlacementCameraView.setReticle(BOARD_PLACEMENT_RETICLE_KEY, reticle);
+            boardPlacementCameraView.repaint();
+            boardPlacementReticle = reticle;
+        }
+        catch (Exception exception) {
+            Logger.warn(exception, "Unable to refresh board placement projection");
+            disableBoardPlacementProjection();
+        }
+    }
+
+    void disableBoardPlacementProjection() {
+        if (boardPlacementCameraView != null) {
+            boardPlacementCameraView.removeReticle(BOARD_PLACEMENT_RETICLE_KEY);
+            boardPlacementCameraView.repaint();
+        }
+        boardPlacementCameraView = null;
+        boardPlacementReticle = null;
+        packageAlignmentCheckAction.putValue(Action.SELECTED_KEY, false);
+    }
+
     public final Action packageAlignmentCheckAction = new AbstractAction() {
         {
-            putValue(SMALL_ICON, Icons.colorTrue);
-            putValue(NAME, "Package Alignment Check");
+            putValue(SMALL_ICON, Icons.footprintToggle);
+            putValue(NAME, "顶部视觉整板投射");
             putValue(SHORT_DESCRIPTION,
-                    "Preview every component and optionally move the camera to the selected board origin");
+                    "<html>将已定位单板的板框、器件封装、方向和贴装状态实时叠加到顶部相机。<br>"
+                            + "青色：未贴，绿色：已贴，橙色：基准点，红色：缺少封装。<br>"
+                            + "本按钮只切换投射，不会移动机器。</html>");
+            putValue(Action.SELECTED_KEY, false);
         }
 
         @Override
         public void actionPerformed(ActionEvent event) {
             UiUtils.messageBoxOnException(() -> {
-                PlacementsHolderLocation<?> selection = getSelection();
-                if (!(selection instanceof BoardLocation)) {
-                    throw new Exception("Select one board before starting package alignment check.");
+                if (boardPlacementReticle != null) {
+                    disableBoardPlacementProjection();
                 }
-                if (selection.getPlacementsTransformStatus()
-                        == PlacementsHolderLocation.PlacementsTransformStatus.NotSet) {
-                    throw new Exception(
-                            "The selected board origin is not configured. Set the board origin before moving.");
+                else {
+                    enableBoardPlacementProjection();
                 }
-
-                HeadMountable tool = MainFrame.get().getMachineControls().getSelectedTool();
-                Camera camera = tool.getHead().getDefaultCamera();
-                Machine machine = configuration.getMachine();
-                if (machine.isEnabled() && !machine.isHomed()) {
-                    viewerAction.actionPerformed(event);
-                    JOptionPane.showMessageDialog(JobPanel.this,
-                            "All components are shown, but camera movement was skipped because the machine is not homed.",
-                            "Package Alignment Check", JOptionPane.WARNING_MESSAGE);
-                    return;
-                }
-
-                UiUtils.confirmMoveToLocationAndAct(JobPanel.this,
-                        "move the camera to the selected board origin", camera,
-                        selection.getGlobalLocation(), true,
-                        () -> viewerAction.actionPerformed(event));
             });
         }
     };

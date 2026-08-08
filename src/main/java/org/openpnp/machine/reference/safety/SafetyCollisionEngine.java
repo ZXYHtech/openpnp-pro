@@ -139,7 +139,8 @@ public final class SafetyCollisionEngine {
             return false;
         }
 
-        if (object.type == SafetyWorkbenchModel.ObjectType.BOTTOM_CAMERA
+        if ((object.type == SafetyWorkbenchModel.ObjectType.BOTTOM_CAMERA
+                || object.type == SafetyWorkbenchModel.ObjectType.NOZZLE_CHANGER)
                 && object.apertureWidth > 0 && object.apertureDepth > 0) {
             double apertureMinX = object.x + (object.width - object.apertureWidth) / 2.0;
             double apertureMaxX = apertureMinX + object.apertureWidth;

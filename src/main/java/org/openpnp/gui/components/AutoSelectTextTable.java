@@ -712,11 +712,25 @@ public class AutoSelectTextTable extends JTable {
             sortColumnCycler = new MouseAdapter() {
 
                 private List<SortKey> lastSortKeys = new ArrayList<>();
+                private List<Integer> selectedModelRows = new ArrayList<>();
+                private int leadModelRow = -1;
+
+                @Override
+                public void mousePressed(MouseEvent event) {
+                    if (event.getButton() == MouseEvent.BUTTON1) {
+                        selectedModelRows = captureSelectedModelRows();
+                        leadModelRow = captureLeadModelRow();
+                    }
+                }
 
                 @Override
                 public void mouseClicked(MouseEvent e) {
                     if (e.getButton() == MouseEvent.BUTTON1 && e.getClickCount() == 1) {
-                        int column = convertColumnIndexToModel(getTableHeader().columnAtPoint(e.getPoint()));
+                        int viewColumn = getTableHeader().columnAtPoint(e.getPoint());
+                        if (viewColumn < 0) {
+                            return;
+                        }
+                        int column = convertColumnIndexToModel(viewColumn);
                         SortOrder sortOrder = SortOrder.ASCENDING;
                         for (RowSorter.SortKey sortKey : lastSortKeys) {
                             if (column == sortKey.getColumn()) {
@@ -746,6 +760,7 @@ public class AutoSelectTextTable extends JTable {
                         }
                         RowSorter<?> sorter = getRowSorter();
                         sorter.setSortKeys(sortKeys);
+                        restoreSelectedModelRows(selectedModelRows, leadModelRow);
                         this.lastSortKeys = sortKeys;
                     }
                 }
@@ -753,6 +768,88 @@ public class AutoSelectTextTable extends JTable {
         }
         getTableHeader().removeMouseListener(sortColumnCycler);
         getTableHeader().addMouseListener(sortColumnCycler);
+    }
+
+    private List<Integer> captureSelectedModelRows() {
+        List<Integer> modelRows = new ArrayList<>();
+        for (int viewRow : getSelectedRows()) {
+            if (viewRow >= 0 && viewRow < getRowCount()) {
+                modelRows.add(convertRowIndexToModel(viewRow));
+            }
+        }
+        return modelRows;
+    }
+
+    private int captureLeadModelRow() {
+        int leadViewRow = getSelectionModel().getLeadSelectionIndex();
+        if (leadViewRow >= 0 && leadViewRow < getRowCount() && isRowSelected(leadViewRow)) {
+            return convertRowIndexToModel(leadViewRow);
+        }
+        return -1;
+    }
+
+    private void restoreSelectedModelRows(List<Integer> modelRows, int leadModelRow) {
+        if (modelRows == null || modelRows.isEmpty()) {
+            return;
+        }
+        List<Integer> viewRows = new ArrayList<>();
+        for (int modelRow : modelRows) {
+            if (modelRow >= 0 && modelRow < getModel().getRowCount()) {
+                int viewRow = convertRowIndexToView(modelRow);
+                if (viewRow >= 0) {
+                    viewRows.add(viewRow);
+                }
+            }
+        }
+        if (viewRows.isEmpty()) {
+            clearSelection();
+            return;
+        }
+
+        int leadViewRow = leadModelRow >= 0 && leadModelRow < getModel().getRowCount()
+                ? convertRowIndexToView(leadModelRow) : -1;
+        if (!sameSelectedRows(viewRows)) {
+            ListSelectionModel selectionModel = getSelectionModel();
+            selectionModel.setValueIsAdjusting(true);
+            try {
+                clearSelection();
+                for (int viewRow : viewRows) {
+                    if (viewRow != leadViewRow) {
+                        addRowSelectionInterval(viewRow, viewRow);
+                    }
+                }
+                if (leadViewRow >= 0) {
+                    addRowSelectionInterval(leadViewRow, leadViewRow);
+                }
+                else {
+                    int fallbackViewRow = viewRows.get(0);
+                    addRowSelectionInterval(fallbackViewRow, fallbackViewRow);
+                    leadViewRow = fallbackViewRow;
+                }
+            }
+            finally {
+                selectionModel.setValueIsAdjusting(false);
+            }
+        }
+        if (leadViewRow < 0) {
+            leadViewRow = viewRows.get(0);
+        }
+        if (getColumnCount() > 0) {
+            scrollRectToVisible(getCellRect(leadViewRow, 0, true));
+        }
+    }
+
+    private boolean sameSelectedRows(List<Integer> expectedViewRows) {
+        int[] selectedViewRows = getSelectedRows();
+        if (selectedViewRows.length != expectedViewRows.size()) {
+            return false;
+        }
+        for (int selectedViewRow : selectedViewRows) {
+            if (!expectedViewRows.contains(selectedViewRow)) {
+                return false;
+            }
+        }
+        return true;
     }
 
     //

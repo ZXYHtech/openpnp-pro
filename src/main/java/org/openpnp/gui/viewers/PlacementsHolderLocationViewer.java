@@ -1450,7 +1450,7 @@ public class PlacementsHolderLocationViewer extends JPanel implements PropertyCh
                Translations.getString("PlacementsHolderLocationViewer.PopupMenu.Label.Id") + //$NON-NLS-1$
                 (uniqueId.contentEquals("") ? "" :  //$NON-NLS-1$ //$NON-NLS-2$
                     uniqueId + PlacementsHolderLocation.ID_DELIMITTER) + //$NON-NLS-1$ //$NON-NLS-2$
-                plmt.getId() +
+                plmt.getDisplayId() +
                 "<br>" + //$NON-NLS-1$
                 Translations.getString("PlacementsHolderLocationViewer.PopupMenu.Label.Part") + //$NON-NLS-1$
                 (plmt.getPart() != null ? plmt.getPart().getId() : "unassigned") + //$NON-NLS-1$

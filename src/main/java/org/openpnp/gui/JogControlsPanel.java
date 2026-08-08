@@ -29,6 +29,7 @@ import java.awt.event.ActionEvent;
 import java.beans.PropertyChangeListener;
 import java.util.HashMap;
 import java.util.Hashtable;
+import java.util.Locale;
 import java.util.Map;
 import org.pmw.tinylog.Logger;
 
@@ -48,6 +49,7 @@ import javax.swing.event.ChangeListener;
 import org.openpnp.ConfigurationListener;
 import org.openpnp.Translations;
 import org.openpnp.gui.support.Icons;
+import org.openpnp.gui.support.TransientNotification;
 import org.openpnp.gui.support.WrapLayout;
 import org.openpnp.model.Configuration;
 import org.openpnp.model.Length;
@@ -68,6 +70,7 @@ import org.openpnp.util.Cycles;
 import org.openpnp.util.MovableUtils;
 import org.openpnp.util.UiUtils;
 import org.openpnp.util.FeederUtils;
+
 
 import com.jgoodies.forms.layout.ColumnSpec;
 import com.jgoodies.forms.layout.FormLayout;
@@ -98,6 +101,11 @@ public class JogControlsPanel extends JPanel {
         createUi();
 
         configuration.addListener(configurationListener);
+    }
+
+    /** Releases the configuration listener when a temporary mirrored control panel is closed. */
+    public void disposePanel() {
+        configuration.removeListener(configurationListener);
     }
 
     @Override
@@ -167,20 +175,34 @@ public class JogControlsPanel extends JPanel {
         return boardProtectionCheck.isSelected();
     }
 
-    private void jog(final int x, final int y, final int z, final int c) {
+    private void jog(final int x, final int y, final int z, final int c,
+            ActionEvent event) {
         if(UiUtils.isModalDialogBoxOpen()) {
             Logger.info("jog blocked while modal dialog is open");
             return;
         }
 
+        final long inputDispatchMs = inputDispatchDelayMillis(
+                System.currentTimeMillis(), event == null ? 0 : event.getWhen());
+        final long requestedAtNanos = System.nanoTime();
         UiUtils.submitUiMachineTask(() -> {
+            long taskStartedAtNanos = System.nanoTime();
             HeadMountable tool = machineControlsPanel.getSelectedTool();
-            jogTool(x, y, z, c, tool);
+            JogTiming timing = performJog(x, y, z, c, tool);
+            if (timing.moved) {
+                logJogResponse(inputDispatchMs, requestedAtNanos, taskStartedAtNanos, timing);
+            }
         });
     }
 
     public void jogTool(final int x, final int y, final int z, final int c, HeadMountable tool)
             throws Exception {
+        performJog(x, y, z, c, tool);
+    }
+
+    private JogTiming performJog(final int x, final int y, final int z, final int c,
+            HeadMountable tool) throws Exception {
+        long prepareStartedAtNanos = System.nanoTime();
         Location l = tool.getLocation()
                 .convertToUnits(Configuration.get()
                         .getSystemUnits());
@@ -222,11 +244,84 @@ public class JogControlsPanel extends JPanel {
 
         Location targetLocation = new Location(l.getUnits(), xPos, yPos, zPos, cPos);
 
-        machineControlsPanel.checkJogMotionSafety(tool, targetLocation);
-
-        tool.moveTo(targetLocation, MotionOption.JogMotion); 
+        long safetyStartedAtNanos = System.nanoTime();
+        long moveStartedAtNanos;
+        try {
+            machineControlsPanel.checkJogMotionSafety(tool, targetLocation);
+            moveStartedAtNanos = System.nanoTime();
+            // moveTo() already performs the authoritative reachability and soft-limit checks.
+            // A separate isReachable() call here duplicates coordinate transforms and motion
+            // planner validation on every jog, making button response noticeably slower.
+            tool.moveTo(targetLocation, MotionOption.JogMotion);
+        }
+        catch (Exception exception) {
+            if (TransientNotification.isTransientMotionFailure(exception)) {
+                Logger.warn(exception, "Jog request was rejected before motion");
+                TransientNotification.showMotionFailure(machineControlsPanel, exception);
+                return JogTiming.rejected();
+            }
+            throw exception;
+        }
+        long moveSubmittedAtNanos = System.nanoTime();
 
         MovableUtils.fireTargetedUserAction(tool, true);
+        return new JogTiming(true, prepareStartedAtNanos, safetyStartedAtNanos,
+                moveStartedAtNanos, moveSubmittedAtNanos);
+    }
+
+    private void logJogResponse(long inputDispatchMs, long requestedAtNanos,
+            long taskStartedAtNanos,
+            JogTiming timing) {
+        double queueMs = nanosToMillis(taskStartedAtNanos - requestedAtNanos);
+        double prepareMs = nanosToMillis(timing.safetyStartedAtNanos
+                - timing.prepareStartedAtNanos);
+        double safetyMs = nanosToMillis(timing.moveStartedAtNanos
+                - timing.safetyStartedAtNanos);
+        double moveSubmitMs = nanosToMillis(timing.moveSubmittedAtNanos
+                - timing.moveStartedAtNanos);
+        double softwareMs = nanosToMillis(timing.moveSubmittedAtNanos - requestedAtNanos);
+        double totalMs = inputDispatchMs + softwareMs;
+        String report = String.format(Locale.US,
+                "Jog response: total=%.3f ms, input-dispatch=%d ms, queue=%.3f ms, prepare=%.3f ms, safety=%.3f ms, move-submit=%.3f ms",
+                totalMs, inputDispatchMs, queueMs, prepareMs, safetyMs, moveSubmitMs);
+        if (totalMs >= 100 || inputDispatchMs >= 50 || queueMs >= 50) {
+            Logger.info("Slow " + report);
+        }
+        else {
+            Logger.debug(report);
+        }
+    }
+
+    private static double nanosToMillis(long nanos) {
+        return nanos / 1_000_000.0;
+    }
+
+    static long inputDispatchDelayMillis(long nowMillis, long eventWhenMillis) {
+        if (eventWhenMillis <= 0 || eventWhenMillis > nowMillis) {
+            return 0;
+        }
+        return nowMillis - eventWhenMillis;
+    }
+
+    private static class JogTiming {
+        final boolean moved;
+        final long prepareStartedAtNanos;
+        final long safetyStartedAtNanos;
+        final long moveStartedAtNanos;
+        final long moveSubmittedAtNanos;
+
+        JogTiming(boolean moved, long prepareStartedAtNanos, long safetyStartedAtNanos,
+                long moveStartedAtNanos, long moveSubmittedAtNanos) {
+            this.moved = moved;
+            this.prepareStartedAtNanos = prepareStartedAtNanos;
+            this.safetyStartedAtNanos = safetyStartedAtNanos;
+            this.moveStartedAtNanos = moveStartedAtNanos;
+            this.moveSubmittedAtNanos = moveSubmittedAtNanos;
+        }
+
+        static JogTiming rejected() {
+            return new JogTiming(false, 0, 0, 0, 0);
+        }
     }
 
     private boolean pointWithinTriangle(Location p1, Location p2, Location p3, Location p) {
@@ -495,7 +590,7 @@ public class JogControlsPanel extends JPanel {
     public Action yPlusAction = new AbstractAction("Y+", Icons.arrowUp) { //$NON-NLS-1$
         @Override
         public void actionPerformed(ActionEvent arg0) {
-            jog(0, 1, 0, 0);
+            jog(0, 1, 0, 0, arg0);
         }
     };
 
@@ -503,7 +598,7 @@ public class JogControlsPanel extends JPanel {
     public Action yMinusAction = new AbstractAction("Y-", Icons.arrowDown) { //$NON-NLS-1$
         @Override
         public void actionPerformed(ActionEvent arg0) {
-            jog(0, -1, 0, 0);
+            jog(0, -1, 0, 0, arg0);
         }
     };
 
@@ -511,7 +606,7 @@ public class JogControlsPanel extends JPanel {
     public Action xPlusAction = new AbstractAction("X+", Icons.arrowRight) { //$NON-NLS-1$
         @Override
         public void actionPerformed(ActionEvent arg0) {
-            jog(1, 0, 0, 0);
+            jog(1, 0, 0, 0, arg0);
         }
     };
 
@@ -519,7 +614,7 @@ public class JogControlsPanel extends JPanel {
     public Action xMinusAction = new AbstractAction("X-", Icons.arrowLeft) { //$NON-NLS-1$
         @Override
         public void actionPerformed(ActionEvent arg0) {
-            jog(-1, 0, 0, 0);
+            jog(-1, 0, 0, 0, arg0);
         }
     };
 
@@ -527,7 +622,7 @@ public class JogControlsPanel extends JPanel {
     public Action zPlusAction = new AbstractAction("Z+", Icons.arrowUp) { //$NON-NLS-1$
         @Override
         public void actionPerformed(ActionEvent arg0) {
-            jog(0, 0, 1, 0);
+            jog(0, 0, 1, 0, arg0);
         }
     };
 
@@ -535,7 +630,7 @@ public class JogControlsPanel extends JPanel {
     public Action zMinusAction = new AbstractAction("Z-", Icons.arrowDown) { //$NON-NLS-1$
         @Override
         public void actionPerformed(ActionEvent arg0) {
-            jog(0, 0, -1, 0);
+            jog(0, 0, -1, 0, arg0);
         }
     };
 
@@ -543,7 +638,7 @@ public class JogControlsPanel extends JPanel {
     public Action cPlusAction = new AbstractAction("C+", Icons.rotateCounterclockwise) { //$NON-NLS-1$
         @Override
         public void actionPerformed(ActionEvent arg0) {
-            jog(0, 0, 0, 1);
+            jog(0, 0, 0, 1, arg0);
         }
     };
 
@@ -551,7 +646,7 @@ public class JogControlsPanel extends JPanel {
     public Action cMinusAction = new AbstractAction("C-", Icons.rotateClockwise) { //$NON-NLS-1$
         @Override
         public void actionPerformed(ActionEvent arg0) {
-            jog(0, 0, 0, -1);
+            jog(0, 0, 0, -1, arg0);
         }
     };
 
@@ -810,7 +905,7 @@ public class JogControlsPanel extends JPanel {
                         if (part != null) {
                             for (Feeder feeder : Configuration.get().getMachine().getFeeders()) {
                                 if (feeder.isEnabled() 
-                                        && feeder.getPart() == part
+                                        && part.isInterchangeableWith(feeder.getPart())
                                         && feeder.canTakeBackPart()) {
                                     canTakeBack = true;
                                 }

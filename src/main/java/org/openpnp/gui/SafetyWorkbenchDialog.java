@@ -9,67 +9,95 @@ import java.awt.BorderLayout;
 import java.awt.Color;
 import java.awt.Component;
 import java.awt.Dimension;
+import java.awt.EventQueue;
 import java.awt.FlowLayout;
 import java.awt.Font;
 import java.awt.Graphics;
 import java.awt.Graphics2D;
+import java.awt.GridBagConstraints;
+import java.awt.GridBagLayout;
 import java.awt.GridLayout;
+import java.awt.Insets;
 import java.awt.Point;
 import java.awt.Polygon;
 import java.awt.RenderingHints;
+import java.awt.Toolkit;
+import java.awt.Window;
 import java.awt.datatransfer.DataFlavor;
 import java.awt.datatransfer.StringSelection;
 import java.awt.datatransfer.Transferable;
 import java.awt.event.InputEvent;
+import java.awt.event.KeyEvent;
 import java.awt.event.MouseAdapter;
 import java.awt.event.MouseEvent;
 import java.awt.event.MouseWheelEvent;
 import java.awt.event.WindowAdapter;
 import java.awt.event.WindowEvent;
+import java.beans.PropertyChangeListener;
 import java.text.SimpleDateFormat;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Date;
 import java.util.EnumSet;
 import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Locale;
+import java.util.Set;
 
+import javax.swing.AbstractAction;
+import javax.swing.Action;
 import javax.swing.BorderFactory;
 import javax.swing.Box;
 import javax.swing.BoxLayout;
 import javax.swing.DefaultListCellRenderer;
 import javax.swing.DefaultListModel;
+import javax.swing.Icon;
 import javax.swing.JButton;
 import javax.swing.JCheckBox;
+import javax.swing.JComponent;
 import javax.swing.JComboBox;
 import javax.swing.JDialog;
 import javax.swing.JLabel;
 import javax.swing.JList;
+import javax.swing.JMenuItem;
 import javax.swing.JOptionPane;
 import javax.swing.JPanel;
+import javax.swing.JPopupMenu;
 import javax.swing.JScrollPane;
 import javax.swing.JSeparator;
 import javax.swing.JSpinner;
+import javax.swing.JSplitPane;
 import javax.swing.JTabbedPane;
 import javax.swing.JToggleButton;
+import javax.swing.KeyStroke;
 import javax.swing.Timer;
 import javax.swing.JTextArea;
 import javax.swing.JTextField;
 import javax.swing.ListSelectionModel;
 import javax.swing.SpinnerNumberModel;
 import javax.swing.SwingConstants;
+import javax.swing.SwingUtilities;
 import javax.swing.TransferHandler;
 import javax.swing.border.EmptyBorder;
 
+import org.openpnp.gui.support.AdaptiveUiRefresh;
+import org.openpnp.gui.support.ExperimentalGuide;
+import org.openpnp.gui.support.Icons;
+import org.openpnp.gui.support.SafetyWorkbenchViewTransform;
+import org.openpnp.gui.support.WrapLayout;
+import org.openpnp.gui.support.ExperimentalGuide.Step;
 import org.openpnp.machine.reference.safety.DynamicSafetyCollisionEngine;
 import org.openpnp.machine.reference.safety.DynamicSafetyCollisionEngine.DynamicTool;
 import org.openpnp.machine.reference.safety.SafetyCollisionEngine;
 import org.openpnp.machine.reference.safety.SafetyCollisionEngine.ValidationResult;
 import org.openpnp.machine.reference.safety.SafetyCollisionEngine.Waypoint;
+import org.openpnp.machine.reference.safety.SafetyWorkbenchGeometry;
+import org.openpnp.machine.reference.safety.SafetyWorkbenchHistory;
 import org.openpnp.machine.reference.safety.SafetyWorkbenchImportService;
 import org.openpnp.machine.reference.safety.SafetyWorkbenchImportService.Category;
+import org.openpnp.machine.reference.safety.SafetyWorkbenchImportService.FeederType;
 import org.openpnp.machine.reference.safety.SafetyWorkbenchVertexEditor;
 import org.openpnp.machine.reference.safety.SafetyWorkbenchVertexEditor.Vertex;
 import org.openpnp.machine.reference.safety.SafetyModelValidator;
@@ -84,11 +112,13 @@ import org.openpnp.model.Configuration;
 import org.openpnp.model.Length;
 import org.openpnp.model.LengthUnit;
 import org.openpnp.model.Location;
+import org.openpnp.spi.Camera;
 import org.openpnp.spi.Feeder;
 import org.openpnp.spi.Head;
 import org.openpnp.spi.HeadMountable;
 import org.openpnp.spi.MotionPlanner.CompletionType;
 import org.openpnp.spi.Nozzle;
+import org.openpnp.util.MovableUtils;
 import org.openpnp.util.UiUtils;
 
 /**
@@ -98,10 +128,18 @@ import org.openpnp.util.UiUtils;
 public class SafetyWorkbenchDialog extends JDialog {
     private final MainFrame frame;
     private final SafetyWorkbenchModel model;
+    private final SafetyWorkbenchHistory history;
     private final DefaultListModel<SafetyObject> objectListModel = new DefaultListModel<>();
     private final JList<SafetyObject> objectList = new JList<>(objectListModel);
     private final WorkbenchCanvas canvas = new WorkbenchCanvas();
     private final JLabel certification = new JLabel();
+    private final JButton importConfiguration = new JButton("从 OpenPnP 导入…");
+    private final JButton certifyButton = new JButton("检查并认证");
+    private final JButton simulateButton = new JButton("3D 预演与碰撞检查");
+    private final JButton undoButton = new JButton("← 后退");
+    private final JButton redoButton = new JButton("前进 →");
+    private final JTabbedPane propertyTabs = new JTabbedPane();
+    private ExperimentalGuide guide;
     private final JTextArea result = new JTextArea(5, 30);
 
     private final JTextField name = new JTextField();
@@ -113,6 +151,8 @@ public class SafetyWorkbenchDialog extends JDialog {
     private final JTextField width = new JTextField();
     private final JTextField depth = new JTextField();
     private final JTextField height = new JTextField();
+    private final JTextField surfaceZ = new JTextField();
+    private final JButton applySurfaceZ = new JButton("按实测顶面 Z 计算高度");
     private final JTextField clearance = new JTextField();
     private final JTextField apertureWidth = new JTextField();
     private final JTextField apertureDepth = new JTextField();
@@ -161,12 +201,20 @@ public class SafetyWorkbenchDialog extends JDialog {
             new SpinnerNumberModel(0.0, -3600, 3600, 1));
     private final JComboBox<Double> jogStep = new JComboBox<>(
             new Double[] {0.01, 0.1, 1.0, 10.0});
-    private final JToggleButton motionArmed = new JToggleButton("启用窗口内低速点动");
+    private final JToggleButton motionArmed = new JToggleButton("启用窗口内运动（含主控制动作）");
     private final JLabel coordinateStatus = new JLabel("尚未读取坐标");
     private final JLabel vertexStatus = new JLabel("请在 3D 视图点击物体顶点");
     private final JToggleButton liveMode = new JToggleButton("实时运行画面");
     private final JCheckBox followSelectedTool = new JCheckBox("跟随控制吸嘴", true);
     private final JCheckBox keepOnTop = new JCheckBox("窗口置顶");
+    private final JCheckBox machineFrontView =
+            new JCheckBox("机台前视：X 方向匹配实机", true);
+    private final JCheckBox showReferenceLabels =
+            new JCheckBox("显示全部坐标标签", false);
+    private final JCheckBox visionHeightCompensation =
+            new JCheckBox("按 3D 高度修正顶部相机定位");
+    private final JLabel visionHeightStatus = new JLabel();
+    private PropertyChangeListener selectedToolListener;
     private final Map<String, LiveToolState> liveTools = new LinkedHashMap<>();
     private final List<Waypoint> liveTrail = new ArrayList<>();
     private Timer liveTimer;
@@ -178,20 +226,30 @@ public class SafetyWorkbenchDialog extends JDialog {
         this.model = SafetyWorkbenchStore.get();
         synchronizeToolProfiles();
         loadWorkbenchControls();
+        this.history = new SafetyWorkbenchHistory(model);
         setDefaultCloseOperation(DISPOSE_ON_CLOSE);
-        setMinimumSize(new Dimension(1220, 760));
-        setSize(new Dimension(1440, 860));
+        setMinimumSize(new Dimension(900, 600));
+        Dimension screen = Toolkit.getDefaultToolkit().getScreenSize();
+        setSize(new Dimension(Math.min(1540, Math.max(1024, screen.width - 80)),
+                Math.min(920, Math.max(680, screen.height - 100))));
         setLocationRelativeTo(frame);
         buildUi();
+        installHistoryShortcuts();
+        guide = createGuide();
         reloadObjects();
         updateCertification();
         selectFirstObject();
         startLiveView();
+        guide.startOnFirstOpen();
         addWindowListener(new WindowAdapter() {
             @Override
             public void windowClosed(WindowEvent event) {
                 if (liveTimer != null) {
                     liveTimer.stop();
+                }
+                if (selectedToolListener != null) {
+                    frame.getMachineControls().removePropertyChangeListener(
+                            "selectedTool", selectedToolListener);
                 }
             }
         });
@@ -204,6 +262,10 @@ public class SafetyWorkbenchDialog extends JDialog {
                         head.getName() + " · " + nozzle.getName());
             }
         }
+        reloadToolProfiles();
+    }
+
+    private void reloadToolProfiles() {
         toolProfileListModel.clear();
         for (ToolProfile profile : model.getToolProfiles()) {
             if (profile != null) {
@@ -238,8 +300,24 @@ public class SafetyWorkbenchDialog extends JDialog {
                     break;
                 }
             }
+            if (frame.getMachineControls().getSelectedTool() != nozzle) {
+                frame.getMachineControls().setSelectedTool(nozzle);
+            }
             canvas.repaint();
         });
+        selectedToolListener = event -> {
+            Object selected = event.getNewValue();
+            if (selected instanceof Nozzle && workbenchNozzle.getSelectedItem() != selected) {
+                workbenchNozzle.setSelectedItem(selected);
+            }
+        };
+        frame.getMachineControls().addPropertyChangeListener(
+                "selectedTool", selectedToolListener);
+        Nozzle initialNozzle = selectedWorkbenchNozzle();
+        if (initialNozzle != null
+                && frame.getMachineControls().getSelectedTool() != initialNozzle) {
+            frame.getMachineControls().setSelectedTool(initialNozzle);
+        }
     }
 
     private Nozzle selectedWorkbenchNozzle() {
@@ -349,14 +427,23 @@ public class SafetyWorkbenchDialog extends JDialog {
         }
     }
     private void startLiveView() {
-        liveTimer = new Timer(33, event -> updateLiveScene());
+        liveTimer = new Timer(AdaptiveUiRefresh.ACTIVE_DELAY_MS,
+                event -> updateLiveScene());
         liveTimer.setCoalesce(true);
         liveTimer.start();
     }
 
     private void updateLiveScene() {
+        boolean showing = isShowing();
+        if (!showing) {
+            liveTimer.setDelay(AdaptiveUiRefresh.timerDelay(false, false));
+            return;
+        }
+        boolean machineActive = Configuration.get().getMachine().isBusy();
+        boolean sceneChanged = false;
         long now = System.currentTimeMillis();
-        if (now - lastLiveSnapshot >= 45) {
+        if (AdaptiveUiRefresh.shouldTakeSnapshot(now, lastLiveSnapshot, machineActive,
+                hasPendingUserInput())) {
             lastLiveSnapshot = now;
             try {
                 HeadMountable selected = selectedWorkbenchTool();
@@ -374,10 +461,15 @@ public class SafetyWorkbenchDialog extends JDialog {
                         if (state == null) {
                             state = new LiveToolState(tool);
                             liveTools.put(key, state);
+                            sceneChanged = true;
                         }
-                        state.setTarget(tool);
+                        else {
+                            sceneChanged |= state.setTarget(tool);
+                        }
                     }
+                    int previousCount = liveTools.size();
                     liveTools.keySet().removeIf(key -> !seen.containsKey(key));
+                    sceneChanged |= previousCount != liveTools.size();
                     updateLiveTrail(selected);
                 }
             }
@@ -385,20 +477,36 @@ public class SafetyWorkbenchDialog extends JDialog {
                 // Live visualization is diagnostic and must never disturb a running job.
             }
         }
+        boolean animating = false;
         for (LiveToolState state : liveTools.values()) {
-            state.animate();
+            animating |= state.animate();
         }
-        if (liveMode.isSelected() && followSelectedTool.isSelected()) {
+        boolean followingView = false;
+        boolean following = liveMode.isSelected() && followSelectedTool.isSelected();
+        if (following) {
             HeadMountable selected = selectedWorkbenchTool();
             if (selected != null && selected.getHead() != null) {
                 LiveToolState state = liveTools.get(selected.getHead().getId()
                         + "/" + selected.getId());
                 if (state != null) {
-                    canvas.follow(state.x, state.y);
+                    followingView = canvas.follow(state.x, state.y);
                 }
             }
         }
-        canvas.repaint();
+        boolean active = machineActive || animating || followingView;
+        liveTimer.setDelay(AdaptiveUiRefresh.timerDelay(true, active));
+        if (sceneChanged || active) {
+            canvas.repaint();
+        }
+    }
+
+    private static boolean hasPendingUserInput() {
+        EventQueue queue = Toolkit.getDefaultToolkit().getSystemEventQueue();
+        return queue.peekEvent(MouseEvent.MOUSE_PRESSED) != null
+                || queue.peekEvent(MouseEvent.MOUSE_RELEASED) != null
+                || queue.peekEvent(MouseWheelEvent.MOUSE_WHEEL) != null
+                || queue.peekEvent(KeyEvent.KEY_PRESSED) != null
+                || queue.peekEvent(KeyEvent.KEY_RELEASED) != null;
     }
 
     private HeadMountable firstNozzle() {
@@ -436,37 +544,99 @@ public class SafetyWorkbenchDialog extends JDialog {
     }
     private void buildUi() {
         JPanel root = new JPanel(new BorderLayout(8, 8));
-        root.setBorder(new EmptyBorder(10, 10, 10, 10));
+        root.setBorder(new EmptyBorder(8, 8, 8, 8));
         root.add(buildHeader(), BorderLayout.NORTH);
-        root.add(buildPalette(), BorderLayout.WEST);
-        root.add(canvas, BorderLayout.CENTER);
-        root.add(buildProperties(), BorderLayout.EAST);
-        root.add(buildMotionPanel(), BorderLayout.SOUTH);
+
+        Component viewport = buildViewport();
+        Component details = buildProperties();
+        viewport.setMinimumSize(new Dimension(390, 320));
+        details.setMinimumSize(new Dimension(300, 300));
+        JSplitPane viewportAndDetails = new JSplitPane(JSplitPane.HORIZONTAL_SPLIT,
+                viewport, details);
+        viewportAndDetails.setBorder(null);
+        viewportAndDetails.setContinuousLayout(true);
+        viewportAndDetails.setResizeWeight(1.0);
+        viewportAndDetails.setDividerLocation(820);
+
+        Component palette = buildPalette();
+        palette.setMinimumSize(new Dimension(165, 300));
+        JSplitPane workspace = new JSplitPane(JSplitPane.HORIZONTAL_SPLIT,
+                palette, viewportAndDetails);
+        workspace.setBorder(null);
+        workspace.setContinuousLayout(true);
+        workspace.setResizeWeight(0.0);
+        workspace.setDividerLocation(215);
+        root.add(workspace, BorderLayout.CENTER);
         setContentPane(root);
     }
 
+    private Component buildViewport() {
+        JPanel viewport = new JPanel(new BorderLayout(4, 4));
+        JPanel controls = new JPanel(new WrapLayout(FlowLayout.LEFT, 5, 3));
+        JButton reset = new JButton("适合全部");
+        reset.addActionListener(event -> canvas.resetView());
+        JButton isometric = new JButton("等轴视图");
+        isometric.addActionListener(event -> canvas.setIsometricView());
+        JButton top = new JButton("俯视");
+        top.addActionListener(event -> canvas.setTopView());
+        machineFrontView.setToolTipText(
+                "默认镜像屏幕横向投影，使机头左右移动与从机器正面观察的方向一致。");
+        machineFrontView.addActionListener(
+                event -> canvas.setMirrorX(machineFrontView.isSelected()));
+        showReferenceLabels.setToolTipText(
+                "默认只显示所选物体或参考点名称，避免大量飞达、换嘴坞和停靠点标签遮挡实体。");
+        showReferenceLabels.addActionListener(event -> canvas.repaint());
+        controls.add(new JLabel("视图："));
+        controls.add(reset);
+        controls.add(isometric);
+        controls.add(top);
+        controls.add(machineFrontView);
+        controls.add(showReferenceLabels);
+        controls.add(new JLabel("空白处左拖 / 中键拖：平移；右拖：旋转；滚轮：缩放"));
+        viewport.add(controls, BorderLayout.NORTH);
+        viewport.add(canvas, BorderLayout.CENTER);
+        return viewport;
+    }
+
     private Component buildHeader() {
-        JPanel header = new JPanel(new BorderLayout(10, 0));
+        JPanel header = new JPanel();
+        header.setLayout(new BoxLayout(header, BoxLayout.Y_AXIS));
+        header.setBorder(BorderFactory.createCompoundBorder(
+                BorderFactory.createMatteBorder(0, 0, 1, 0, new Color(83, 89, 94)),
+                new EmptyBorder(2, 4, 7, 4)));
+
+        JPanel heading = new JPanel(new BorderLayout(12, 0));
         JLabel title = new JLabel("3D 安全工作台 / 数字孪生");
         title.setFont(title.getFont().deriveFont(Font.BOLD, 20f));
         JLabel explanation = new JLabel(
-                "拖入物体 → 工具头采点精确标定 → 扫掠碰撞预演 → 认证后解锁受控 XYZ 联动");
+                "建模与校准  →  轨迹预演  →  检查认证  →  受控运动");
+        explanation.setForeground(new Color(170, 181, 188));
         JPanel text = new JPanel();
         text.setLayout(new BoxLayout(text, BoxLayout.Y_AXIS));
         text.add(title);
+        text.add(Box.createVerticalStrut(2));
         text.add(explanation);
-        header.add(text, BorderLayout.WEST);
-        JPanel status = new JPanel(new FlowLayout(FlowLayout.RIGHT, 8, 0));
+        heading.add(text, BorderLayout.WEST);
         certification.setOpaque(true);
         certification.setBorder(BorderFactory.createEmptyBorder(7, 12, 7, 12));
-        JButton importConfiguration = new JButton("从 OpenPnP 导入…");
+        heading.add(certification, BorderLayout.EAST);
+        header.add(heading);
+        header.add(Box.createVerticalStrut(6));
+
         importConfiguration.addActionListener(event -> importOpenPnpConfiguration());
         JButton settings = new JButton("工作台与工具包络…");
         settings.addActionListener(event -> editWorkbench());
         JButton save = new JButton("保存模型");
         save.addActionListener(event -> saveModel());
-        JButton certify = new JButton("检查并认证");
-        certify.addActionListener(event -> certifyModel());
+        save.setToolTipText("保存在用户配置目录，不在安装目录中；重装软件不会覆盖。每次保存还会保留一个 .bak 备份。");
+        undoButton.setToolTipText("撤销上一步模型编辑（Ctrl+Z）");
+        redoButton.setToolTipText("重做刚撤销的模型编辑（Ctrl+Y）");
+        undoButton.addActionListener(event -> navigateHistory(false));
+        redoButton.addActionListener(event -> navigateHistory(true));
+        certifyButton.addActionListener(event -> certifyModel());
+        JButton followGuide = new JButton("跟着做");
+        followGuide.addActionListener(event -> guide.start());
+
         liveMode.setToolTipText("编辑模式允许拖放；实时模式显示 OpenPnP 内部运动位置，不等同于独立编码器实测位置。");
         liveMode.addActionListener(event -> {
             liveMode.setText(liveMode.isSelected() ? "● 实时运行" : "编辑模式");
@@ -478,29 +648,124 @@ public class SafetyWorkbenchDialog extends JDialog {
         JLabel driver = new JLabel(isAsyncDriverActive()
                 ? "异步驱动：已启用" : "异步驱动：未启用");
         driver.setToolTipText("联合飞拍轨迹真机测试需要 GcodeAsyncDriver；可在运动性能中心升级。");
-        status.add(liveMode);
-        status.add(followSelectedTool);
-        status.add(keepOnTop);
-        status.add(driver);
-        status.add(certification);
-        status.add(importConfiguration);
-        status.add(settings);
-        status.add(save);
-        status.add(certify);
-        header.add(status, BorderLayout.EAST);
+        visionHeightCompensation.setSelected(model.isVisionHeightCompensationEnabled());
+        visionHeightCompensation.setToolTipText(
+                "按鼠标下方 3D 实体的顶面 Z 调用相机双高度标定比例；只影响顶部相机的毫米/像素换算、标尺和拖拽定位，不缩放原始视频帧。");
+        visionHeightCompensation.addActionListener(event -> {
+            model.setVisionHeightCompensationEnabled(visionHeightCompensation.isSelected());
+            updateCertification();
+            result.setText(visionHeightCompensation.isSelected()
+                    ? "已请求启用 3D 高度定位。请精确填写物体底部 Z 和高度，完成顶部相机双高度标定，再检查、认证并保存模型。"
+                    : "已关闭 3D 高度定位；顶部相机恢复使用默认观察平面。请保存模型。");
+        });
+        updateVisionHeightStatus();
+
+        JPanel toolbar = new JPanel(new WrapLayout(FlowLayout.LEFT, 7, 3));
+        toolbar.add(liveMode);
+        toolbar.add(followSelectedTool);
+        toolbar.add(keepOnTop);
+        toolbar.add(driver);
+        toolbar.add(visionHeightCompensation);
+        toolbar.add(visionHeightStatus);
+        toolbar.add(Box.createHorizontalStrut(8));
+        toolbar.add(undoButton);
+        toolbar.add(redoButton);
+        toolbar.add(followGuide);
+        toolbar.add(importConfiguration);
+        toolbar.add(settings);
+        toolbar.add(save);
+        toolbar.add(certifyButton);
+        header.add(toolbar);
         return header;
     }
 
+    private void installHistoryShortcuts() {
+        getRootPane().getInputMap(JComponent.WHEN_IN_FOCUSED_WINDOW).put(
+                KeyStroke.getKeyStroke(KeyEvent.VK_Z, InputEvent.CTRL_DOWN_MASK), "undo-model");
+        getRootPane().getActionMap().put("undo-model", new AbstractAction() {
+            @Override
+            public void actionPerformed(java.awt.event.ActionEvent event) {
+                navigateHistory(false);
+            }
+        });
+        getRootPane().getInputMap(JComponent.WHEN_IN_FOCUSED_WINDOW).put(
+                KeyStroke.getKeyStroke(KeyEvent.VK_Y, InputEvent.CTRL_DOWN_MASK), "redo-model");
+        getRootPane().getActionMap().put("redo-model", new AbstractAction() {
+            @Override
+            public void actionPerformed(java.awt.event.ActionEvent event) {
+                navigateHistory(true);
+            }
+        });
+    }
+
+    private void navigateHistory(boolean forward) {
+        String selectedId = objectList.getSelectedValue() == null
+                ? null : objectList.getSelectedValue().id;
+        boolean changed = forward ? history.redo(model) : history.undo(model);
+        if (!changed) {
+            return;
+        }
+        reloadObjects();
+        reloadToolProfiles();
+        visionHeightCompensation.setSelected(model.isVisionHeightCompensationEnabled());
+        selectObjectById(selectedId);
+        updateCertification();
+        canvas.clearVertexSelection();
+        canvas.repaint();
+        result.setText((forward ? "已前进一步。" : "已后退一步。")
+                + "为保证运动安全，恢复后的模型需要重新检查并认证。");
+    }
+
+    private ExperimentalGuide createGuide() {
+        return new ExperimentalGuide(this, "safety-workbench", "3D 安全工作台",
+                new Step("导入现有机器坐标",
+                        "先同步软限位、Safe Z、停靠点、换嘴路径，以及飞达和底部相机实体。",
+                        () -> importConfiguration, () -> objectListModel.size() > 0),
+                new Step("核对 3D 场景",
+                        "先用空白处左拖或中键平移，再旋转和缩放；核对 X 方向、实体位置和真实机器一致。",
+                        () -> canvas, () -> objectListModel.size() > 0),
+                new Step("校准障碍物尺寸",
+                        "选择物体并检查原点、宽深高和安全间隙。用于视觉高度修正时，顶面 Z = 原点 Z + 高度。任何修改都会使旧认证失效。",
+                        () -> objectList, () -> objectList.getSelectedValue() != null,
+                        "打开物体/采点", () -> propertyTabs.setSelectedIndex(0)),
+                new Step("启用顶部视觉高度修正",
+                        "先给顶部相机做两个已知高度的像素比例标定，再勾选高度修正；视频帧不会反复缩放，只修正毫米/像素、标尺和拖拽定位。",
+                        () -> visionHeightCompensation,
+                        () -> visionHeightCompensation.isSelected()
+                                && hasCalibratedTopCamera()),
+                new Step("配置每支吸嘴的动态包络",
+                        "分别填写机头本体、吸嘴杆、收起和伸出标定值；不能只沿用单一工具方盒。",
+                        () -> toolProfileList, () -> toolProfileList.getSelectedValue() != null,
+                        "打开吸嘴包络", () -> propertyTabs.setSelectedIndex(1)),
+                new Step("读取坐标与低速示教",
+                        "先选择真实吸嘴。读取坐标不会运动；点动和移动必须由操作者主动解锁并确认。",
+                        () -> workbenchNozzle, () -> workbenchNozzle.getSelectedItem() != null,
+                        "打开移动/坐标", () -> propertyTabs.setSelectedIndex(2)),
+                new Step("先做整段碰撞预演",
+                        "设置轨迹和目标后执行预演。系统检查整段扫掠，不只是起点和终点。",
+                        () -> simulateButton, () -> result.getText().contains("预演通过")),
+                new Step("检查并认证模型",
+                        "只有逐项核对模型与实机一致后才认证；随后任何几何修改都会立即撤销认证。",
+                        () -> certifyButton, model::isCertified),
+                new Step("观察实时数字孪生",
+                        "实时画面读取 OpenPnP 内部位置，不会发送额外 G-code，也不等同独立编码器实测。",
+                        () -> liveMode, liveMode::isSelected,
+                        "切换实时画面", () -> liveMode.doClick()),
+                new Step("真机测试仍需最终确认",
+                        "受控真机按钮需要实验模式、回零、空吸嘴、认证模型、软限位和碰撞检查全部通过。引导绝不自动执行。",
+                        () -> physicalConfirmation, physicalConfirmation::isSelected));
+    }
     private Component buildPalette() {
         JPanel panel = new JPanel(new BorderLayout(5, 8));
-        panel.setPreferredSize(new Dimension(220, 500));
+        panel.setPreferredSize(new Dimension(225, 500));
         panel.setBorder(BorderFactory.createTitledBorder("可添加清单（拖入中间）"));
         DefaultListModel<String> paletteModel = new DefaultListModel<>();
         for (ObjectType value : ObjectType.values()) {
             paletteModel.addElement(value.getDisplayName());
         }
         JList<String> palette = new JList<>(paletteModel);
-        palette.setFixedCellHeight(34);
+        palette.setFixedCellHeight(38);
+        palette.setCellRenderer(new PaletteRenderer());
         palette.setDragEnabled(true);
         palette.setTransferHandler(new PaletteTransferHandler());
         panel.add(new JScrollPane(palette), BorderLayout.NORTH);
@@ -518,84 +783,149 @@ public class SafetyWorkbenchDialog extends JDialog {
         placed.add(new JScrollPane(objectList), BorderLayout.CENTER);
         JPanel buttons = new JPanel(new GridLayout(1, 2, 4, 0));
         JButton duplicate = new JButton("复制");
+        duplicate.setIcon(new WorkbenchGlyphIcon(Glyph.Copy, new Color(92, 151, 198)));
+        styleActionButton(duplicate, new Color(56, 91, 119));
         duplicate.addActionListener(event -> duplicateSelected());
         JButton remove = new JButton("删除");
+        remove.setIcon(new WorkbenchGlyphIcon(Glyph.Delete, new Color(225, 112, 104)));
+        styleActionButton(remove, new Color(117, 61, 59));
         remove.addActionListener(event -> removeSelected());
         buttons.add(duplicate);
         buttons.add(remove);
         placed.add(buttons, BorderLayout.SOUTH);
         panel.add(placed, BorderLayout.CENTER);
-        JLabel hint = new JLabel("<html>右键拖动旋转 · 滚轮缩放<br>左键拖动物体 · Shift+左键调整高度</html>");
+        JLabel hint = new JLabel("<html>物体左拖移动 · 顶点左拖改尺寸<br>Shift+拖动调 Z · 顶点右键快捷示教</html>");
         hint.setBorder(new EmptyBorder(4, 4, 4, 4));
         panel.add(hint, BorderLayout.SOUTH);
         return panel;
     }
 
     private Component buildProperties() {
-        JPanel outer = new JPanel(new BorderLayout(4, 4));
-        outer.setPreferredSize(new Dimension(310, 500));
-        outer.setBorder(BorderFactory.createTitledBorder("物体属性与实机采点"));
-        JPanel fields = new JPanel(new GridLayout(0, 2, 5, 5));
-        addField(fields, "名称", name);
-        addField(fields, "类别", type);
-        addField(fields, "形状", shape);
-        addField(fields, "原点 X (mm)", x);
-        addField(fields, "原点 Y (mm)", y);
-        addField(fields, "原点 Z (mm)", z);
-        addField(fields, "宽 X (mm)", width);
-        addField(fields, "深 Y (mm)", depth);
-        addField(fields, "高 Z (mm)", height);
-        addField(fields, "安全间隙 (mm)", clearance);
-        addField(fields, "中央通道宽", apertureWidth);
-        addField(fields, "中央通道深", apertureDepth);
-        fields.add(obstacle);
-        fields.add(locked);
-        JButton apply = new JButton("应用属性（修改后需重新认证）");
-        apply.addActionListener(event -> applyObject());
-        JPanel propertyBody = new JPanel(new BorderLayout(4, 5));
-        propertyBody.add(fields, BorderLayout.CENTER);
-        propertyBody.add(apply, BorderLayout.SOUTH);
-        outer.add(propertyBody, BorderLayout.NORTH);
+        WidthTrackingPanel content = new WidthTrackingPanel();
+        content.setLayout(new BoxLayout(content, BoxLayout.Y_AXIS));
+        content.setBorder(new EmptyBorder(5, 5, 8, 5));
 
-        JPanel capture = new JPanel(new GridLayout(0, 1, 4, 4));
-        capture.setBorder(BorderFactory.createTitledBorder("移动工具头后读取当前位置"));
-        JButton origin = new JButton("① 记录物体原点");
+        JPanel identity = compactGrid();
+        addCompactWideField(identity, 0, "名称", name);
+        addCompactField(identity, 1, 0, "类别", type);
+        addCompactField(identity, 1, 1, "形状", shape);
+        content.add(section("① 基本信息", identity));
+        content.add(Box.createVerticalStrut(5));
+
+        JPanel coordinates = compactGrid();
+        addCompactField(coordinates, 0, 0, "X", x);
+        addCompactField(coordinates, 0, 1, "Y", y);
+        addCompactField(coordinates, 1, 0, "底面 Z", z);
+        addCompactField(coordinates, 1, 1, "顶面 Z", surfaceZ);
+        content.add(section("② 原点坐标（mm）", coordinates));
+        content.add(Box.createVerticalStrut(5));
+
+        JPanel dimensions = compactGrid();
+        addCompactField(dimensions, 0, 0, "宽 X", width);
+        addCompactField(dimensions, 0, 1, "深 Y", depth);
+        addCompactField(dimensions, 1, 0, "高 Z", height);
+        addCompactField(dimensions, 1, 1, "间隙", clearance);
+        addCompactField(dimensions, 2, 0, "通道宽", apertureWidth);
+        addCompactField(dimensions, 2, 1, "通道深", apertureDepth);
+        JPanel flags = new JPanel(new FlowLayout(FlowLayout.LEFT, 5, 0));
+        flags.add(obstacle);
+        flags.add(locked);
+        GridBagConstraints flagConstraints = new GridBagConstraints();
+        flagConstraints.gridx = 0;
+        flagConstraints.gridy = 3;
+        flagConstraints.gridwidth = 4;
+        flagConstraints.anchor = GridBagConstraints.WEST;
+        flagConstraints.fill = GridBagConstraints.HORIZONTAL;
+        dimensions.add(flags, flagConstraints);
+        content.add(section("③ 外形尺寸（mm）", dimensions));
+
+        applySurfaceZ.setText("按顶面 Z 计算高度");
+        applySurfaceZ.setIcon(new WorkbenchGlyphIcon(Glyph.Measure,
+                new Color(109, 184, 213)));
+        applySurfaceZ.setToolTipText("把高度改为“实测顶面 Z - 底面 Z”，随后仍需应用属性。");
+        applySurfaceZ.addActionListener(event -> applyMeasuredSurfaceZ());
+        styleActionButton(applySurfaceZ, new Color(52, 93, 113));
+        JButton apply = new JButton("✓ 应用物体属性");
+        apply.setIcon(new WorkbenchGlyphIcon(Glyph.Apply, new Color(111, 212, 145)));
+        apply.setToolTipText("保存右侧字段到当前物体；安全认证将失效，需要重新检查。");
+        styleActionButton(apply, new Color(48, 103, 72));
+        apply.addActionListener(event -> applyObject());
+        JPanel propertyActions = new JPanel(new GridLayout(1, 2, 5, 0));
+        propertyActions.add(applySurfaceZ);
+        propertyActions.add(apply);
+        propertyActions.setMaximumSize(new Dimension(Integer.MAX_VALUE, 38));
+        content.add(Box.createVerticalStrut(5));
+        content.add(propertyActions);
+        content.add(Box.createVerticalStrut(7));
+
+        JPanel capture = new JPanel(new BorderLayout(4, 6));
+        capture.setBorder(BorderFactory.createTitledBorder("④ 实机采点与顶点示教"));
+        JButton origin = new JButton("记录原点");
+        origin.setIcon(new WorkbenchGlyphIcon(Glyph.Capture, new Color(116, 184, 224)));
         origin.addActionListener(event -> captureOrigin());
-        JButton minimum = new JButton("② 记录最小角点");
+        JButton minimum = new JButton("记录最小角");
+        minimum.setIcon(new WorkbenchGlyphIcon(Glyph.Corner, new Color(116, 184, 224)));
         minimum.addActionListener(event -> captureMinimum());
-        JButton maximum = new JButton("③ 记录最大角点并计算尺寸");
+        JButton maximum = new JButton("最大角并算尺寸");
+        maximum.setIcon(new WorkbenchGlyphIcon(Glyph.Measure, new Color(116, 184, 224)));
         maximum.addActionListener(event -> captureMaximum());
-        JButton polygonPoint = new JButton("追加自定义轮廓点");
+        JButton polygonPoint = new JButton("追加轮廓点");
+        polygonPoint.setIcon(new WorkbenchGlyphIcon(Glyph.Corner, new Color(187, 150, 222)));
         polygonPoint.addActionListener(event -> capturePolygonPoint());
-        JButton clearPolygon = new JButton("清空自定义轮廓");
+        JButton clearPolygon = new JButton("清空轮廓");
+        clearPolygon.setIcon(new WorkbenchGlyphIcon(Glyph.Delete, new Color(226, 126, 116)));
         clearPolygon.addActionListener(event -> clearPolygon());
-        JButton moveVertex = new JButton("移动到 3D 视图所选顶点");
+        JButton moveVertex = new JButton("吸嘴到顶点", Icons.centerTool);
         moveVertex.addActionListener(event -> moveToSelectedVertex());
-        JButton confirmVertex = new JButton("用当前吸嘴位置确认该顶点");
+        JButton moveCameraVertex = new JButton("相机到顶点", Icons.centerCamera);
+        moveCameraVertex.addActionListener(event -> moveCameraToSelectedVertex());
+        JButton confirmVertex = new JButton("吸嘴定义顶点", Icons.captureTool);
         confirmVertex.addActionListener(event -> confirmSelectedVertex());
-        capture.add(origin);
-        capture.add(minimum);
-        capture.add(maximum);
-        capture.add(polygonPoint);
-        capture.add(clearPolygon);
-        capture.add(moveVertex);
-        capture.add(confirmVertex);
+        JButton confirmVertexByCamera =
+                new JButton("相机定义顶点", Icons.captureCamera);
+        confirmVertexByCamera.addActionListener(event -> confirmSelectedVertexByCamera());
+        for (JButton button : Arrays.asList(origin, minimum, maximum, polygonPoint,
+                moveVertex, moveCameraVertex, confirmVertex, confirmVertexByCamera)) {
+            styleActionButton(button, new Color(55, 81, 103));
+        }
+        styleActionButton(clearPolygon, new Color(103, 58, 58));
+        JPanel captureActions = new JPanel(new GridLayout(0, 2, 5, 5));
+        captureActions.add(origin);
+        captureActions.add(minimum);
+        captureActions.add(maximum);
+        captureActions.add(polygonPoint);
+        captureActions.add(clearPolygon);
+        captureActions.add(moveVertex);
+        captureActions.add(moveCameraVertex);
+        captureActions.add(confirmVertex);
+        captureActions.add(confirmVertexByCamera);
+        capture.add(captureActions, BorderLayout.CENTER);
         JTextArea captureHint = new JTextArea(
-                "采点只读取工具头当前位置，不会自动移动机器。请使用原有点动控制慢速靠近物体边界，"
-                        + "也可转到“移动/坐标”在本窗口低速点动；请把吸嘴半径、相机外壳和线缆活动范围计入安全间隙。");
+                "蓝色按钮读取或移动，紫色按钮编辑轮廓，红色按钮清除。顶点右键也可直接输入或读取吸嘴坐标。");
         captureHint.setEditable(false);
         captureHint.setLineWrap(true);
         captureHint.setWrapStyleWord(true);
         captureHint.setOpaque(false);
-        captureHint.setRows(4);
-        capture.add(captureHint);
-        outer.add(capture, BorderLayout.CENTER);
-        JTabbedPane tabs = new JTabbedPane();
-        tabs.setPreferredSize(new Dimension(330, 500));
-        tabs.addTab("物体/采点", outer);
-        tabs.addTab("贴装头/吸嘴", buildToolProfilesPanel());
-        tabs.addTab("移动/坐标", buildCoordinatePanel());
-        return tabs;
+        captureHint.setRows(2);
+        capture.add(captureHint, BorderLayout.SOUTH);
+        capture.setMaximumSize(new Dimension(Integer.MAX_VALUE, 255));
+        content.add(capture);
+
+        propertyTabs.setTabLayoutPolicy(JTabbedPane.SCROLL_TAB_LAYOUT);
+        propertyTabs.setPreferredSize(new Dimension(430, 540));
+        propertyTabs.setMinimumSize(new Dimension(310, 300));
+        JScrollPane objectScroll = new JScrollPane(content);
+        objectScroll.setBorder(BorderFactory.createEmptyBorder());
+        objectScroll.setHorizontalScrollBarPolicy(JScrollPane.HORIZONTAL_SCROLLBAR_NEVER);
+        objectScroll.getVerticalScrollBar().setUnitIncrement(18);
+        propertyTabs.addTab("物体/采点", objectScroll);
+        propertyTabs.addTab("贴装头/吸嘴", buildToolProfilesPanel());
+        propertyTabs.addTab("移动/坐标", buildCoordinatePanel());
+        JScrollPane motionScroll = new JScrollPane(buildMotionPanel());
+        motionScroll.setBorder(BorderFactory.createEmptyBorder());
+        motionScroll.setHorizontalScrollBarPolicy(JScrollPane.HORIZONTAL_SCROLLBAR_NEVER);
+        propertyTabs.addTab("轨迹/预演", motionScroll);
+        return propertyTabs;
     }
 
     private Component buildToolProfilesPanel() {
@@ -609,30 +939,45 @@ public class SafetyWorkbenchDialog extends JDialog {
         });
         panel.add(new JScrollPane(toolProfileList), BorderLayout.NORTH);
 
-        JPanel fields = new JPanel(new GridLayout(0, 2, 5, 5));
-        addField(fields, "显示名称", profileName);
-        addField(fields, "机头半宽 X", profileBodyRadiusX);
-        addField(fields, "机头半深 Y", profileBodyRadiusY);
-        addField(fields, "机头最低 Z 偏移", profileBodyMinZ);
-        addField(fields, "机头最高 Z 偏移", profileBodyMaxZ);
-        addField(fields, "吸嘴杆半径", profileShaftRadius);
-        addField(fields, "额外安全间隙", profileClearance);
-        addField(fields, "收起标定 Z", profileRetractedZ);
-        addField(fields, "伸出标定 Z", profileExtendedZ);
-        addField(fields, "收起时吸嘴长度", profileRetractedLength);
-        addField(fields, "伸出时吸嘴长度", profileExtendedLength);
-        fields.add(profileEnabled);
-        fields.add(profileBodyFollowsZ);
-        fields.add(new JLabel("Z 动态规则"));
-        fields.add(new JLabel("吸嘴长度按两标定点插值"));
+        JPanel fields = compactGrid();
+        fields.setBorder(BorderFactory.createTitledBorder("贴装头与吸嘴安全包络（mm）"));
+        addCompactWideField(fields, 0, "名称", profileName);
+        addCompactField(fields, 1, 0, "机头半宽 X", profileBodyRadiusX);
+        addCompactField(fields, 1, 1, "机头半深 Y", profileBodyRadiusY);
+        addCompactField(fields, 2, 0, "最低 Z 偏移", profileBodyMinZ);
+        addCompactField(fields, 2, 1, "最高 Z 偏移", profileBodyMaxZ);
+        addCompactField(fields, 3, 0, "吸嘴杆半径", profileShaftRadius);
+        addCompactField(fields, 3, 1, "安全间隙", profileClearance);
+        addCompactField(fields, 4, 0, "收起标定 Z", profileRetractedZ);
+        addCompactField(fields, 4, 1, "伸出标定 Z", profileExtendedZ);
+        addCompactField(fields, 5, 0, "收起长度", profileRetractedLength);
+        addCompactField(fields, 5, 1, "伸出长度", profileExtendedLength);
+        JPanel profileFlags = new JPanel(new FlowLayout(FlowLayout.LEFT, 5, 0));
+        profileFlags.add(profileEnabled);
+        profileFlags.add(profileBodyFollowsZ);
+        profileFlags.add(new JLabel("长度按两标定点插值"));
+        GridBagConstraints flagConstraints = new GridBagConstraints();
+        flagConstraints.gridx = 0;
+        flagConstraints.gridy = 6;
+        flagConstraints.gridwidth = 4;
+        flagConstraints.fill = GridBagConstraints.HORIZONTAL;
+        fields.add(profileFlags, flagConstraints);
 
-        JPanel actions = new JPanel(new GridLayout(0, 1, 4, 4));
-        JButton captureRetracted = new JButton("读取当前 N1 位置作为收起 Z");
+        JPanel actions = new JPanel(new GridLayout(0, 2, 5, 5));
+        JButton captureRetracted = new JButton("读取收起 Z");
+        captureRetracted.setIcon(new WorkbenchGlyphIcon(Glyph.Capture,
+                new Color(121, 195, 224)));
         captureRetracted.addActionListener(event -> captureProfileZ(true));
-        JButton captureExtended = new JButton("读取当前 N1 位置作为伸出 Z");
+        JButton captureExtended = new JButton("读取伸出 Z");
+        captureExtended.setIcon(new WorkbenchGlyphIcon(Glyph.Capture,
+                new Color(121, 195, 224)));
         captureExtended.addActionListener(event -> captureProfileZ(false));
-        JButton apply = new JButton("应用吸嘴包络并重新认证");
+        JButton apply = new JButton("应用吸嘴包络");
+        apply.setIcon(new WorkbenchGlyphIcon(Glyph.Apply, new Color(119, 218, 153)));
         apply.addActionListener(event -> applyToolProfile());
+        styleActionButton(captureRetracted, new Color(52, 87, 110));
+        styleActionButton(captureExtended, new Color(52, 87, 110));
+        styleActionButton(apply, new Color(47, 102, 70));
         actions.add(captureRetracted);
         actions.add(captureExtended);
         actions.add(apply);
@@ -644,12 +989,18 @@ public class SafetyWorkbenchDialog extends JDialog {
         hint.setWrapStyleWord(true);
         hint.setOpaque(false);
         hint.setRows(4);
-        actions.add(hint);
+        JPanel hintPanel = new JPanel(new BorderLayout());
+        hintPanel.add(hint, BorderLayout.CENTER);
+        actions.add(hintPanel);
 
         JPanel body = new JPanel(new BorderLayout(4, 5));
         body.add(fields, BorderLayout.NORTH);
         body.add(actions, BorderLayout.CENTER);
-        panel.add(new JScrollPane(body), BorderLayout.CENTER);
+        JScrollPane profileScroll = new JScrollPane(body);
+        profileScroll.setBorder(BorderFactory.createEmptyBorder());
+        profileScroll.setHorizontalScrollBarPolicy(JScrollPane.HORIZONTAL_SCROLLBAR_NEVER);
+        profileScroll.getVerticalScrollBar().setUnitIncrement(18);
+        panel.add(profileScroll, BorderLayout.CENTER);
         if (!toolProfileListModel.isEmpty()) {
             toolProfileList.setSelectedIndex(0);
         }
@@ -657,119 +1008,268 @@ public class SafetyWorkbenchDialog extends JDialog {
     }
 
     private Component buildCoordinatePanel() {
-        JPanel panel = new JPanel(new BorderLayout(5, 6));
-        JPanel selectors = new JPanel(new GridLayout(0, 2, 5, 5));
-        addField(selectors, "当前控制吸嘴", workbenchNozzle);
-        addField(selectors, "飞达取料坐标", workbenchFeeder);
-        addField(selectors, "目标 X (mm)", coordinateX);
-        addField(selectors, "目标 Y (mm)", coordinateY);
-        addField(selectors, "吸嘴 Z (mm)", coordinateZ);
-        addField(selectors, "旋转 (°)", coordinateRotation);
-        addField(selectors, "点动步距 (mm)", jogStep);
-        selectors.add(new JLabel("安全锁"));
-        selectors.add(motionArmed);
-        panel.add(selectors, BorderLayout.NORTH);
+        JPanel panel = new JPanel(new BorderLayout());
+        JPanel body = new WidthTrackingPanel();
+        body.setLayout(new BoxLayout(body, BoxLayout.Y_AXIS));
+        body.setBorder(new EmptyBorder(6, 6, 8, 6));
 
-        JPanel actions = new JPanel(new GridLayout(0, 1, 4, 4));
+        JPanel selectors = compactGrid();
+        selectors.setBorder(BorderFactory.createTitledBorder("目标与示教坐标"));
+        addCompactWideField(selectors, 0, "控制吸嘴", workbenchNozzle);
+        addCompactWideField(selectors, 1, "飞达取料", workbenchFeeder);
+        addCompactField(selectors, 2, 0, "X", coordinateX);
+        addCompactField(selectors, 2, 1, "Y", coordinateY);
+        addCompactField(selectors, 3, 0, "Z", coordinateZ);
+        addCompactField(selectors, 3, 1, "R", coordinateRotation);
+        addCompactField(selectors, 4, 0, "点动步距", jogStep);
+        motionArmed.setText("启用 3D 自定义运动");
+        GridBagConstraints armConstraints = new GridBagConstraints();
+        armConstraints.gridx = 2;
+        armConstraints.gridy = 4;
+        armConstraints.gridwidth = 2;
+        armConstraints.anchor = GridBagConstraints.WEST;
+        selectors.add(motionArmed, armConstraints);
+        body.add(selectors);
+        body.add(Box.createVerticalStrut(7));
+        body.add(buildNativeMachineControls());
+        body.add(Box.createVerticalStrut(7));
+
+        JPanel reads = new JPanel(new GridLayout(0, 2, 5, 5));
+        reads.setBorder(BorderFactory.createTitledBorder("读取坐标（不会移动机器）"));
         JButton readCurrent = new JButton("读取当前吸嘴 XYZ/R");
         readCurrent.addActionListener(event -> readCurrentCoordinate());
         JButton readZ = new JButton("仅读取当前吸嘴 Z");
         readZ.addActionListener(event -> readCurrentNozzleZ());
         JButton readFeeder = new JButton("读取所选飞达拾取坐标");
         readFeeder.addActionListener(event -> readSelectedFeederCoordinate());
-        JButton readVertex = new JButton("使用 3D 视图所选物体/顶点坐标");
+        JButton readVertex = new JButton("使用 3D 所选端点坐标");
         readVertex.addActionListener(event -> useSelectedVertexCoordinate());
-        actions.add(readCurrent);
-        actions.add(readZ);
-        actions.add(readFeeder);
-        actions.add(readVertex);
+        reads.add(readCurrent);
+        reads.add(readZ);
+        reads.add(readFeeder);
+        reads.add(readVertex);
+        for (JButton button : Arrays.asList(readCurrent, readZ, readFeeder, readVertex)) {
+            button.setIcon(new WorkbenchGlyphIcon(Glyph.Capture,
+                    new Color(121, 195, 224)));
+            styleActionButton(button, new Color(52, 87, 110));
+        }
+        body.add(reads);
+        body.add(Box.createVerticalStrut(7));
 
-        JPanel jog = new JPanel(new GridLayout(3, 3, 3, 3));
-        jog.setBorder(BorderFactory.createTitledBorder("窗口内低速点动"));
-        JButton xMinus = new JButton("X−");
-        xMinus.addActionListener(event -> jog(-1, 0, 0));
-        JButton yPlus = new JButton("Y+");
-        yPlus.addActionListener(event -> jog(0, 1, 0));
-        JButton zPlus = new JButton("Z+");
-        zPlus.addActionListener(event -> jog(0, 0, 1));
-        JButton yMinus = new JButton("Y−");
-        yMinus.addActionListener(event -> jog(0, -1, 0));
-        JButton xPlus = new JButton("X+");
-        xPlus.addActionListener(event -> jog(1, 0, 0));
-        JButton zMinus = new JButton("Z−");
-        zMinus.addActionListener(event -> jog(0, 0, -1));
-        jog.add(new JLabel());
-        jog.add(yPlus);
-        jog.add(zPlus);
-        jog.add(xMinus);
-        jog.add(new JLabel("步进", SwingConstants.CENTER));
-        jog.add(xPlus);
-        jog.add(new JLabel());
-        jog.add(yMinus);
-        jog.add(zMinus);
-        actions.add(jog);
-
-        JButton move = new JButton("移动到坐标（安全 Z 路径）");
+        JPanel moves = new JPanel(new GridLayout(0, 2, 5, 5));
+        moves.setBorder(BorderFactory.createTitledBorder("3D 工作台专用受控动作"));
+        JButton move = new JButton("安全 Z 路径移动到坐标");
         move.addActionListener(event -> moveToCoordinate(false));
-        JButton moveAndRelease = new JButton("移动到坐标并释放吸嘴物料");
+        JButton moveAndRelease = new JButton("移动到坐标并释放物料");
         moveAndRelease.addActionListener(event -> moveToCoordinate(true));
-        actions.add(move);
-        actions.add(moveAndRelease);
+        move.setIcon(new WorkbenchGlyphIcon(Glyph.Corner, new Color(238, 185, 92)));
+        moveAndRelease.setIcon(new WorkbenchGlyphIcon(Glyph.Corner,
+                new Color(239, 145, 104)));
+        styleActionButton(move, new Color(112, 82, 43));
+        styleActionButton(moveAndRelease, new Color(116, 64, 48));
+        moves.add(move);
+        moves.add(moveAndRelease);
+        body.add(moves);
+        body.add(Box.createVerticalStrut(7));
+
         vertexStatus.setToolTipText("先在 3D 视图点击黄色顶点手柄；点击不会立即驱动机器。");
-        actions.add(vertexStatus);
-        actions.add(coordinateStatus);
+        JPanel status = new JPanel();
+        status.setLayout(new BoxLayout(status, BoxLayout.Y_AXIS));
+        status.setBorder(BorderFactory.createTitledBorder("状态"));
+        status.add(vertexStatus);
+        status.add(Box.createVerticalStrut(4));
+        status.add(coordinateStatus);
+        body.add(status);
 
         JTextArea hint = new JTextArea(
-                "这里直接控制上方选定的吸嘴，不再依赖主界面的机器控件。"
-                        + "所有运动均要求实验模式、机器启用并回零、软限位可达。"
-                        + "点动限速；整段移动先抬到安全 Z，再走 XY，最后下降。"
-                        + "顶点示教只在路径检查时忽略被测物体本身，其他物体仍参与碰撞检查。");
+                "上方控制区直接复用原生控制面板的动作、图标、步距和速度。"
+                        + "这些原生按钮遵循 OpenPnP 自身的启用、回零和安全检查；"
+                        + "安全锁只约束本页的 3D 专用移动、端点示教和释放动作。"
+                        + "整段移动始终先预演并优先使用安全 Z 路径。");
         hint.setEditable(false);
         hint.setLineWrap(true);
         hint.setWrapStyleWord(true);
         hint.setOpaque(false);
         hint.setRows(5);
-        actions.add(hint);
-        panel.add(new JScrollPane(actions), BorderLayout.CENTER);
+        hint.setBorder(new EmptyBorder(7, 4, 4, 4));
+        body.add(hint);
+
+        JScrollPane scroll = new JScrollPane(body);
+        scroll.setBorder(BorderFactory.createEmptyBorder());
+        scroll.setHorizontalScrollBarPolicy(JScrollPane.HORIZONTAL_SCROLLBAR_NEVER);
+        scroll.getVerticalScrollBar().setUnitIncrement(18);
+        panel.add(scroll, BorderLayout.CENTER);
         return panel;
     }
 
+    private Component buildNativeMachineControls() {
+        MachineControlsPanel controls = frame.getMachineControls();
+        JogControlsPanel jogControls = controls.getJogControlsPanel();
+        JPanel panel = new JPanel(new BorderLayout(5, 5));
+        panel.setBorder(BorderFactory.createTitledBorder(
+                "原生控制面板（同步动作、速度与步距）"));
+
+        JPanel system = new JPanel(new GridLayout(1, 3, 5, 5));
+        system.add(nativeActionButton(controls.startStopMachineAction, "机器启动 / 停止"));
+        system.add(nativeActionButton(controls.homeAction, "机器回零"));
+        JButton copy = new JButton(controls.copyDroAction);
+        copy.setToolTipText("复制原生控制面板当前坐标");
+        system.add(copy);
+        panel.add(system, BorderLayout.NORTH);
+
+        JPanel axes = new JPanel(new GridLayout(1, 3, 7, 0));
+        JPanel xy = new JPanel(new GridLayout(3, 3, 3, 3));
+        xy.setBorder(BorderFactory.createTitledBorder("X / Y"));
+        xy.add(new JLabel());
+        xy.add(nativeActionButton(jogControls.yPlusAction, "Y+"));
+        xy.add(new JLabel());
+        xy.add(nativeActionButton(jogControls.xMinusAction, "X−"));
+        xy.add(nativeActionButton(jogControls.xyParkAction, "XY 停靠"));
+        xy.add(nativeActionButton(jogControls.xPlusAction, "X+"));
+        xy.add(new JLabel());
+        xy.add(nativeActionButton(jogControls.yMinusAction, "Y−"));
+        xy.add(new JLabel());
+
+        JPanel zAxis = new JPanel(new GridLayout(3, 1, 3, 3));
+        zAxis.setBorder(BorderFactory.createTitledBorder("Z"));
+        zAxis.add(nativeActionButton(jogControls.zPlusAction, "Z+"));
+        zAxis.add(nativeActionButton(jogControls.zParkAction, "Z 停靠"));
+        zAxis.add(nativeActionButton(jogControls.zMinusAction, "Z−"));
+
+        JPanel cAxis = new JPanel(new GridLayout(3, 1, 3, 3));
+        cAxis.setBorder(BorderFactory.createTitledBorder("C"));
+        cAxis.add(nativeActionButton(jogControls.cPlusAction, "C+"));
+        cAxis.add(nativeActionButton(jogControls.cParkAction, "C 轴归位"));
+        cAxis.add(nativeActionButton(jogControls.cMinusAction, "C−"));
+        axes.add(xy);
+        axes.add(zAxis);
+        axes.add(cAxis);
+        panel.add(axes, BorderLayout.CENTER);
+
+        JPanel alignment = new JPanel(new GridLayout(1, 3, 5, 5));
+        alignment.add(nativeActionButton(controls.targetToolAction, "吸嘴对准相机"));
+        alignment.add(nativeActionButton(controls.targetCameraAction, "相机对准吸嘴"));
+        JButton safeZ = new JButton(jogControls.safezAction);
+        safeZ.setHideActionText(true);
+        safeZ.setToolTipText("全部贴装头抬到安全 Z");
+        alignment.add(safeZ);
+        panel.add(alignment, BorderLayout.SOUTH);
+        return panel;
+    }
+
+    private JButton nativeActionButton(Action action, String tooltip) {
+        JButton button = new JButton(action);
+        button.setHideActionText(true);
+        button.setToolTipText(tooltip);
+        button.setPreferredSize(new Dimension(44, 36));
+        return button;
+    }
+
     private Component buildMotionPanel() {
-        JPanel panel = new JPanel(new BorderLayout(8, 5));
-        panel.setBorder(BorderFactory.createTitledBorder("轨迹实验室（先预演，后真机）"));
-        JPanel controls = new JPanel(new FlowLayout(FlowLayout.LEFT, 7, 2));
-        controls.add(new JLabel("轨迹"));
-        controls.add(route);
-        controls.add(new JLabel("中心/目标 X"));
-        controls.add(targetX);
-        controls.add(new JLabel("Y"));
-        controls.add(targetY);
-        controls.add(new JLabel("对焦/目标 Z"));
-        controls.add(targetZ);
-        controls.add(new JLabel("飞拍跨度"));
-        controls.add(flightSpan);
-        controls.add(new JLabel("速度"));
-        controls.add(speed);
-        JButton useSelected = new JButton("使用所选物体中心");
+        JPanel panel = new JPanel(new BorderLayout(6, 7));
+        panel.setBorder(new EmptyBorder(6, 6, 8, 6));
+
+        JPanel upper = new JPanel();
+        upper.setLayout(new BoxLayout(upper, BoxLayout.Y_AXIS));
+        JPanel fields = new JPanel(new GridLayout(0, 2, 6, 6));
+        fields.setBorder(BorderFactory.createTitledBorder("轨迹参数"));
+        addField(fields, "轨迹类型", route);
+        addField(fields, "中心 / 目标 X", targetX);
+        addField(fields, "中心 / 目标 Y", targetY);
+        addField(fields, "对焦 / 目标 Z", targetZ);
+        addField(fields, "飞拍跨度", flightSpan);
+        addField(fields, "速度倍率", speed);
+        upper.add(fields);
+        upper.add(Box.createVerticalStrut(7));
+
+        JPanel actions = new JPanel(new GridLayout(0, 1, 5, 5));
+        actions.setBorder(BorderFactory.createTitledBorder("执行顺序"));
+        JButton useSelected = new JButton("① 使用所选物体中心作为目标");
         useSelected.addActionListener(event -> useSelectedObjectCenter());
-        JButton simulate = new JButton("3D 预演与碰撞检查");
-        simulate.addActionListener(event -> simulate());
-        JButton execute = new JButton("受控真机测试");
+        simulateButton.setText("② 3D 预演与整段碰撞检查");
+        simulateButton.addActionListener(event -> simulate());
+        JButton execute = new JButton("③ 受控真机测试");
         execute.addActionListener(event -> executePhysicalTest());
-        controls.add(useSelected);
-        controls.add(simulate);
-        controls.add(execute);
-        panel.add(controls, BorderLayout.NORTH);
+        actions.add(useSelected);
+        actions.add(simulateButton);
+        actions.add(execute);
+        upper.add(actions);
+        panel.add(upper, BorderLayout.NORTH);
+
         result.setEditable(false);
         result.setLineWrap(true);
         result.setWrapStyleWord(true);
+        result.setRows(10);
         result.setText("真机按钮不会因“看起来没问题”而解锁：必须实验模式开启、模型已认证、"
                 + "机器已回零、吸嘴无料、软限位可达，并再次通过整段扫掠检查。");
         JScrollPane resultScroll = new JScrollPane(result);
-        resultScroll.setPreferredSize(new Dimension(300, 78));
+        resultScroll.setBorder(BorderFactory.createTitledBorder("预演与检查结果"));
         panel.add(resultScroll, BorderLayout.CENTER);
+        physicalConfirmation.setBorder(new EmptyBorder(7, 3, 3, 3));
         panel.add(physicalConfirmation, BorderLayout.SOUTH);
         return panel;
+    }
+
+    private static JPanel compactGrid() {
+        JPanel panel = new JPanel(new GridBagLayout());
+        panel.setBorder(new EmptyBorder(2, 3, 3, 3));
+        panel.setMaximumSize(new Dimension(Integer.MAX_VALUE, 180));
+        return panel;
+    }
+
+    private static JPanel section(String title, Component content) {
+        JPanel panel = new JPanel(new BorderLayout());
+        panel.setBorder(BorderFactory.createTitledBorder(title));
+        panel.add(content, BorderLayout.CENTER);
+        panel.setAlignmentX(Component.LEFT_ALIGNMENT);
+        panel.setMaximumSize(new Dimension(Integer.MAX_VALUE, 230));
+        return panel;
+    }
+
+    private static void addCompactField(JPanel panel, int row, int column,
+            String label, Component field) {
+        GridBagConstraints labelConstraints = new GridBagConstraints();
+        labelConstraints.gridx = column * 2;
+        labelConstraints.gridy = row;
+        labelConstraints.anchor = GridBagConstraints.EAST;
+        labelConstraints.insets = new Insets(3, column == 0 ? 1 : 7, 3, 3);
+        panel.add(new JLabel(label), labelConstraints);
+
+        GridBagConstraints fieldConstraints = new GridBagConstraints();
+        fieldConstraints.gridx = column * 2 + 1;
+        fieldConstraints.gridy = row;
+        fieldConstraints.weightx = 1;
+        fieldConstraints.fill = GridBagConstraints.HORIZONTAL;
+        fieldConstraints.insets = new Insets(2, 0, 2, 2);
+        panel.add(field, fieldConstraints);
+    }
+
+    private static void addCompactWideField(JPanel panel, int row,
+            String label, Component field) {
+        GridBagConstraints labelConstraints = new GridBagConstraints();
+        labelConstraints.gridx = 0;
+        labelConstraints.gridy = row;
+        labelConstraints.anchor = GridBagConstraints.EAST;
+        labelConstraints.insets = new Insets(3, 1, 3, 3);
+        panel.add(new JLabel(label), labelConstraints);
+
+        GridBagConstraints fieldConstraints = new GridBagConstraints();
+        fieldConstraints.gridx = 1;
+        fieldConstraints.gridy = row;
+        fieldConstraints.gridwidth = 3;
+        fieldConstraints.weightx = 1;
+        fieldConstraints.fill = GridBagConstraints.HORIZONTAL;
+        fieldConstraints.insets = new Insets(2, 0, 2, 2);
+        panel.add(field, fieldConstraints);
+    }
+
+    private static void styleActionButton(JButton button, Color background) {
+        button.setBackground(background);
+        button.setForeground(new Color(239, 244, 247));
+        button.setFocusPainted(false);
+        button.setOpaque(true);
+        button.setIconTextGap(5);
+        button.putClientProperty("JButton.buttonType", "roundRect");
     }
 
     private static void addField(JPanel panel, String label, Component field) {
@@ -778,11 +1278,84 @@ public class SafetyWorkbenchDialog extends JDialog {
     }
 
     private void importOpenPnpConfiguration() {
+        org.openpnp.spi.Machine machine = Configuration.get().getMachine();
         JCheckBox workArea = new JCheckBox("工作范围：XYZ 轴已启用的软限位", true);
         JCheckBox homeAndPark = new JCheckBox("Home 点和各贴装头停靠点", true);
-        JCheckBox changer = new JCheckBox("自动换吸嘴的起点、中间点和终点", true);
+        JCheckBox changer = new JCheckBox("自动换嘴实体坞（按左右配置自动对称放置）", true);
         JCheckBox discard = new JCheckBox("机器抛料点", true);
-        JCheckBox feeders = new JCheckBox("全部飞达的取料点", true);
+        JCheckBox bottomCameras = new JCheckBox("向上看的底部相机实体", true);
+
+        List<FeederType> feederTypes = SafetyWorkbenchImportService.feederTypes(machine);
+        JCheckBox feeders = new JCheckBox("导入飞达实体（按类型选择，共 "
+                + machine.getFeeders().size() + " 个）", !feederTypes.isEmpty());
+        feeders.setEnabled(!feederTypes.isEmpty());
+        Map<String, JCheckBox> feederTypeChecks = new LinkedHashMap<>();
+        JPanel feederTypeRows = new JPanel();
+        feederTypeRows.setLayout(new BoxLayout(feederTypeRows, BoxLayout.Y_AXIS));
+        feederTypeRows.setBorder(new EmptyBorder(4, 18, 5, 4));
+        for (FeederType feederType : feederTypes) {
+            String count = feederType.getEnabledCount() == feederType.getCount()
+                    ? "共 " + feederType.getCount() + " 个"
+                    : "共 " + feederType.getCount() + " 个，已启用 "
+                            + feederType.getEnabledCount() + " 个";
+            JCheckBox typeChoice = new JCheckBox(feederType.getLabel() + " — " + count, true);
+            typeChoice.setToolTipText("仅同步这一类飞达；不会删除其他类型已导入的实体");
+            feederTypeChecks.put(feederType.getKey(), typeChoice);
+            feederTypeRows.add(typeChoice);
+        }
+
+        JButton selectAllFeederTypes = new JButton("全选类型");
+        JButton clearAllFeederTypes = new JButton("全不选");
+        JPanel feederTypeActions = new JPanel(new FlowLayout(FlowLayout.LEFT, 5, 0));
+        feederTypeActions.add(selectAllFeederTypes);
+        feederTypeActions.add(clearAllFeederTypes);
+        feederTypeRows.add(Box.createVerticalStrut(4));
+        feederTypeRows.add(feederTypeActions);
+        selectAllFeederTypes.addActionListener(event -> feederTypeChecks.values()
+                .forEach(choice -> choice.setSelected(true)));
+        clearAllFeederTypes.addActionListener(event -> feederTypeChecks.values()
+                .forEach(choice -> choice.setSelected(false)));
+
+        JScrollPane feederTypeScroll = new JScrollPane(feederTypeRows);
+        feederTypeScroll.setBorder(BorderFactory.createMatteBorder(1, 0, 0, 0,
+                Color.GRAY));
+        feederTypeScroll.setHorizontalScrollBarPolicy(JScrollPane.HORIZONTAL_SCROLLBAR_NEVER);
+        feederTypeScroll.setPreferredSize(new Dimension(560,
+                Math.min(190, 38 + feederTypes.size() * 26)));
+        feederTypeScroll.setVisible(false);
+        JToggleButton feederDisclosure = new JToggleButton(
+                "▶ 展开飞达类型（" + feederTypes.size() + " 类）", false);
+        feederDisclosure.setEnabled(!feederTypes.isEmpty());
+        JPanel feederHeader = new JPanel(new BorderLayout(8, 0));
+        feederHeader.add(feeders, BorderLayout.CENTER);
+        feederHeader.add(feederDisclosure, BorderLayout.EAST);
+        JPanel feederGroup = new JPanel(new BorderLayout());
+        feederGroup.setBorder(BorderFactory.createCompoundBorder(
+                BorderFactory.createLineBorder(Color.GRAY),
+                new EmptyBorder(4, 5, 4, 5)));
+        feederGroup.add(feederHeader, BorderLayout.NORTH);
+        feederGroup.add(feederTypeScroll, BorderLayout.CENTER);
+        feederDisclosure.addActionListener(event -> {
+            boolean expanded = feederDisclosure.isSelected();
+            feederDisclosure.setText(expanded
+                    ? "▼ 收起飞达类型" : "▶ 展开飞达类型（" + feederTypes.size() + " 类）");
+            feederTypeScroll.setVisible(expanded);
+            feederGroup.revalidate();
+            Window window = SwingUtilities.getWindowAncestor(feederGroup);
+            if (window != null) {
+                window.pack();
+                window.setLocationRelativeTo(this);
+            }
+        });
+        Runnable updateFeederChoices = () -> {
+            boolean enabled = feeders.isSelected() && feeders.isEnabled();
+            feederTypeChecks.values().forEach(choice -> choice.setEnabled(enabled));
+            selectAllFeederTypes.setEnabled(enabled);
+            clearAllFeederTypes.setEnabled(enabled);
+        };
+        feeders.addActionListener(event -> updateFeederChoices.run());
+        updateFeederChoices.run();
+
         JPanel choices = new JPanel();
         choices.setLayout(new BoxLayout(choices, BoxLayout.Y_AXIS));
         choices.add(new JLabel("选择要从当前 OpenPnP 机器配置同步到 3D 工作台的内容："));
@@ -791,9 +1364,12 @@ public class SafetyWorkbenchDialog extends JDialog {
         choices.add(homeAndPark);
         choices.add(changer);
         choices.add(discard);
-        choices.add(feeders);
+        choices.add(Box.createVerticalStrut(4));
+        choices.add(feederGroup);
+        choices.add(Box.createVerticalStrut(4));
+        choices.add(bottomCameras);
         choices.add(Box.createVerticalStrut(8));
-        choices.add(new JLabel("再次导入会按来源更新已有标记，不会重复堆叠。"));
+        choices.add(new JLabel("再次导入会更新实体并迁移旧版点标记；实体顶面与机器配置 Z 对齐。"));
         if (JOptionPane.showConfirmDialog(this, choices, "从 OpenPnP 导入安全区与坐标",
                 JOptionPane.OK_CANCEL_OPTION, JOptionPane.PLAIN_MESSAGE)
                 != JOptionPane.OK_OPTION) {
@@ -815,15 +1391,26 @@ public class SafetyWorkbenchDialog extends JDialog {
         if (feeders.isSelected()) {
             categories.add(Category.FEEDER_PICK_POINTS);
         }
+        if (bottomCameras.isSelected()) {
+            categories.add(Category.BOTTOM_CAMERAS);
+        }
+        Set<String> selectedFeederTypeKeys = new LinkedHashSet<>();
+        for (Map.Entry<String, JCheckBox> entry : feederTypeChecks.entrySet()) {
+            if (entry.getValue().isSelected()) {
+                selectedFeederTypeKeys.add(entry.getKey());
+            }
+        }
         SafetyWorkbenchImportService.Summary summary =
                 SafetyWorkbenchImportService.importConfiguration(model,
-                        Configuration.get().getMachine(), selectedWorkbenchNozzle(), categories);
+                        machine, selectedWorkbenchNozzle(), categories, selectedFeederTypeKeys);
         reloadObjects();
         selectFirstObject();
         updateCertification();
         canvas.repaint();
         result.setText(summary.toDisplayText()
-                + "\n导入后请在 3D 视图核对标记和范围，再重新检查并认证模型。");
+                + "\n飞达、底部相机和换嘴坞按真实坐标生成可碰撞实体；"
+                + "顶面 Z 对齐机器配置坐标，3D 网格显示自动识别的工作面 Z。"
+                + "请核对外形尺寸、方向和范围，再重新认证。");
         JOptionPane.showMessageDialog(this, summary.toDisplayText(), "导入完成",
                 summary.getWarnings().isEmpty()
                         ? JOptionPane.INFORMATION_MESSAGE : JOptionPane.WARNING_MESSAGE);
@@ -841,6 +1428,19 @@ public class SafetyWorkbenchDialog extends JDialog {
         if (!objectListModel.isEmpty()) {
             objectList.setSelectedIndex(0);
         }
+    }
+
+    private void selectObjectById(String id) {
+        if (id != null) {
+            for (int index = 0; index < objectListModel.size(); index++) {
+                SafetyObject object = objectListModel.get(index);
+                if (id.equals(object.id)) {
+                    objectList.setSelectedIndex(index);
+                    return;
+                }
+            }
+        }
+        selectFirstObject();
     }
 
     private void addObject(ObjectType objectType, double worldX, double worldY) {
@@ -891,7 +1491,8 @@ public class SafetyWorkbenchDialog extends JDialog {
     private void showObject(SafetyObject object) {
         boolean enabled = object != null;
         for (Component component : Arrays.asList(name, type, shape, x, y, z, width, depth,
-                height, clearance, apertureWidth, apertureDepth, obstacle, locked)) {
+                height, surfaceZ, applySurfaceZ, clearance, apertureWidth, apertureDepth,
+                obstacle, locked)) {
             component.setEnabled(enabled);
         }
         if (!enabled) {
@@ -906,11 +1507,32 @@ public class SafetyWorkbenchDialog extends JDialog {
         width.setText(format(object.width));
         depth.setText(format(object.depth));
         height.setText(format(object.height));
+        surfaceZ.setText(format(object.z + object.height));
         clearance.setText(format(object.clearance));
         apertureWidth.setText(format(object.apertureWidth));
         apertureDepth.setText(format(object.apertureDepth));
         obstacle.setSelected(object.obstacle);
         locked.setSelected(object.locked);
+    }
+
+    private void applyMeasuredSurfaceZ() {
+        try {
+            double baseZ = parse(z);
+            double measuredSurfaceZ = parse(surfaceZ);
+            double measuredHeight = measuredSurfaceZ - baseZ;
+            if (!Double.isFinite(measuredHeight) || measuredHeight < 0) {
+                throw new IllegalArgumentException("实测顶面 Z 不能低于底面 Z。");
+            }
+            height.setText(format(measuredHeight));
+            result.setText(String.format(Locale.ROOT,
+                    "已根据底面 Z %.3f mm 和实测顶面 Z %.3f mm 计算高度 %.3f mm。"
+                            + "请点击“应用属性”，检查后重新认证模型。",
+                    baseZ, measuredSurfaceZ, measuredHeight));
+        }
+        catch (Exception exception) {
+            JOptionPane.showMessageDialog(this, exception.getMessage(), "顶面高度无效",
+                    JOptionPane.WARNING_MESSAGE);
+        }
     }
 
     private void applyObject() {
@@ -933,6 +1555,7 @@ public class SafetyWorkbenchDialog extends JDialog {
             object.apertureDepth = nonNegative(apertureDepth, "中央通道深度");
             object.obstacle = obstacle.isSelected();
             object.locked = locked.isSelected();
+            surfaceZ.setText(format(object.z + object.height));
             model.touch();
             objectList.repaint();
             canvas.repaint();
@@ -1141,6 +1764,52 @@ public class SafetyWorkbenchDialog extends JDialog {
         moveToCoordinate(false, true);
     }
 
+    private Camera selectedDefaultCamera(Nozzle nozzle) {
+        if (nozzle == null || nozzle.getHead() == null) {
+            JOptionPane.showMessageDialog(this, "请先选择带有头部相机的吸嘴。",
+                    "相机不可用", JOptionPane.WARNING_MESSAGE);
+            return null;
+        }
+        try {
+            Camera camera = nozzle.getHead().getDefaultCamera();
+            if (camera == null) {
+                throw new Exception("贴装头没有默认相机");
+            }
+            return camera;
+        }
+        catch (Exception exception) {
+            JOptionPane.showMessageDialog(this,
+                    "无法取得所选吸嘴的头部相机：" + exception.getMessage(),
+                    "相机不可用", JOptionPane.WARNING_MESSAGE);
+            return null;
+        }
+    }
+
+    private void moveCameraToSelectedVertex() {
+        Vertex vertex = canvas.getSelectedVertex();
+        if (vertex == null) {
+            JOptionPane.showMessageDialog(this,
+                    "请先在 3D 视图点击所选物体上显示的黄色端点手柄。",
+                    "未选择端点", JOptionPane.WARNING_MESSAGE);
+            return;
+        }
+        Nozzle nozzle = requireMotionReady();
+        Camera camera = selectedDefaultCamera(nozzle);
+        if (camera == null) {
+            return;
+        }
+        Location target = vertex.getLocation();
+        if (!checkReachable(camera, target)) {
+            return;
+        }
+        setCoordinate(target);
+        UiUtils.submitUiMachineTask(() -> {
+            frame.getMachineControls().checkJogMotionSafety(camera, target);
+            MovableUtils.moveToLocationAtSafeZ(camera, target);
+            MovableUtils.fireTargetedUserAction(camera);
+        });
+    }
+
     private void confirmSelectedVertex() {
         Vertex vertex = canvas.getSelectedVertex();
         if (vertex == null) {
@@ -1152,6 +1821,32 @@ public class SafetyWorkbenchDialog extends JDialog {
         if (location == null) {
             return;
         }
+        applySelectedVertexLocation(vertex, location, "吸嘴");
+    }
+
+    private void confirmSelectedVertexByCamera() {
+        Vertex vertex = canvas.getSelectedVertex();
+        Nozzle nozzle = selectedWorkbenchNozzle();
+        if (vertex == null) {
+            JOptionPane.showMessageDialog(this, "请先在 3D 视图选择一个端点。",
+                    "未选择端点", JOptionPane.WARNING_MESSAGE);
+            return;
+        }
+        Camera camera = selectedDefaultCamera(nozzle);
+        if (camera == null) {
+            return;
+        }
+        try {
+            Location location = camera.getLocation()
+                    .convertToUnits(LengthUnit.Millimeters);
+            applySelectedVertexLocation(vertex, location, "相机");
+        }
+        catch (Exception exception) {
+            UiUtils.showError(this, "读取相机位置失败", exception);
+        }
+    }
+
+    private void applySelectedVertexLocation(Vertex vertex, Location location, String source) {
         SafetyWorkbenchVertexEditor.apply(vertex, location);
         model.touch();
         showObject(vertex.object);
@@ -1159,10 +1854,86 @@ public class SafetyWorkbenchDialog extends JDialog {
         canvas.repaint();
         updateCertification();
         setCoordinate(location);
-        result.setText("已用当前吸嘴坐标确认“" + vertex.getLabel()
+        result.setText("已用当前" + source + "坐标定义“" + vertex.getLabel()
                 + "”。物体几何已更新，需要重新检查并认证。"
                 + (vertex.object.sourceKey == null || vertex.object.sourceKey.isEmpty()
-                        ? "" : "该点来自 OpenPnP；再次导入会恢复为机器配置中的坐标。"));
+                        ? "" : "该实体来自 OpenPnP；再次导入会恢复机器配置坐标。"));
+    }
+
+    private void showVertexContextMenu(Component invoker, int menuX, int menuY,
+            Vertex vertex) {
+        if (vertex == null) {
+            return;
+        }
+        canvas.selectVertex(vertex);
+        JPopupMenu menu = new JPopupMenu();
+        JMenuItem title = new JMenuItem(vertex.getLabel());
+        title.setEnabled(false);
+        menu.add(title);
+        menu.addSeparator();
+
+        JMenuItem setLocation = new JMenuItem("设定顶点坐标…");
+        setLocation.addActionListener(event -> editVertexCoordinate(vertex));
+        menu.add(setLocation);
+
+        JMenuItem readNozzle = new JMenuItem("读取当前吸嘴坐标并设定顶点");
+        readNozzle.addActionListener(event -> {
+            Location location = currentToolLocation();
+            if (location != null) {
+                applySelectedVertexLocation(vertex, location, "吸嘴");
+            }
+        });
+        menu.add(readNozzle);
+
+        JMenuItem useCoordinatePanel = new JMenuItem("使用右侧坐标栏设定顶点");
+        useCoordinatePanel.addActionListener(event ->
+                applySelectedVertexLocation(vertex, targetCoordinate(), "坐标栏"));
+        menu.add(useCoordinatePanel);
+        menu.addSeparator();
+
+        JMenuItem moveNozzle = new JMenuItem("吸嘴移动到该顶点…");
+        moveNozzle.addActionListener(event -> moveToSelectedVertex());
+        menu.add(moveNozzle);
+        JMenuItem moveCamera = new JMenuItem("顶部相机移动到该顶点…");
+        moveCamera.addActionListener(event -> moveCameraToSelectedVertex());
+        menu.add(moveCamera);
+
+        JMenuItem lockObject = new JMenuItem(vertex.object.locked ? "解除物体锁定" : "锁定物体");
+        lockObject.addActionListener(event -> {
+            vertex.object.locked = !vertex.object.locked;
+            model.touch();
+            showObject(vertex.object);
+            updateCertification();
+            canvas.repaint();
+        });
+        menu.addSeparator();
+        menu.add(lockObject);
+        menu.show(invoker, menuX, menuY);
+    }
+
+    private void editVertexCoordinate(Vertex vertex) {
+        Location location = vertex.getLocation().convertToUnits(LengthUnit.Millimeters);
+        JTextField vertexX = new JTextField(format(location.getX()));
+        JTextField vertexY = new JTextField(format(location.getY()));
+        JTextField vertexZ = new JTextField(format(location.getZ()));
+        JPanel fields = new JPanel(new GridLayout(0, 2, 6, 6));
+        addField(fields, "X (mm)", vertexX);
+        addField(fields, "Y (mm)", vertexY);
+        addField(fields, "Z (mm)", vertexZ);
+        if (JOptionPane.showConfirmDialog(this, fields,
+                "设定顶点坐标 · " + vertex.getLabel(), JOptionPane.OK_CANCEL_OPTION,
+                JOptionPane.PLAIN_MESSAGE) != JOptionPane.OK_OPTION) {
+            return;
+        }
+        try {
+            Location target = new Location(LengthUnit.Millimeters,
+                    parse(vertexX), parse(vertexY), parse(vertexZ), 0);
+            applySelectedVertexLocation(vertex, target, "输入的");
+        }
+        catch (Exception exception) {
+            JOptionPane.showMessageDialog(this, exception.getMessage(), "顶点坐标无效",
+                    JOptionPane.WARNING_MESSAGE);
+        }
     }
 
     private void moveToCoordinate(boolean release) {
@@ -1300,7 +2071,7 @@ public class SafetyWorkbenchDialog extends JDialog {
         }
         if (!motionArmed.isSelected()) {
             JOptionPane.showMessageDialog(this,
-                    "请先在“移动/坐标”页启用窗口内低速点动安全锁。",
+                    "请先在“移动/坐标”页启用窗口内运动安全锁。",
                     "移动未解锁", JOptionPane.WARNING_MESSAGE);
             return null;
         }
@@ -1312,9 +2083,9 @@ public class SafetyWorkbenchDialog extends JDialog {
                 number(coordinateZ), number(coordinateRotation));
     }
 
-    private boolean checkReachable(Nozzle nozzle, Location target) {
+    private boolean checkReachable(HeadMountable tool, Location target) {
         try {
-            if (nozzle.isReachable(target)) {
+            if (tool.isReachable(target)) {
                 return true;
             }
         }
@@ -1465,7 +2236,7 @@ public class SafetyWorkbenchDialog extends JDialog {
         if (route.getSelectedIndex() == 2 && !isAsyncDriverActive()) {
             JOptionPane.showMessageDialog(this,
                     "联合下降—定高通过—联合抬升需要先启用 GcodeAsyncDriver。\n"
-                            + "请在实验功能的“运动性能与补偿中心”完成驱动升级和基础测试。",
+                            + "请在实验功能的“运动提速验证中心”完成驱动升级和基础测试。",
                     "异步驱动未启用", JOptionPane.WARNING_MESSAGE);
             return;
         }
@@ -1614,7 +2385,7 @@ public class SafetyWorkbenchDialog extends JDialog {
         }
         if (JOptionPane.showConfirmDialog(this,
                 "认证表示你已按实机核对工作台范围、所有障碍物、底部相机中央通道、"
-                        + "工具头/吸嘴包络和安全余量。\n"
+                        + "工具头/吸嘴包络、安全余量，以及用于视觉修正的各实体顶面高度。\n"
                         + "软件的几何模型不能发现未建模的线缆、临时工具或松动物体。\n\n"
                         + "确认把当前修订标记为“已认证”吗？",
                 "认证安全模型", JOptionPane.YES_NO_OPTION,
@@ -1630,7 +2401,10 @@ public class SafetyWorkbenchDialog extends JDialog {
     private void saveModel() {
         try {
             SafetyWorkbenchStore.save(model);
-            result.setText("安全工作台已保存到：" + SafetyWorkbenchStore.getFile().getAbsolutePath());
+            result.setText("安全工作台已保存到用户配置目录："
+                    + SafetyWorkbenchStore.getFile().getAbsolutePath()
+                    + "\n安装、升级或重装 OpenPnP Pro 不会覆盖该文件；旧版本备份位于："
+                    + SafetyWorkbenchStore.getBackupFile().getAbsolutePath());
         }
         catch (Exception exception) {
             JOptionPane.showMessageDialog(this, "保存失败：" + exception.getMessage(),
@@ -1639,6 +2413,9 @@ public class SafetyWorkbenchDialog extends JDialog {
     }
 
     private void updateCertification() {
+        history.capture(model);
+        undoButton.setEnabled(history.canUndo());
+        redoButton.setEnabled(history.canRedo());
         if (model.isCertified()) {
             certification.setText("● 已认证 · 修订 " + model.getRevision());
             certification.setForeground(new Color(30, 83, 57));
@@ -1649,6 +2426,36 @@ public class SafetyWorkbenchDialog extends JDialog {
             certification.setForeground(new Color(112, 69, 25));
             certification.setBackground(new Color(239, 224, 199));
         }
+        updateVisionHeightStatus();
+    }
+
+    private void updateVisionHeightStatus() {
+        if (!model.isVisionHeightCompensationEnabled()) {
+            visionHeightStatus.setText("高度定位：关闭");
+            visionHeightStatus.setForeground(new Color(145, 151, 156));
+        }
+        else if (!hasCalibratedTopCamera()) {
+            visionHeightStatus.setText("高度定位：需相机双高度标定");
+            visionHeightStatus.setForeground(new Color(204, 132, 54));
+        }
+        else if (!model.isCertified()) {
+            visionHeightStatus.setText("高度定位：需认证模型");
+            visionHeightStatus.setForeground(new Color(204, 132, 54));
+        }
+        else {
+            visionHeightStatus.setText("高度定位：已就绪");
+            visionHeightStatus.setForeground(new Color(72, 174, 112));
+        }
+    }
+
+    private boolean hasCalibratedTopCamera() {
+        for (Camera camera : Configuration.get().getMachine().getAllCameras()) {
+            if (camera.getLooking() == Camera.Looking.Down
+                    && camera.isUnitsPerPixelAtZCalibrated()) {
+                return true;
+            }
+        }
+        return false;
     }
 
     private static JTextField valueField(double value) {
@@ -1699,14 +2506,20 @@ public class SafetyWorkbenchDialog extends JDialog {
             z = targetZ = tool.reference.z;
         }
 
-        void setTarget(DynamicTool tool) {
+        boolean setTarget(DynamicTool tool) {
+            boolean changed = !sameVisual(this.tool, tool)
+                    || targetX != tool.reference.x
+                    || targetY != tool.reference.y
+                    || targetZ != tool.reference.z;
             this.tool = tool;
             targetX = tool.reference.x;
             targetY = tool.reference.y;
             targetZ = tool.reference.z;
+            return changed;
         }
 
-        void animate() {
+        boolean animate() {
+            boolean moving = x != targetX || y != targetY || z != targetZ;
             double smoothing = 0.34;
             x += (targetX - x) * smoothing;
             y += (targetY - y) * smoothing;
@@ -1720,6 +2533,23 @@ public class SafetyWorkbenchDialog extends JDialog {
             if (Math.abs(targetZ - z) < 0.001) {
                 z = targetZ;
             }
+            return moving;
+        }
+
+        private static boolean sameVisual(DynamicTool first, DynamicTool second) {
+            return first != null && second != null
+                    && first.radiusX == second.radiusX
+                    && first.radiusY == second.radiusY
+                    && first.minZOffset == second.minZOffset
+                    && first.maxZOffset == second.maxZOffset
+                    && first.shaftRadius == second.shaftRadius
+                    && first.tipLength == second.tipLength
+                    && first.colorRgb == second.colorRgb
+                    && first.carryingPart == second.carryingPart
+                    && first.bodyFollowsNozzleZ == second.bodyFollowsNozzleZ
+                    && first.bodyMinZOffset == second.bodyMinZOffset
+                    && first.bodyMaxZOffset == second.bodyMaxZOffset
+                    && first.carriedPartHeight == second.carriedPartHeight;
         }
     }
     private class PaletteTransferHandler extends TransferHandler {
@@ -1767,6 +2597,232 @@ public class SafetyWorkbenchDialog extends JDialog {
         }
     }
 
+    private static final class WidthTrackingPanel extends JPanel
+            implements javax.swing.Scrollable {
+        @Override
+        public Dimension getPreferredScrollableViewportSize() {
+            return getPreferredSize();
+        }
+
+        @Override
+        public int getScrollableUnitIncrement(java.awt.Rectangle visibleRect,
+                int orientation, int direction) {
+            return 20;
+        }
+
+        @Override
+        public int getScrollableBlockIncrement(java.awt.Rectangle visibleRect,
+                int orientation, int direction) {
+            int extent = orientation == SwingConstants.VERTICAL
+                    ? visibleRect.height : visibleRect.width;
+            return Math.max(20, extent - 20);
+        }
+
+        @Override
+        public boolean getScrollableTracksViewportWidth() {
+            return true;
+        }
+
+        @Override
+        public boolean getScrollableTracksViewportHeight() {
+            return false;
+        }
+    }
+    private enum Glyph {
+        Apply, Capture, Corner, Measure, Copy, Delete, Edit
+    }
+
+    private static final class WorkbenchGlyphIcon implements Icon {
+        private final Glyph glyph;
+        private final Color color;
+
+        WorkbenchGlyphIcon(Glyph glyph, Color color) {
+            this.glyph = glyph;
+            this.color = color;
+        }
+
+        @Override
+        public int getIconWidth() {
+            return 16;
+        }
+
+        @Override
+        public int getIconHeight() {
+            return 16;
+        }
+
+        @Override
+        public void paintIcon(Component component, Graphics graphics, int x, int y) {
+            Graphics2D g = (Graphics2D) graphics.create();
+            g.translate(x, y);
+            g.setRenderingHint(RenderingHints.KEY_ANTIALIASING,
+                    RenderingHints.VALUE_ANTIALIAS_ON);
+            g.setColor(color);
+            g.setStroke(new BasicStroke(1.8f, BasicStroke.CAP_ROUND,
+                    BasicStroke.JOIN_ROUND));
+            switch (glyph) {
+                case Apply:
+                    g.drawLine(3, 8, 7, 12);
+                    g.drawLine(7, 12, 14, 4);
+                    break;
+                case Capture:
+                    g.drawOval(3, 3, 10, 10);
+                    g.drawLine(8, 1, 8, 5);
+                    g.drawLine(8, 11, 8, 15);
+                    g.drawLine(1, 8, 5, 8);
+                    g.drawLine(11, 8, 15, 8);
+                    break;
+                case Corner:
+                    g.drawLine(3, 3, 3, 13);
+                    g.drawLine(3, 13, 13, 13);
+                    g.fillOval(1, 11, 5, 5);
+                    break;
+                case Measure:
+                    g.drawLine(2, 12, 13, 3);
+                    g.drawLine(3, 10, 6, 13);
+                    g.drawLine(6, 7, 8, 9);
+                    g.drawLine(10, 4, 12, 6);
+                    break;
+                case Copy:
+                    g.drawRect(5, 3, 8, 9);
+                    g.drawRect(2, 6, 8, 8);
+                    break;
+                case Delete:
+                    g.drawLine(4, 5, 12, 5);
+                    g.drawLine(6, 2, 10, 2);
+                    g.drawRect(5, 5, 6, 9);
+                    break;
+                case Edit:
+                    g.drawLine(3, 13, 12, 4);
+                    g.drawLine(11, 3, 13, 5);
+                    g.drawLine(3, 13, 6, 12);
+                    break;
+                default:
+                    break;
+            }
+            g.dispose();
+        }
+    }
+
+    private static final class ObjectTypeIcon implements Icon {
+        private final ObjectType type;
+
+        ObjectTypeIcon(ObjectType type) {
+            this.type = type;
+        }
+
+        @Override
+        public int getIconWidth() {
+            return 25;
+        }
+
+        @Override
+        public int getIconHeight() {
+            return 25;
+        }
+
+        @Override
+        public void paintIcon(Component component, Graphics graphics, int x, int y) {
+            Graphics2D g = (Graphics2D) graphics.create();
+            g.translate(x, y);
+            g.setRenderingHint(RenderingHints.KEY_ANTIALIASING,
+                    RenderingHints.VALUE_ANTIALIAS_ON);
+            Color color = typeColor(type);
+            g.setColor(new Color(color.getRed(), color.getGreen(), color.getBlue(), 55));
+            g.fillRoundRect(1, 1, 23, 23, 7, 7);
+            g.setColor(color);
+            g.setStroke(new BasicStroke(1.7f, BasicStroke.CAP_ROUND,
+                    BasicStroke.JOIN_ROUND));
+            if (type.isReferencePoint()) {
+                g.drawOval(7, 7, 11, 11);
+                g.drawLine(3, 12, 22, 12);
+                g.drawLine(12, 3, 12, 22);
+            }
+            else if (type == ObjectType.BOTTOM_CAMERA) {
+                g.drawOval(5, 7, 15, 11);
+                g.fillOval(10, 10, 5, 5);
+            }
+            else if (type == ObjectType.PLACEMENT_HEAD) {
+                g.drawRoundRect(5, 4, 15, 10, 3, 3);
+                g.drawLine(12, 14, 12, 21);
+                g.drawLine(9, 21, 15, 21);
+            }
+            else if (type == ObjectType.NOZZLE_CHANGER) {
+                g.drawRoundRect(3, 6, 19, 13, 4, 4);
+                g.drawArc(6, 9, 5, 6, 80, 200);
+                g.drawArc(14, 9, 5, 6, -100, 200);
+            }
+            else if (type == ObjectType.KEEP_OUT) {
+                g.drawPolygon(new int[] {12, 21, 3}, new int[] {3, 21, 21}, 3);
+                g.drawLine(12, 8, 12, 15);
+                g.fillOval(11, 18, 3, 3);
+            }
+            else if (type == ObjectType.FEEDER
+                    || type == ObjectType.LOOSE_PARTS_FEEDER) {
+                g.drawRoundRect(4, 4, 17, 17, 3, 3);
+                g.drawLine(8, 6, 8, 19);
+                g.drawLine(13, 6, 13, 19);
+                g.drawLine(18, 6, 18, 19);
+            }
+            else {
+                g.drawRect(4, 6, 17, 14);
+                g.drawLine(4, 10, 21, 10);
+                g.drawLine(9, 10, 9, 20);
+                g.drawLine(15, 10, 15, 20);
+            }
+            g.dispose();
+        }
+
+        private static Color typeColor(ObjectType type) {
+            switch (type) {
+                case FEEDER:
+                    return new Color(102, 177, 126);
+                case PLACEMENT_HEAD:
+                    return new Color(105, 155, 213);
+                case BOTTOM_CAMERA:
+                    return new Color(91, 187, 205);
+                case LOOSE_PARTS_FEEDER:
+                    return new Color(157, 184, 108);
+                case BOARD:
+                    return new Color(82, 174, 119);
+                case KEEP_OUT:
+                    return new Color(225, 103, 96);
+                case NOZZLE_CHANGER:
+                    return new Color(172, 133, 199);
+                case HOME_POINT:
+                case PARK_POINT:
+                    return new Color(101, 166, 218);
+                case NOZZLE_CHANGER_POINT:
+                    return new Color(181, 137, 207);
+                case DISCARD_POINT:
+                    return new Color(217, 126, 92);
+                case FEEDER_PICK_POINT:
+                    return new Color(225, 174, 76);
+                default:
+                    return new Color(151, 161, 168);
+            }
+        }
+    }
+
+    private static final class PaletteRenderer extends DefaultListCellRenderer {
+        @Override
+        public Component getListCellRendererComponent(JList<?> list, Object value, int index,
+                boolean selected, boolean focused) {
+            JLabel label = (JLabel) super.getListCellRendererComponent(list, value, index,
+                    selected, focused);
+            for (ObjectType type : ObjectType.values()) {
+                if (type.getDisplayName().equals(value)) {
+                    label.setIcon(new ObjectTypeIcon(type));
+                    label.setToolTipText("拖到中间 3D 视图添加“" + value + "”");
+                    break;
+                }
+            }
+            label.setBorder(new EmptyBorder(3, 5, 3, 5));
+            label.setIconTextGap(7);
+            return label;
+        }
+    }
+
     private static class ObjectRenderer extends DefaultListCellRenderer {
         @Override
         public Component getListCellRendererComponent(JList<?> list, Object value, int index,
@@ -1775,42 +2831,14 @@ public class SafetyWorkbenchDialog extends JDialog {
                     selected, focused);
             if (value instanceof SafetyObject) {
                 SafetyObject object = (SafetyObject) value;
-                label.setText(typeMark(object.type) + " "
-                        + (object.locked ? "[锁定] " : "") + object.name);
+                label.setIcon(new ObjectTypeIcon(object.type));
+                label.setIconTextGap(6);
+                label.setText((object.locked ? "[锁定] " : "") + object.name);
                 label.setToolTipText(object.type.getDisplayName() + " · "
                         + format(object.width) + " × " + format(object.depth) + " × "
                         + format(object.height) + " mm");
             }
             return label;
-        }
-
-        private static String typeMark(ObjectType type) {
-            switch (type) {
-                case FEEDER:
-                    return "▥";
-                case PLACEMENT_HEAD:
-                    return "⌁";
-                case BOTTOM_CAMERA:
-                    return "◉";
-                case LOOSE_PARTS_FEEDER:
-                    return "▦";
-                case BOARD:
-                    return "▤";
-                case KEEP_OUT:
-                    return "⚠";
-                case HOME_POINT:
-                    return "⌂";
-                case PARK_POINT:
-                    return "P";
-                case NOZZLE_CHANGER_POINT:
-                    return "↻";
-                case DISCARD_POINT:
-                    return "⌫";
-                case FEEDER_PICK_POINT:
-                    return "◎";
-                default:
-                    return "◆";
-            }
         }
     }
 
@@ -1820,6 +2848,10 @@ public class SafetyWorkbenchDialog extends JDialog {
         private double zoom = 1.25;
         private double panX;
         private double panY = 35;
+        private double dragStartPanX;
+        private double dragStartPanY;
+        private boolean panning;
+        private boolean mirrorX = true;
         private double viewCenterX = Double.NaN;
         private double viewCenterY = Double.NaN;
         private SafetyObject selected;
@@ -1828,6 +2860,8 @@ public class SafetyWorkbenchDialog extends JDialog {
         private double dragStartX;
         private double dragStartY;
         private double dragStartZ;
+        private Location dragStartVertexLocation;
+        private Vertex vertexPopupCandidate;
         private double startYaw;
         private double startPitch;
         private boolean objectDragged;
@@ -1835,13 +2869,17 @@ public class SafetyWorkbenchDialog extends JDialog {
         private boolean safePath;
         private long lastPaintNanos;
         private double smoothedFps;
+        private double visualOriginZ;
+        private final DimensionEditor dimensionEditor = new DimensionEditor();
 
         WorkbenchCanvas() {
+            setLayout(null);
             setDoubleBuffered(true);
             setOpaque(true);
             setBackground(new Color(38, 43, 48));
             setBorder(BorderFactory.createLineBorder(new Color(88, 96, 104)));
             setTransferHandler(new CanvasTransferHandler());
+            add(dimensionEditor);
             MouseAdapter mouse = new MouseAdapter() {
                 @Override
                 public void mousePressed(MouseEvent event) {
@@ -1849,16 +2887,25 @@ public class SafetyWorkbenchDialog extends JDialog {
                     mouseStart = event.getPoint();
                     startYaw = yaw;
                     startPitch = pitch;
+                    dragStartPanX = panX;
+                    dragStartPanY = panY;
                     Vertex vertex = hitVertex(event.getPoint());
                     selected = vertex == null ? hitObject(event.getPoint()) : vertex.object;
                     objectList.setSelectedValue(selected, true);
                     selectedVertex = vertex;
                     onVertexSelected(selectedVertex);
+                    updateDimensionEditor(true);
+                    dragStartVertexLocation = vertex == null ? null : vertex.getLocation();
+                    vertexPopupCandidate = event.getButton() == MouseEvent.BUTTON3
+                            ? vertex : null;
                     if (selected != null) {
                         dragStartX = selected.x;
                         dragStartY = selected.y;
                         dragStartZ = selected.z;
                     }
+                    panning = event.getButton() == MouseEvent.BUTTON2
+                            || event.isAltDown()
+                            || (event.getButton() == MouseEvent.BUTTON1 && selected == null);
                     objectDragged = false;
                 }
 
@@ -1869,11 +2916,42 @@ public class SafetyWorkbenchDialog extends JDialog {
                     }
                     int dx = event.getX() - mouseStart.x;
                     int dy = event.getY() - mouseStart.y;
-                    if ((event.getModifiersEx() & InputEvent.BUTTON3_DOWN_MASK) != 0) {
+                    if (vertexPopupCandidate != null && mouseStart.distance(event.getPoint()) > 5) {
+                        vertexPopupCandidate = null;
+                    }
+                    if (panning) {
+                        followSelectedTool.setSelected(false);
+                        panX = dragStartPanX + dx;
+                        panY = dragStartPanY + dy;
+                    }
+                    else if ((event.getModifiersEx() & InputEvent.BUTTON3_DOWN_MASK) != 0
+                            && vertexPopupCandidate == null) {
                         followSelectedTool.setSelected(false);
                         yaw = startYaw + dx * 0.008;
                         pitch = Math.max(Math.toRadians(15),
-                                Math.min(Math.toRadians(75), startPitch - dy * 0.006));
+                                Math.min(Math.toRadians(89), startPitch - dy * 0.006));
+                    }
+                    else if (!liveMode.isSelected() && selectedVertex != null
+                            && dragStartVertexLocation != null && !selectedVertex.object.locked
+                            && (event.getModifiersEx() & InputEvent.BUTTON1_DOWN_MASK) != 0) {
+                        Location target;
+                        if ((event.getModifiersEx() & InputEvent.SHIFT_DOWN_MASK) != 0) {
+                            target = dragStartVertexLocation.derive(null, null,
+                                    dragStartVertexLocation.getZ() - dy / scale(), null);
+                        }
+                        else {
+                            double[] initial = groundAt(mouseStart.x, mouseStart.y);
+                            double[] current = groundAt(event.getX(), event.getY());
+                            target = dragStartVertexLocation.add(new Location(
+                                    LengthUnit.Millimeters,
+                                    current[0] - initial[0], current[1] - initial[1], 0, 0));
+                        }
+                        SafetyWorkbenchVertexEditor.apply(selectedVertex, target);
+                        selected = selectedVertex.object;
+                        objectDragged = true;
+                        showObject(selected);
+                        onVertexSelected(selectedVertex);
+                        updateDimensionEditor(true);
                     }
                     else if (!liveMode.isSelected()
                             && selected != null && selectedVertex == null
@@ -1895,11 +2973,20 @@ public class SafetyWorkbenchDialog extends JDialog {
 
                 @Override
                 public void mouseReleased(MouseEvent event) {
+                    if (vertexPopupCandidate != null
+                            && (event.isPopupTrigger()
+                                    || event.getButton() == MouseEvent.BUTTON3)) {
+                        showVertexContextMenu(WorkbenchCanvas.this, event.getX(), event.getY(),
+                                vertexPopupCandidate);
+                    }
                     if (objectDragged) {
                         model.touch();
                         updateCertification();
                     }
                     mouseStart = null;
+                    panning = false;
+                    dragStartVertexLocation = null;
+                    vertexPopupCandidate = null;
                 }
 
                 @Override
@@ -1914,10 +3001,42 @@ public class SafetyWorkbenchDialog extends JDialog {
             addMouseWheelListener(mouse);
         }
 
+        void resetView() {
+            yaw = Math.toRadians(-35);
+            pitch = Math.toRadians(38);
+            zoom = 1.25;
+            panX = 0;
+            panY = 35;
+            viewCenterX = Double.NaN;
+            viewCenterY = Double.NaN;
+            followSelectedTool.setSelected(false);
+            repaint();
+        }
+
+        void setIsometricView() {
+            yaw = Math.toRadians(-35);
+            pitch = Math.toRadians(38);
+            followSelectedTool.setSelected(false);
+            repaint();
+        }
+
+        void setTopView() {
+            yaw = 0;
+            pitch = Math.toRadians(89);
+            followSelectedTool.setSelected(false);
+            repaint();
+        }
+
+        void setMirrorX(boolean mirrorX) {
+            this.mirrorX = mirrorX;
+            repaint();
+        }
+
         void setSelected(SafetyObject selected) {
             if (this.selected != selected) {
                 selectedVertex = null;
                 onVertexSelected(null);
+                updateDimensionEditor(true);
             }
             this.selected = selected;
             repaint();
@@ -1927,20 +3046,44 @@ public class SafetyWorkbenchDialog extends JDialog {
             return selectedVertex;
         }
 
+        void selectVertex(Vertex vertex) {
+            selectedVertex = vertex;
+            selected = vertex == null ? selected : vertex.object;
+            if (vertex != null) {
+                objectList.setSelectedValue(vertex.object, true);
+            }
+            onVertexSelected(vertex);
+            updateDimensionEditor(true);
+            repaint();
+        }
+
+        void clearVertexSelection() {
+            selectedVertex = null;
+            onVertexSelected(null);
+            updateDimensionEditor(true);
+        }
+
         void setPath(List<Waypoint> path, boolean safe) {
             this.path = new ArrayList<>(path);
             this.safePath = safe;
             repaint();
         }
-        void follow(double worldX, double worldY) {
+        boolean follow(double worldX, double worldY) {
             if (Double.isNaN(viewCenterX)) {
                 viewCenterX = worldX;
                 viewCenterY = worldY;
+                return true;
             }
-            else {
-                viewCenterX += (worldX - viewCenterX) * 0.16;
-                viewCenterY += (worldY - viewCenterY) * 0.16;
+            double deltaX = worldX - viewCenterX;
+            double deltaY = worldY - viewCenterY;
+            if (Math.abs(deltaX) < 0.001 && Math.abs(deltaY) < 0.001) {
+                viewCenterX = worldX;
+                viewCenterY = worldY;
+                return false;
             }
+            viewCenterX += deltaX * 0.16;
+            viewCenterY += deltaY * 0.16;
+            return true;
         }
 
         @Override
@@ -1953,6 +3096,7 @@ public class SafetyWorkbenchDialog extends JDialog {
             lastPaintNanos = paintNow;
             super.paintComponent(graphics);
             Graphics2D g = (Graphics2D) graphics.create();
+            visualOriginZ = SafetyWorkbenchGeometry.workSurfaceZ(model);
             g.setRenderingHint(RenderingHints.KEY_ANTIALIASING,
                     RenderingHints.VALUE_ANTIALIAS_ON);
             drawGrid(g);
@@ -1963,11 +3107,161 @@ public class SafetyWorkbenchDialog extends JDialog {
                 }
             }
             drawVertices(g);
+            drawSelectedDimensions(g);
             drawLiveTrail(g);
             drawPath(g);
             drawLiveTools(g);
             drawOverlay(g);
             g.dispose();
+            updateDimensionEditor(false);
+        }
+
+        private void updateDimensionEditor(boolean refreshValues) {
+            boolean visible = selectedVertex != null && selectedVertex.object != null
+                    && !selectedVertex.object.type.isReferencePoint()
+                    && !liveMode.isSelected();
+            dimensionEditor.setVisible(visible);
+            if (!visible) {
+                return;
+            }
+            if (refreshValues) {
+                dimensionEditor.showObject(selectedVertex.object);
+            }
+            Location location = selectedVertex.getLocation();
+            Point anchor = project(location.getX(), location.getY(), location.getZ());
+            Dimension preferred = dimensionEditor.getPreferredSize();
+            int editorX = Math.max(8, Math.min(getWidth() - preferred.width - 8,
+                    anchor.x + 16));
+            int editorY = Math.max(92, Math.min(getHeight() - preferred.height - 8,
+                    anchor.y - preferred.height / 2));
+            dimensionEditor.setBounds(editorX, editorY, preferred.width, preferred.height);
+        }
+
+        private void drawSelectedDimensions(Graphics2D g) {
+            if (selected == null || selected.type.isReferencePoint()
+                    || liveMode.isSelected()) {
+                return;
+            }
+            double top = selected.z + selected.height;
+            drawDimension(g, project(selected.x, selected.y, top),
+                    project(selected.x + selected.width, selected.y, top),
+                    "X " + format(selected.width) + " mm", new Color(111, 191, 224), -10);
+            drawDimension(g, project(selected.x, selected.y, top),
+                    project(selected.x, selected.y + selected.depth, top),
+                    "Y " + format(selected.depth) + " mm", new Color(111, 203, 143), 14);
+            drawDimension(g, project(selected.x + selected.width,
+                            selected.y + selected.depth, selected.z),
+                    project(selected.x + selected.width,
+                            selected.y + selected.depth, top),
+                    "Z " + format(selected.height) + " mm", new Color(235, 179, 79), 14);
+        }
+
+        private void drawDimension(Graphics2D g, Point start, Point end, String text,
+                Color color, int offset) {
+            g.setColor(new Color(color.getRed(), color.getGreen(), color.getBlue(), 205));
+            g.setStroke(new BasicStroke(1.5f));
+            g.drawLine(start.x, start.y, end.x, end.y);
+            int dx = end.x - start.x;
+            int dy = end.y - start.y;
+            double length = Math.max(1, Math.sqrt(dx * dx + dy * dy));
+            int nx = (int) Math.round(-dy / length * 4);
+            int ny = (int) Math.round(dx / length * 4);
+            g.drawLine(start.x - nx, start.y - ny, start.x + nx, start.y + ny);
+            g.drawLine(end.x - nx, end.y - ny, end.x + nx, end.y + ny);
+            int textWidth = g.getFontMetrics().stringWidth(text);
+            int textX = (start.x + end.x - textWidth) / 2;
+            int textY = (start.y + end.y) / 2 + offset;
+            g.setColor(new Color(28, 33, 37, 218));
+            g.fillRoundRect(textX - 4, textY - 13, textWidth + 8, 17, 6, 6);
+            g.setColor(color);
+            g.drawString(text, textX, textY);
+        }
+
+        private final class DimensionEditor extends JPanel {
+            private final JTextField editorWidth = dimensionField("X");
+            private final JTextField editorDepth = dimensionField("Y");
+            private final JTextField editorHeight = dimensionField("Z");
+            private SafetyObject editing;
+
+            DimensionEditor() {
+                super(new FlowLayout(FlowLayout.LEFT, 4, 4));
+                setBorder(BorderFactory.createCompoundBorder(
+                        BorderFactory.createLineBorder(new Color(99, 174, 205), 2),
+                        new EmptyBorder(1, 3, 1, 3)));
+                setBackground(new Color(43, 50, 56));
+                add(dimensionLabel("尺寸 X", new Color(111, 191, 224)));
+                add(editorWidth);
+                add(dimensionLabel("Y", new Color(111, 203, 143)));
+                add(editorDepth);
+                add(dimensionLabel("Z", new Color(235, 179, 79)));
+                add(editorHeight);
+                JButton apply = new JButton(new WorkbenchGlyphIcon(Glyph.Apply,
+                        new Color(124, 225, 159)));
+                apply.setToolTipText("应用尺寸（Enter）");
+                apply.setPreferredSize(new Dimension(30, 26));
+                styleActionButton(apply, new Color(45, 104, 70));
+                apply.addActionListener(event -> applyDimensions());
+                add(apply);
+                for (JTextField field : Arrays.asList(editorWidth, editorDepth,
+                        editorHeight)) {
+                    field.addActionListener(event -> applyDimensions());
+                }
+                setVisible(false);
+            }
+
+            private JTextField dimensionField(String axis) {
+                JTextField field = new JTextField(5);
+                field.setToolTipText(axis + " 尺寸，单位 mm；输入后按 Enter");
+                field.setHorizontalAlignment(SwingConstants.RIGHT);
+                return field;
+            }
+
+            private JLabel dimensionLabel(String text, Color color) {
+                JLabel label = new JLabel(text);
+                label.setForeground(color);
+                label.setFont(label.getFont().deriveFont(Font.BOLD));
+                return label;
+            }
+
+            void showObject(SafetyObject object) {
+                editing = object;
+                editorWidth.setText(format(object.width));
+                editorDepth.setText(format(object.depth));
+                editorHeight.setText(format(object.height));
+                boolean planarEditable = object.shape != Shape.POLYGON;
+                editorWidth.setEnabled(planarEditable && !object.locked);
+                editorDepth.setEnabled(planarEditable && !object.locked);
+                editorHeight.setEnabled(!object.locked);
+                setToolTipText(object.shape == Shape.POLYGON
+                        ? "自定义轮廓的 X/Y 请拖动轮廓顶点；此处可直接修改高度 Z。"
+                        : "像 CAD 一样直接输入物体 X/Y/Z 尺寸。");
+            }
+
+            private void applyDimensions() {
+                if (editing == null || editing.locked) {
+                    return;
+                }
+                try {
+                    if (editing.shape != Shape.POLYGON) {
+                        editing.width = positive(editorWidth, "宽度 X");
+                        editing.depth = positive(editorDepth, "深度 Y");
+                    }
+                    editing.height = positive(editorHeight, "高度 Z");
+                    model.touch();
+                    showObject(editing);
+                    objectList.repaint();
+                    updateCertification();
+                    repaint();
+                    result.setText("已在 3D 模型中更新“" + editing.name
+                            + "”尺寸：X " + format(editing.width) + " / Y "
+                            + format(editing.depth) + " / Z " + format(editing.height)
+                            + " mm。请重新检查并认证模型。");
+                }
+                catch (Exception exception) {
+                    JOptionPane.showMessageDialog(SafetyWorkbenchDialog.this,
+                            exception.getMessage(), "尺寸无效", JOptionPane.WARNING_MESSAGE);
+                }
+            }
         }
 
         private void drawSafeZZone(Graphics2D g) {
@@ -2005,7 +3299,10 @@ public class SafetyWorkbenchDialog extends JDialog {
                 Location location = vertex.getLocation();
                 Point point = project(location.getX(), location.getY(), location.getZ());
                 boolean active = sameVertex(vertex, selectedVertex);
-                int radius = active ? 7 : 5;
+                int radius = active ? 11 : 8;
+                g.setColor(new Color(0, 0, 0, 110));
+                g.fillOval(point.x - radius - 3, point.y - radius - 3,
+                        radius * 2 + 6, radius * 2 + 6);
                 g.setColor(active ? new Color(106, 205, 231) : new Color(242, 190, 83));
                 g.fillOval(point.x - radius, point.y - radius, radius * 2, radius * 2);
                 g.setColor(new Color(35, 39, 43));
@@ -2024,29 +3321,34 @@ public class SafetyWorkbenchDialog extends JDialog {
         private void drawGrid(Graphics2D g) {
             g.setStroke(new BasicStroke(1f));
             double interval = chooseGridInterval();
+            double workSurfaceZ = visualOriginZ;
             for (double gx = Math.ceil(model.getMinX() / interval) * interval;
                     gx <= model.getMaxX(); gx += interval) {
-                Point a = project(gx, model.getMinY(), model.getMinZ());
-                Point b = project(gx, model.getMaxY(), model.getMinZ());
+                Point a = project(gx, model.getMinY(), workSurfaceZ);
+                Point b = project(gx, model.getMaxY(), workSurfaceZ);
                 g.setColor(new Color(72, 79, 85));
                 g.drawLine(a.x, a.y, b.x, b.y);
             }
             for (double gy = Math.ceil(model.getMinY() / interval) * interval;
                     gy <= model.getMaxY(); gy += interval) {
-                Point a = project(model.getMinX(), gy, model.getMinZ());
-                Point b = project(model.getMaxX(), gy, model.getMinZ());
+                Point a = project(model.getMinX(), gy, workSurfaceZ);
+                Point b = project(model.getMaxX(), gy, workSurfaceZ);
                 g.setColor(new Color(72, 79, 85));
                 g.drawLine(a.x, a.y, b.x, b.y);
             }
-            drawAxis(g, model.getMinX(), model.getMinY(), model.getMinZ(),
-                    model.getMaxX(), model.getMinY(), model.getMinZ(),
+            drawAxis(g, model.getMinX(), model.getMinY(), workSurfaceZ,
+                    model.getMaxX(), model.getMinY(), workSurfaceZ,
                     new Color(177, 94, 94), "X");
-            drawAxis(g, model.getMinX(), model.getMinY(), model.getMinZ(),
-                    model.getMinX(), model.getMaxY(), model.getMinZ(),
+            drawAxis(g, model.getMinX(), model.getMinY(), workSurfaceZ,
+                    model.getMinX(), model.getMaxY(), workSurfaceZ,
                     new Color(91, 155, 107), "Y");
             drawAxis(g, model.getMinX(), model.getMinY(), model.getMinZ(),
                     model.getMinX(), model.getMinY(), model.getMaxZ(),
                     new Color(88, 133, 184), "Z");
+            Point surfaceLabel = project(model.getMinX(), model.getMaxY(), workSurfaceZ);
+            g.setColor(new Color(137, 151, 160));
+            g.drawString(String.format(Locale.ROOT, "工作面 Z %.2f mm", workSurfaceZ),
+                    surfaceLabel.x + 6, surfaceLabel.y + 16);
         }
 
         private void drawAxis(Graphics2D g, double ax, double ay, double az, double bx,
@@ -2060,6 +3362,10 @@ public class SafetyWorkbenchDialog extends JDialog {
         }
 
         private void drawObject(Graphics2D g, SafetyObject object) {
+            if (isPhysicalReferenceEntity(object.type)) {
+                drawReferenceEntity(g, object);
+                return;
+            }
             if (object.type.isReferencePoint()) {
                 drawReferencePoint(g, object);
                 return;
@@ -2086,6 +3392,9 @@ public class SafetyWorkbenchDialog extends JDialog {
                 case BOTTOM_CAMERA:
                     drawCameraDetails(g, object);
                     break;
+                case NOZZLE_CHANGER:
+                    drawNozzleChangerDetails(g, object);
+                    break;
                 case BOARD:
                     drawBoardDetails(g, object);
                     break;
@@ -2097,6 +3406,48 @@ public class SafetyWorkbenchDialog extends JDialog {
                     break;
                 default:
                     break;
+            }
+        }
+
+        private boolean isPhysicalReferenceEntity(ObjectType objectType) {
+            return objectType == ObjectType.HOME_POINT
+                    || objectType == ObjectType.PARK_POINT
+                    || objectType == ObjectType.DISCARD_POINT;
+        }
+
+        private void drawReferenceEntity(Graphics2D g, SafetyObject object) {
+            double bodyX = object.x - object.width / 2.0;
+            double bodyY = object.y - object.depth / 2.0;
+            double bodyZ = object.z - object.height;
+            Color base = new Color(object.colorRgb);
+            drawCuboid(g, bodyX, bodyY, bodyZ, object.width, object.depth,
+                    object.height, base, object == selected
+                            ? new Color(242, 190, 83) : shade(base, 1.35));
+            Point center = project(object.x, object.y, object.z + 0.2);
+            int marker = (int) Math.max(7, Math.min(15,
+                    Math.min(object.width, object.depth) * scale() * 0.20));
+            if (object.type == ObjectType.DISCARD_POINT) {
+                g.setColor(new Color(29, 34, 37, 220));
+                g.fillOval(center.x - marker, center.y - Math.max(4, marker / 2),
+                        marker * 2, Math.max(8, marker));
+                g.setColor(new Color(229, 161, 103));
+                g.drawOval(center.x - marker, center.y - Math.max(4, marker / 2),
+                        marker * 2, Math.max(8, marker));
+            }
+            else {
+                g.setColor(new Color(226, 234, 238, 205));
+                g.setStroke(new BasicStroke(2f));
+                g.drawOval(center.x - marker / 2, center.y - marker / 2,
+                        marker, marker);
+                g.drawLine(center.x - marker, center.y, center.x + marker, center.y);
+                g.drawLine(center.x, center.y - marker, center.x, center.y + marker);
+            }
+            if (object == selected || showReferenceLabels.isSelected()) {
+                g.setColor(new Color(234, 238, 240));
+                g.drawString(object.name, center.x + marker + 5, center.y - 6);
+                g.setColor(new Color(171, 183, 191));
+                g.drawString(String.format(Locale.ROOT, "X %.2f  Y %.2f  Z %.2f",
+                        object.x, object.y, object.z), center.x + marker + 5, center.y + 8);
             }
         }
 
@@ -2118,17 +3469,23 @@ public class SafetyWorkbenchDialog extends JDialog {
                     radius * 2, Math.max(5, radius));
             g.drawLine(point.x - radius - 4, point.y, point.x + radius + 4, point.y);
             g.drawLine(point.x, point.y - radius, point.x, point.y + radius);
-            g.setColor(new Color(231, 234, 236));
-            g.drawString(object.name, top.x + 7, top.y - 6);
-            g.setFont(originalFont.deriveFont(9f));
-            g.setColor(new Color(171, 183, 191));
-            g.drawString(String.format(Locale.ROOT, "X %.2f  Y %.2f  Z %.2f",
-                    object.x, object.y, object.z), top.x + 7, top.y + 7);
+            if (object == selected || showReferenceLabels.isSelected()) {
+                g.setColor(new Color(231, 234, 236));
+                g.drawString(object.name, top.x + 7, top.y - 6);
+                if (object == selected) {
+                    g.setFont(originalFont.deriveFont(9f));
+                    g.setColor(new Color(171, 183, 191));
+                    g.drawString(String.format(Locale.ROOT, "X %.2f  Y %.2f  Z %.2f",
+                            object.x, object.y, object.z), top.x + 7, top.y + 7);
+                }
+            }
             g.setFont(originalFont);
         }
 
         private void drawFeederDetails(Graphics2D g, SafetyObject object) {
             double top = object.z + object.height + 0.3;
+            double pickFraction = object.rearFacing ? 0.90 : 0.10;
+            double reelFraction = object.rearFacing ? 0.16 : 0.84;
             g.setColor(new Color(199, 207, 194));
             for (int lane = 0; lane < 2; lane++) {
                 double laneX = object.x + object.width * (0.35 + lane * 0.3);
@@ -2146,7 +3503,7 @@ public class SafetyWorkbenchDialog extends JDialog {
                         radius * 2, Math.max(2, radius));
             }
             Point reel = project(object.x + object.width / 2.0,
-                    object.y + object.depth * 0.84, top + object.height * 0.32);
+                    object.y + object.depth * reelFraction, top + object.height * 0.32);
             int reelRadius = (int) Math.max(5, object.width * scale() * 0.38);
             g.setColor(new Color(111, 122, 113));
             g.fillOval(reel.x - reelRadius, reel.y - reelRadius,
@@ -2155,6 +3512,49 @@ public class SafetyWorkbenchDialog extends JDialog {
             g.drawOval(reel.x - reelRadius, reel.y - reelRadius,
                     reelRadius * 2, reelRadius * 2);
             g.fillOval(reel.x - 2, reel.y - 2, 4, 4);
+            Point pick = project(object.x + object.width / 2.0,
+                    object.y + object.depth * pickFraction, top);
+            g.setColor(new Color(242, 190, 83));
+            g.setStroke(new BasicStroke(2f));
+            g.drawOval(pick.x - 5, pick.y - 5, 10, 10);
+            g.drawLine(pick.x - 8, pick.y, pick.x + 8, pick.y);
+            g.drawLine(pick.x, pick.y - 8, pick.x, pick.y + 8);
+        }
+
+        private void drawNozzleChangerDetails(Graphics2D g, SafetyObject object) {
+            double top = object.z + object.height + 0.4;
+            boolean alongX = object.apertureWidth > object.apertureDepth;
+            double centerX = object.x + object.width / 2.0;
+            double centerY = object.y + object.depth / 2.0;
+            double halfSlot = (alongX ? object.apertureDepth : object.apertureWidth) / 2.0;
+            g.setColor(new Color(188, 193, 196));
+            g.setStroke(new BasicStroke(2.4f, BasicStroke.CAP_ROUND,
+                    BasicStroke.JOIN_ROUND));
+            if (alongX) {
+                Point firstA = project(object.x + 3, centerY - halfSlot, top);
+                Point firstB = project(object.x + object.width - 3, centerY - halfSlot, top);
+                Point secondA = project(object.x + 3, centerY + halfSlot, top);
+                Point secondB = project(object.x + object.width - 3, centerY + halfSlot, top);
+                g.drawLine(firstA.x, firstA.y, firstB.x, firstB.y);
+                g.drawLine(secondA.x, secondA.y, secondB.x, secondB.y);
+            }
+            else {
+                Point firstA = project(centerX - halfSlot, object.y + 3, top);
+                Point firstB = project(centerX - halfSlot, object.y + object.depth - 3, top);
+                Point secondA = project(centerX + halfSlot, object.y + 3, top);
+                Point secondB = project(centerX + halfSlot, object.y + object.depth - 3, top);
+                g.drawLine(firstA.x, firstA.y, firstB.x, firstB.y);
+                g.drawLine(secondA.x, secondA.y, secondB.x, secondB.y);
+            }
+            Point docking = project(centerX, centerY, top + 2.5);
+            int radius = (int) Math.max(4, Math.min(8, 4 * scale()));
+            g.setColor(new Color(208, 211, 212));
+            g.fillOval(docking.x - radius, docking.y - radius / 2,
+                    radius * 2, Math.max(4, radius));
+            g.setColor(new Color(79, 85, 89));
+            g.fillOval(docking.x - Math.max(2, radius / 3),
+                    docking.y - Math.max(1, radius / 6),
+                    Math.max(3, radius * 2 / 3), Math.max(2, radius / 3));
         }
 
         private void drawCameraDetails(Graphics2D g, SafetyObject object) {
@@ -2252,8 +3652,7 @@ public class SafetyWorkbenchDialog extends JDialog {
             fillFace(g, shade(base, 1.08), p001, p101, p111, p011);
             drawEdges(g, object == selected ? new Color(240, 190, 91) : shade(base, 1.35),
                     p000, p100, p110, p010, p001, p101, p111, p011);
-            if (object.type == ObjectType.BOTTOM_CAMERA && object.apertureWidth > 0
-                    && object.apertureDepth > 0) {
+            if (SafetyWorkbenchGeometry.hasCentralOpening(object)) {
                 double ax = object.x + (object.width - object.apertureWidth) / 2.0;
                 double ay = object.y + (object.depth - object.apertureDepth) / 2.0;
                 Point a = project(ax, ay, object.z + object.height + 0.1);
@@ -2317,6 +3716,9 @@ public class SafetyWorkbenchDialog extends JDialog {
         }
 
         private void drawLabel(Graphics2D g, SafetyObject object) {
+            if (object != selected && !showReferenceLabels.isSelected()) {
+                return;
+            }
             Point center = project(object.x + object.width / 2.0,
                     object.y + object.depth / 2.0, object.z + object.height);
             g.setColor(new Color(230, 233, 235));
@@ -2437,7 +3839,7 @@ public class SafetyWorkbenchDialog extends JDialog {
             g.setColor(new Color(226, 229, 231));
             g.drawString(liveMode.isSelected()
                     ? "实时运行：显示全部贴装头、动态 N1 吸嘴、携带元件与运动轨迹"
-                    : "编辑模式：拖动物体 · Shift 升降 · 右键旋转 · 滚轮缩放",
+                    : "编辑：整面可选物体 · 顶点拖动改尺寸 · 顶点右键示教 · 空白拖动平移",
                     24, 34);
             g.setColor(model.isCertified()
                     ? new Color(113, 212, 148) : new Color(228, 186, 106));
@@ -2452,12 +3854,15 @@ public class SafetyWorkbenchDialog extends JDialog {
 
         private Vertex hitVertex(Point mouse) {
             Vertex nearest = null;
-            double nearestDistance = 13;
+            double nearestDistance = 22;
             for (Vertex vertex : SafetyWorkbenchVertexEditor.vertices(selected)) {
                 Location location = vertex.getLocation();
                 Point point = project(location.getX(), location.getY(), location.getZ());
                 double distance = point.distance(mouse);
-                if (distance < nearestDistance) {
+                if (distance < nearestDistance - 0.5
+                        || (Math.abs(distance - nearestDistance) <= 0.5
+                                && vertex.maximumZ
+                                && (nearest == null || !nearest.maximumZ))) {
                     nearestDistance = distance;
                     nearest = vertex;
                 }
@@ -2467,23 +3872,76 @@ public class SafetyWorkbenchDialog extends JDialog {
 
         private SafetyObject hitObject(Point mouse) {
             SafetyObject best = null;
-            double bestDistance = 34;
-            for (SafetyObject object : model.getObjects()) {
+            double bestTop = -Double.MAX_VALUE;
+            double bestArea = Double.MAX_VALUE;
+            List<SafetyObject> objects = model.getObjects();
+            for (int index = objects.size() - 1; index >= 0; index--) {
+                SafetyObject object = objects.get(index);
                 if (object == null || !object.enabled) {
                     continue;
                 }
-                Point center = object.type.isReferencePoint()
-                        ? project(object.x, object.y, object.z)
-                        : project(object.x + object.width / 2.0,
-                                object.y + object.depth / 2.0,
-                                object.z + object.height / 2.0);
-                double distance = center.distance(mouse);
-                if (distance < bestDistance) {
-                    bestDistance = distance;
+                java.awt.Rectangle bounds = projectedBounds(object);
+                bounds.grow(10, 10);
+                if (!bounds.contains(mouse)) {
+                    continue;
+                }
+                double top = isPhysicalReferenceEntity(object.type)
+                        ? object.z : object.z + object.height;
+                double area = Math.max(1.0, bounds.getWidth() * bounds.getHeight());
+                if (top > bestTop + 0.001
+                        || (Math.abs(top - bestTop) <= 0.001 && area < bestArea)) {
+                    bestTop = top;
+                    bestArea = area;
                     best = object;
                 }
             }
             return best;
+        }
+
+        private java.awt.Rectangle projectedBounds(SafetyObject object) {
+            if (isPhysicalReferenceEntity(object.type)) {
+                java.awt.Rectangle bounds = new java.awt.Rectangle(project(
+                        object.x - object.width / 2.0,
+                        object.y - object.depth / 2.0, object.z - object.height));
+                for (int ix = 0; ix < 2; ix++) {
+                    for (int iy = 0; iy < 2; iy++) {
+                        for (int iz = 0; iz < 2; iz++) {
+                            bounds.add(project(object.x + (ix - 0.5) * object.width,
+                                    object.y + (iy - 0.5) * object.depth,
+                                    object.z - object.height + iz * object.height));
+                        }
+                    }
+                }
+                return bounds;
+            }
+            if (object.type.isReferencePoint()) {
+                Point center = project(object.x, object.y, object.z);
+                return new java.awt.Rectangle(center.x - 12, center.y - 12, 24, 24);
+            }
+            if (object.shape == Shape.POLYGON && object.polygon != null
+                    && !object.polygon.isEmpty()) {
+                Point2 firstVertex = object.polygon.get(0);
+                java.awt.Rectangle bounds = new java.awt.Rectangle(project(
+                        object.x + firstVertex.x, object.y + firstVertex.y, object.z));
+                for (Point2 vertex : object.polygon) {
+                    bounds.add(project(object.x + vertex.x, object.y + vertex.y, object.z));
+                    bounds.add(project(object.x + vertex.x, object.y + vertex.y,
+                            object.z + object.height));
+                }
+                return bounds;
+            }
+            java.awt.Rectangle bounds = new java.awt.Rectangle(
+                    project(object.x, object.y, object.z));
+            for (int ix = 0; ix < 2; ix++) {
+                for (int iy = 0; iy < 2; iy++) {
+                    for (int iz = 0; iz < 2; iz++) {
+                        bounds.add(project(object.x + ix * object.width,
+                                object.y + iy * object.depth,
+                                object.z + iz * object.height));
+                    }
+                }
+            }
+            return bounds;
         }
 
         private Point project(double worldX, double worldY, double worldZ) {
@@ -2493,11 +3951,13 @@ public class SafetyWorkbenchDialog extends JDialog {
                     ? (model.getMinY() + model.getMaxY()) / 2.0 : viewCenterY;
             double dx = worldX - centerX;
             double dy = worldY - centerY;
-            double rx = Math.cos(yaw) * dx - Math.sin(yaw) * dy;
-            double ry = Math.sin(yaw) * dx + Math.cos(yaw) * dy;
+            double rx = SafetyWorkbenchViewTransform.horizontal(
+                    dx, dy, yaw, mirrorX);
+            double ry = SafetyWorkbenchViewTransform.depth(dx, dy, yaw);
             double sx = getWidth() / 2.0 + panX + rx * scale();
+            double relativeZ = worldZ - visualOriginZ;
             double sy = getHeight() / 2.0 + panY
-                    + (ry * Math.sin(pitch) - worldZ * Math.cos(pitch)) * scale();
+                    + (ry * Math.sin(pitch) - relativeZ * Math.cos(pitch)) * scale();
             return new Point((int) Math.round(sx), (int) Math.round(sy));
         }
 
@@ -2505,8 +3965,10 @@ public class SafetyWorkbenchDialog extends JDialog {
             double rx = (screenX - getWidth() / 2.0 - panX) / scale();
             double ry = (screenY - getHeight() / 2.0 - panY)
                     / (scale() * Math.sin(pitch));
-            double dx = Math.cos(yaw) * rx + Math.sin(yaw) * ry;
-            double dy = -Math.sin(yaw) * rx + Math.cos(yaw) * ry;
+            double[] delta = SafetyWorkbenchViewTransform.worldDelta(
+                    rx, ry, yaw, mirrorX);
+            double dx = delta[0];
+            double dy = delta[1];
             return new double[] {
                     (Double.isNaN(viewCenterX)
                             ? (model.getMinX() + model.getMaxX()) / 2.0 : viewCenterX) + dx,
