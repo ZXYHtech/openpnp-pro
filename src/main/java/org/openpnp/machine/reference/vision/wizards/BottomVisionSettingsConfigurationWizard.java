@@ -173,12 +173,12 @@ public class BottomVisionSettingsConfigurationWizard extends AbstractConfigurati
             UiUtils.messageBoxOnException(() -> {
                 List<PartSettingsHolder> list = settingsHolder.getSpecializedBottomVisionIn();
                 if (list.size() == 0) {
-                    throw new Exception("There are no specializations on "+subjects+" with the "+settingsHolder.getClass().getSimpleName()+" "+settingsHolder.getShortName()+".");
+                    throw new Exception("当前对象没有可归并的专用底部视觉设置。");
                 }
                 int result = JOptionPane.showConfirmDialog(getTopLevelAncestor(),
-                        "This will remove the specialized vision settings in:\n\n"+
+                        "这将删除以下对象的专用底部视觉设置：\n\n"+
                                 new AbstractVisionSettings.ListConverter(false).convertForward(list)+"\n\n"+
-                                "Are you sure?", null,
+                                "确定继续吗？", "归并底部视觉设置",
                                 JOptionPane.YES_NO_OPTION, JOptionPane.WARNING_MESSAGE);
                 if (result == JOptionPane.YES_OPTION) {
                     UiUtils.messageBoxOnException(() -> {
@@ -210,7 +210,8 @@ public class BottomVisionSettingsConfigurationWizard extends AbstractConfigurati
         resetButton.addActionListener(e -> {
             UiUtils.messageBoxOnException(() -> {
                 int result = JOptionPane.showConfirmDialog(getTopLevelAncestor(),
-                        "This will reset the bottom vision settings with to the default settings. Are you sure??", null,
+                        "这将把当前底部视觉设置恢复为默认值，确定继续吗？",
+                        "恢复默认底部视觉设置",
                         JOptionPane.YES_NO_OPTION, JOptionPane.WARNING_MESSAGE);
                 if (result == JOptionPane.YES_OPTION) {
                     ReferenceBottomVision bottomVision = ReferenceBottomVision.getDefault();
@@ -280,9 +281,29 @@ public class BottomVisionSettingsConfigurationWizard extends AbstractConfigurati
             public Camera getCamera() throws Exception { return VisionUtils.getBottomVisionCamera(); }
 
             @Override
+            public void openSmartVision() throws Exception {
+                applyAction.actionPerformed(null);
+                Nozzle nozzle = getNozzleWithPart();
+                CvPipeline pipeline = getPipeline();
+                pipelineConfiguration(pipeline, getPipelineParameterAssignments(), false);
+                Camera camera = VisionUtils.getBottomVisionCamera();
+                double angle = new DoubleConverter(Configuration.get().getLengthDisplayFormat())
+                        .convertReverse(testAlignmentAngle.getText());
+                Location location = bottomVision.getCameraLocationAtPartHeight(
+                        nozzle.getPart(), camera, nozzle, angle);
+                openSmartVisionStudio("Bottom Vision · 智能视觉辅助", pipeline,
+                        org.openpnp.gui.SmartVisionStudioDialog.VisionContext.BOTTOM,
+                        camera,
+                        "将携带器件的吸嘴 " + nozzle.getName()
+                                + " 安全移动到底部相机中心，并把 Z 设置到器件识别高度",
+                        nozzle, location, () -> testAlignment(false));
+            }
+
+            @Override
             public void resetPipeline() throws Exception {
                 int result = JOptionPane.showConfirmDialog(getTopLevelAncestor(),
-                        "This will replace the Pipeline with the default. Are you sure??", null,
+                        "这将用默认管线替换当前底部视觉管线，确定继续吗？",
+                        "恢复默认底部视觉管线",
                         JOptionPane.YES_NO_OPTION, JOptionPane.WARNING_MESSAGE);
                 if (result == JOptionPane.YES_OPTION) {
                     UiUtils.messageBoxOnException(() -> {
@@ -301,6 +322,7 @@ public class BottomVisionSettingsConfigurationWizard extends AbstractConfigurati
         };
         pipelinePanel.setResetable(true);
         pipelinePanel.setEditable(true);
+        pipelinePanel.setSmartVisionEnabled(true);
         panel.add(pipelinePanel, "1, 14, 14, 1, fill, fill");
 
         JPanel panelAlign = new JPanel();

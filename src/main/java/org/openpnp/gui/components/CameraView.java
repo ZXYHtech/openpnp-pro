@@ -42,6 +42,7 @@ import java.awt.event.MouseWheelEvent;
 import java.awt.event.MouseWheelListener;
 import java.awt.font.TextLayout;
 import java.awt.geom.AffineTransform;
+import java.awt.geom.Point2D;
 import java.awt.image.BufferedImage;
 import java.io.File;
 import java.text.DateFormat;
@@ -60,6 +61,7 @@ import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicLong;
 import java.util.prefs.Preferences;
 
 import javax.imageio.ImageIO;
@@ -71,7 +73,13 @@ import org.openpnp.CameraListener;
 import org.openpnp.gui.MainFrame;
 import org.openpnp.gui.components.reticle.Reticle;
 import org.openpnp.gui.support.LengthConverter;
+import org.openpnp.gui.support.TransientNotification;
 import org.openpnp.machine.reference.camera.AbstractBroadcastingCamera;
+import org.openpnp.machine.reference.safety.SafetyWorkbenchModel;
+import org.openpnp.machine.reference.safety.SafetyWorkbenchStore;
+import org.openpnp.machine.reference.safety.SafetyWorkbenchVisionScale;
+import org.openpnp.machine.reference.safety.SafetyWorkbenchVisionScale.Resolution;
+import org.openpnp.machine.reference.safety.SafetyWorkbenchVisionScale.Status;
 import org.openpnp.model.Configuration;
 import org.openpnp.model.Length;
 import org.openpnp.model.LengthUnit;
@@ -135,7 +143,7 @@ public class CameraView extends JComponent implements CameraListener {
     /**
      * The last frame received, reported by the Camera.
      */
-    private BufferedImage lastFrame;
+    private volatile BufferedImage lastFrame;
 
     private LinkedHashMap<Object, Reticle> reticles = new LinkedHashMap<>();
 
@@ -154,6 +162,14 @@ public class CameraView extends JComponent implements CameraListener {
     private double lastSourceWidth, lastSourceHeight;
 
     private Location lastUnitsPerPixel;
+    private Location lastBaseUnitsPerPixel;
+    private Location lastVisionScaleCameraLocation;
+    private long lastVisionScaleModelRevision = -1;
+    private boolean lastVisionScaleEligible;
+    private volatile SafetyWorkbenchModel visionScaleModel;
+    private long lastVisionScaleNoticeAt;
+    private volatile String dragJogInfo;
+    private volatile long dragJogInfoUntil;
 
     /**
      * The width and height of the image after it has been scaled to fit the bounds of the
@@ -204,7 +220,7 @@ public class CameraView extends JComponent implements CameraListener {
 
     private Preferences prefs = Preferences.userNodeForPackage(CameraView.class);
 
-    private String text;
+    private volatile String text;
 
     private boolean showImageInfo;
 
@@ -226,15 +242,58 @@ public class CameraView extends JComponent implements CameraListener {
     
     private MouseEvent dragJoggingStart = null;
     private MouseEvent dragJoggingTarget = null;
+    private final AtomicLong previewFrameSequence = new AtomicLong();
+    private final CameraViewJogGate screenJogGate = new CameraViewJogGate();
+    private static final long SCREEN_JOG_FRAME_TIMEOUT_MS = 1500;
+    private static final double MAX_PRECISION_CORRECTION_MM = 2.0;
+    private volatile PendingPrecisionJog pendingPrecisionJog;
+    private volatile boolean precisionCorrectionBusy;
     private int dragJogHandleSize = 50;
     Color dragJogHandleInactiveColor = new Color(125, 125, 125);
     Color dragJogHandleActiveColor = Color.white;
+
+    private static final class PendingPrecisionJog {
+        private final long token;
+        private final Camera camera;
+        private final CameraViewPrecisionLocator.Target target;
+        private final Location unitsPerPixel;
+        private final double commandedDistanceMm;
+        private final double viewZoom;
+
+        private PendingPrecisionJog(long token, Camera camera,
+                CameraViewPrecisionLocator.Target target, Location unitsPerPixel,
+                double commandedDistanceMm, double viewZoom) {
+            this.token = token;
+            this.camera = camera;
+            this.target = target;
+            this.unitsPerPixel = unitsPerPixel;
+            this.commandedDistanceMm = commandedDistanceMm;
+            this.viewZoom = viewZoom;
+        }
+    }
 
     private int lightToggleSize = 40;
     Color lightToggleInactiveBgColor = new Color(255, 255, 255, 100);
     Color lightToggleActiveBgColor = new Color(0, 0, 0, 100);
     Color lightToggleInactiveColor = new Color(0, 0, 0, 200);
     Color lightToggleActiveColor = new Color(255, 255, 125, 200);
+
+    /** Optional workflow controls rendered over the lower center of the live camera image. */
+    public interface GuidedInspectionControlListener {
+        void completeAndNext();
+
+        void completeAndExit();
+    }
+
+    private enum GuidedInspectionControl {
+        Next,
+        Exit
+    }
+
+    private GuidedInspectionControlListener guidedInspectionControlListener;
+    private GuidedInspectionControl guidedInspectionControlPressed;
+    private GuidedInspectionControl guidedInspectionControlHover;
+    private boolean guidedInspectionControlClickConsumed;
 
     long lastFrameReceivedTime = 0;
     MovingAverage fpsAverage = new MovingAverage(24);
@@ -300,6 +359,10 @@ public class CameraView extends JComponent implements CameraListener {
             this.camera.stopContinuousCapture(this);
         }
         this.camera = camera;
+        lastBaseUnitsPerPixel = null;
+        lastVisionScaleCameraLocation = null;
+        lastVisionScaleModelRevision = -1;
+        lastVisionScaleEligible = false;
         // load the reticle pref, if any
         try {
             String reticleXml = prefs.get(getReticlePrefKey(), null);
@@ -342,6 +405,56 @@ public class CameraView extends JComponent implements CameraListener {
         return camera;
     }
 
+    public void setGuidedInspectionControlListener(GuidedInspectionControlListener listener) {
+        guidedInspectionControlListener = listener;
+        guidedInspectionControlPressed = null;
+        guidedInspectionControlHover = null;
+        repaint();
+    }
+
+    /** Releases the last displayed image and temporary filter when a secondary view is closed. */
+    public synchronized void clearTransientImageState() {
+        cameraViewFilter = null;
+        lastFrame = null;
+        text = null;
+    }
+
+    /**
+     * Mirrors the complete visual presentation of another view of the same camera. This includes
+     * the most recently presented (possibly pipeline-filtered) frame, dynamic recognition
+     * reticles and overlay text. It deliberately does not copy interaction state such as drag
+     * jogging or selections.
+     *
+     * @param source the authoritative view shown in the main OpenPnP window
+     */
+    public void mirrorPresentationFrom(CameraView source) {
+        if (source == null || source == this || source.getCamera() != camera) {
+            return;
+        }
+        BufferedImage frame;
+        LinkedHashMap<Object, Reticle> sourceReticles;
+        String sourceText;
+        synchronized (source) {
+            frame = source.lastFrame;
+            sourceReticles = new LinkedHashMap<>(source.reticles);
+            sourceText = source.text;
+        }
+        if (frame == null) {
+            return;
+        }
+        synchronized (this) {
+            BufferedImage previous = lastFrame;
+            lastFrame = frame;
+            reticles = sourceReticles;
+            text = sourceText;
+            if (previous == null || previous.getWidth() != frame.getWidth()
+                    || previous.getHeight() != frame.getHeight()) {
+                calculateScalingData();
+            }
+        }
+        repaint();
+    }
+
     public void setShowName(boolean showName) {
         this.showName = showName;
     }
@@ -364,6 +477,19 @@ public class CameraView extends JComponent implements CameraListener {
 
     public Reticle getDefaultReticle() {
         return reticles.get(DEFAULT_RETICLE_KEY);
+    }
+
+    /**
+     * Temporarily hides the configured camera reticle without changing its persisted preference.
+     * The returned reticle can be restored with {@link #restoreDefaultReticle(Reticle)}.
+     */
+    public Reticle suspendDefaultReticle() {
+        return removeReticle(DEFAULT_RETICLE_KEY);
+    }
+
+    /** Restores a reticle hidden by {@link #suspendDefaultReticle()} without writing preferences. */
+    public void restoreDefaultReticle(Reticle reticle) {
+        setReticle(DEFAULT_RETICLE_KEY, reticle);
     }
 
     public void setReticle(Object key, Reticle reticle) {
@@ -562,16 +688,26 @@ public class CameraView extends JComponent implements CameraListener {
         if (img == null) {
             return;
         }
+        long frameSequence = previewFrameSequence.incrementAndGet();
         BufferedImage oldFrame = lastFrame;
         lastFrame = img;
-        if (oldFrame == null
-                || (oldFrame.getWidth() != img.getWidth() || oldFrame.getHeight() != img.getHeight()
-                        || !camera.getUnitsPerPixelAtZ().equals(lastUnitsPerPixel))) {
+        if (oldFrame == null || oldFrame.getWidth() != img.getWidth()
+                || oldFrame.getHeight() != img.getHeight() || needsScaleRefresh()) {
             calculateScalingData();
         }
         fps = 1000.0 / fpsAverage.next(System.currentTimeMillis() - lastFrameReceivedTime);
         lastFrameReceivedTime = System.currentTimeMillis();
         repaint();
+        if (screenJogGate.frameReceived(frameSequence)) {
+            PendingPrecisionJog precisionJog = pendingPrecisionJog;
+            pendingPrecisionJog = null;
+            if (precisionJog != null && precisionJog.camera == camera) {
+                precisionCorrectionBusy = true;
+                BufferedImage settledFrame = img;
+                scheduledExecutor.execute(() -> runPrecisionCorrection(
+                        precisionJog, settledFrame));
+            }
+        }
     }
 
     /**
@@ -630,7 +766,16 @@ public class CameraView extends JComponent implements CameraListener {
         scaleRatioX = lastSourceWidth / (double) scaledWidth;
         scaleRatioY = lastSourceHeight / (double) scaledHeight;
         
-        lastUnitsPerPixel = camera.getUnitsPerPixelAtZ();
+        lastBaseUnitsPerPixel = camera.getUnitsPerPixelAtZ();
+        SafetyWorkbenchModel workbench = getVisionScaleModel();
+        Resolution centerScale = SafetyWorkbenchVisionScale.resolve(workbench, camera,
+                camera.getLocation(), 0, 0);
+        lastUnitsPerPixel = centerScale.isApplied()
+                ? centerScale.getUnitsPerPixel() : lastBaseUnitsPerPixel;
+        lastVisionScaleModelRevision = workbench.getRevision();
+        lastVisionScaleEligible = isVisionScaleEligible(workbench);
+        lastVisionScaleCameraLocation = camera.getLocation()
+                .convertToUnits(LengthUnit.Millimeters);
         scaledUnitsPerPixelX = lastUnitsPerPixel.getX() * scaleRatioX;
         scaledUnitsPerPixelY = lastUnitsPerPixel.getY() * scaleRatioY;
 
@@ -638,6 +783,40 @@ public class CameraView extends JComponent implements CameraListener {
             // setSelection() handles updating the scaled rectangle
             setSelection(selection);
         }
+    }
+
+    private SafetyWorkbenchModel getVisionScaleModel() {
+        SafetyWorkbenchModel model = visionScaleModel;
+        if (model == null) {
+            model = SafetyWorkbenchStore.get();
+            visionScaleModel = model;
+        }
+        return model;
+    }
+
+    private boolean isVisionScaleEligible(SafetyWorkbenchModel model) {
+        return model.isVisionHeightCompensationEnabled() && model.isCertified()
+                && camera.getLooking() == Camera.Looking.Down
+                && camera.isUnitsPerPixelAtZCalibrated();
+    }
+
+    private synchronized boolean needsScaleRefresh() {
+        Location baseUnitsPerPixel = camera.getUnitsPerPixelAtZ();
+        if (lastBaseUnitsPerPixel == null || !baseUnitsPerPixel.equals(lastBaseUnitsPerPixel)) {
+            return true;
+        }
+        SafetyWorkbenchModel model = getVisionScaleModel();
+        boolean eligible = isVisionScaleEligible(model);
+        if (eligible != lastVisionScaleEligible
+                || model.getRevision() != lastVisionScaleModelRevision) {
+            return true;
+        }
+        if (!eligible) {
+            return false;
+        }
+        Location current = camera.getLocation().convertToUnits(LengthUnit.Millimeters);
+        return lastVisionScaleCameraLocation == null
+                || current.getLinearDistanceTo(lastVisionScaleCameraLocation) > 0.05;
     }
 
     @Override
@@ -689,6 +868,13 @@ public class CameraView extends JComponent implements CameraListener {
                 drawTextOverlay(g2d, 10, height - dim.height - 10, camera.getName());
             }
 
+            String currentDragJogInfo = dragJogInfo;
+            if (currentDragJogInfo != null
+                    && System.currentTimeMillis() < dragJogInfoUntil) {
+                int infoBottom = height - (showName ? 54 : 10);
+                drawInfoLine(g2d, 10, infoBottom, currentDragJogInfo);
+            }
+
             if (showImageInfo && text == null) {
                 drawImageInfo(g2d, 10, 10, image);
             }
@@ -700,6 +886,7 @@ public class CameraView extends JComponent implements CameraListener {
             if (!selectionEnabled) {
                 paintDragJogging(g2d);
                 paintLightToggle(g2d);
+                paintGuidedInspectionControls(g2d);
             }
 
             if (camera.isUnitsPerPixelAtZCalibrated()) {
@@ -935,6 +1122,90 @@ public class CameraView extends JComponent implements CameraListener {
         }
     }
 
+    private Rectangle guidedInspectionControlBounds(GuidedInspectionControl control) {
+        int size = Math.max(38, Math.min(48, Math.min(getWidth(), getHeight()) / 7));
+        int gap = 16;
+        int centerY = getHeight() - size / 2 - 12;
+        int centerX = getWidth() / 2
+                + (control == GuidedInspectionControl.Next ? -(size + gap) / 2
+                        : (size + gap) / 2);
+        return new Rectangle(centerX - size / 2, centerY - size / 2, size, size);
+    }
+
+    private GuidedInspectionControl guidedInspectionControlAt(int x, int y) {
+        if (guidedInspectionControlListener == null) {
+            return null;
+        }
+        for (GuidedInspectionControl control : GuidedInspectionControl.values()) {
+            if (guidedInspectionControlBounds(control).contains(x, y)) {
+                return control;
+            }
+        }
+        return null;
+    }
+
+    private void paintGuidedInspectionControls(Graphics2D graphics) {
+        if (guidedInspectionControlListener == null) {
+            return;
+        }
+        Graphics2D g2 = (Graphics2D) graphics.create();
+        try {
+            g2.setRenderingHint(RenderingHints.KEY_ANTIALIASING,
+                    RenderingHints.VALUE_ANTIALIAS_ON);
+            for (GuidedInspectionControl control : GuidedInspectionControl.values()) {
+                Rectangle bounds = guidedInspectionControlBounds(control);
+                boolean active = control == guidedInspectionControlPressed
+                        || control == guidedInspectionControlHover;
+                int offset = control == guidedInspectionControlPressed ? 1 : 0;
+                int cx = bounds.x + bounds.width / 2 + offset;
+                int cy = bounds.y + bounds.height / 2 + offset;
+                int radius = bounds.width / 2 - 2;
+
+                // Two-pass hollow artwork remains readable over both bright and dark camera frames.
+                g2.setColor(new Color(0, 0, 0, 150));
+                g2.setStroke(new BasicStroke(active ? 5f : 4f, BasicStroke.CAP_ROUND,
+                        BasicStroke.JOIN_ROUND));
+                drawGuidedInspectionGlyph(g2, control, cx, cy, radius);
+                g2.setColor(active ? new Color(88, 220, 245, 235)
+                        : new Color(238, 248, 250, 220));
+                g2.setStroke(new BasicStroke(active ? 2.6f : 2f, BasicStroke.CAP_ROUND,
+                        BasicStroke.JOIN_ROUND));
+                drawGuidedInspectionGlyph(g2, control, cx, cy, radius);
+                String label = control == GuidedInspectionControl.Next ? "保存并下一项" : "保存并退出";
+                g2.setFont(g2.getFont().deriveFont(java.awt.Font.BOLD, 11f));
+                int labelX = cx - g2.getFontMetrics().stringWidth(label) / 2;
+                int labelY = bounds.y - 5;
+                g2.setColor(new Color(0, 0, 0, 190));
+                g2.drawString(label, labelX + 1, labelY + 1);
+                g2.setColor(active ? new Color(88, 220, 245, 245)
+                        : new Color(245, 250, 252, 235));
+                g2.drawString(label, labelX, labelY);
+            }
+        }
+        finally {
+            g2.dispose();
+        }
+    }
+
+    private void drawGuidedInspectionGlyph(Graphics2D g2, GuidedInspectionControl control,
+            int cx, int cy, int radius) {
+        drawCircle(g2, cx, cy, radius);
+        int left = cx - radius / 2;
+        int mid = cy + 1;
+        g2.drawLine(left, mid, cx - radius / 7, cy + radius / 3);
+        g2.drawLine(cx - radius / 7, cy + radius / 3, cx + radius / 4,
+                cy - radius / 3);
+        if (control == GuidedInspectionControl.Next) {
+            int x = cx + radius / 3;
+            g2.drawLine(x, cy - radius / 4, x + radius / 3, cy);
+            g2.drawLine(x + radius / 3, cy, x, cy + radius / 4);
+        }
+        else {
+            int size = Math.max(5, radius / 3);
+            g2.drawRect(cx + radius / 4, cy - size / 2, size, size);
+        }
+    }
+
     private void paintSelection(Graphics2D g2d) {
         int rx = selectionScaled.x;
         int ry = selectionScaled.y;
@@ -1151,6 +1422,20 @@ public class CameraView extends JComponent implements CameraListener {
         textHeight -= interLineSpacing;
         return new Dimension(textWidth + insets.left + insets.right,
                 textHeight + insets.top + insets.bottom);
+    }
+
+    private static void drawInfoLine(Graphics2D graphics, int left, int bottom, String text) {
+        Graphics2D g = (Graphics2D) graphics.create();
+        g.setRenderingHint(RenderingHints.KEY_ANTIALIASING,
+                RenderingHints.VALUE_ANTIALIAS_ON);
+        g.setFont(g.getFont().deriveFont(11f));
+        int width = g.getFontMetrics().stringWidth(text);
+        int height = g.getFontMetrics().getHeight() + 6;
+        g.setColor(new Color(12, 17, 20, 145));
+        g.fillRoundRect(left, bottom - height, width + 12, height, 6, 6);
+        g.setColor(new Color(184, 199, 207, 220));
+        g.drawString(text, left + 6, bottom - 5);
+        g.dispose();
     }
 
     private void drawImageInfo(Graphics2D g2d, int topLeftX, int topLeftY,
@@ -1413,6 +1698,11 @@ public class CameraView extends JComponent implements CameraListener {
      * Updates the Cursor to reflect the current state of the component.
      */
     private void updateCursor() {
+        Point pointer = getMousePosition();
+        if (pointer != null && guidedInspectionControlAt(pointer.x, pointer.y) != null) {
+            setCursor(Cursor.getPredefinedCursor(Cursor.HAND_CURSOR));
+            return;
+        }
         if (selectionEnabled) {
             if (selectionMode == SelectionMode.Moving) {
                 setCursor(Cursor.getPredefinedCursor(Cursor.MOVE_CURSOR));
@@ -1510,78 +1800,230 @@ public class CameraView extends JComponent implements CameraListener {
      * @return the offset in camera pixels from the center of the image in a bottom left to
      * top right coordinate system
      */
-    public Point getCameraViewCenterPixelsFromXy(int x, int y) {
-        // Find the difference in X and Y from the center of the image
-        // to the mouse click.
-        double offsetX = (scaledWidth / 2.0D) - (x - imageX);
-        double offsetY = (scaledHeight / 2.0D) - (y - imageY) + 1;
-
-        // Invert the X so that the offsets represent a bottom left to
-        // top right coordinate system.
-        offsetX = -offsetX;
-
-        return new Point((int) Math.round(offsetX*scaleRatioX),
-                (int) Math.round(offsetY*scaleRatioY));
+    public synchronized Point getCameraViewCenterPixelsFromXy(int x, int y) {
+        Point2D.Double offset = CameraViewCoordinateTransform.centerOffset(x, y,
+                imageX, imageY, scaledWidth, scaledHeight, scaleRatioX, scaleRatioY);
+        return new Point((int) Math.round(offset.x), (int) Math.round(offset.y));
     }
 
-    public Location getCameraViewCenterOffsetsFromXy(int x, int y) {
-        // Find the difference in X and Y from the center of the image
-        // to the mouse click.
-        double offsetX = (scaledWidth / 2.0D) - (x - imageX);
-        double offsetY = (scaledHeight / 2.0D) - (y - imageY) + 1;
+    public synchronized Location getCameraViewCenterOffsetsFromXy(int x, int y) {
+        Location unitsPerPixel = lastUnitsPerPixel == null
+                ? camera.getUnitsPerPixelAtZ() : lastUnitsPerPixel;
+        return getCameraViewCenterOffsetsFromXy(x, y, unitsPerPixel);
+    }
 
-        // Invert the X so that the offsets represent a bottom left to
-        // top right coordinate system.
-        offsetX = -offsetX;
+    private synchronized Location getCameraViewCenterOffsetsFromXy(int x, int y,
+            Location unitsPerPixel) {
+        Point2D.Double offset = CameraViewCoordinateTransform.centerOffset(x, y,
+                imageX, imageY, scaledWidth, scaledHeight,
+                unitsPerPixel.getX() * scaleRatioX,
+                unitsPerPixel.getY() * scaleRatioY);
+        return new Location(unitsPerPixel.getUnits(),
+                offset.x, offset.y, 0.0, 0.0);
+    }
 
-        // Scale the offsets by the units per pixel for the camera.
-        offsetX *= scaledUnitsPerPixelX;
-        offsetY *= scaledUnitsPerPixelY;
+    private synchronized boolean isPointInsideCameraImage(int x, int y) {
+        return CameraViewCoordinateTransform.contains(x, y, imageX, imageY,
+                scaledWidth, scaledHeight);
+    }
 
-        // The offsets now represent the distance in the Camera's units per pixel's units.
+    private synchronized CameraViewPrecisionLocator.Target capturePrecisionTarget(int x, int y) {
+        if (!isPointInsideCameraImage(x, y) || lastFrame == null) {
+            return null;
+        }
+        Point2D.Double source = CameraViewCoordinateTransform.viewToSource(x, y,
+                imageX, imageY, scaleRatioX, scaleRatioY);
+        return CameraViewPrecisionLocator.capture(lastFrame, source.x, source.y);
+    }
 
-        // Create a location in the Camera's units per pixel's units
-        // and with the values of the offsets.
-        Location offsets = new Location(camera.getUnitsPerPixel().getUnits(), offsetX, offsetY, 0.0, 0.0);
-        return offsets;
+    private synchronized Resolution resolveVisionScaleAt(int x, int y) {
+        if (!isPointInsideCameraImage(x, y) || lastFrame == null) {
+            return null;
+        }
+        Point2D.Double source = CameraViewCoordinateTransform.viewToSource(x, y,
+                imageX, imageY, scaleRatioX, scaleRatioY);
+        double pixelOffsetX = source.x - lastFrame.getWidth() / 2.0;
+        double pixelOffsetY = lastFrame.getHeight() / 2.0 - source.y;
+        return SafetyWorkbenchVisionScale.resolve(getVisionScaleModel(), camera,
+                camera.getLocation(), pixelOffsetX, pixelOffsetY);
+    }
+
+    private void showVisionScaleNotice(Resolution resolution) {
+        if (resolution == null) {
+            return;
+        }
+        long now = System.currentTimeMillis();
+        if (now - lastVisionScaleNoticeAt < 1000) {
+            return;
+        }
+        lastVisionScaleNoticeAt = now;
+        if (resolution.isApplied()) {
+            showDragJogInfo(String.format(Locale.ROOT,
+                    "拖拽定位 · 3D 高度补偿：%s，顶面 Z %.3f mm",
+                    resolution.getObject().name, resolution.getSurfaceZ()), 2600);
+            return;
+        }
+        String message = null;
+        if (resolution.getStatus() == Status.ModelNotCertified) {
+            message = "3D 高度修正未启用：请保存并认证工作台高度模型。";
+        }
+        else if (resolution.getStatus() == Status.CameraNotCalibrated) {
+            message = "3D 高度修正未启用：顶部相机尚未完成双高度像素比例标定。";
+        }
+        else if (resolution.getStatus() == Status.NoSurface) {
+            message = "鼠标位置没有匹配到 3D 实体顶面，本次使用相机默认高度。";
+        }
+        if (message != null) {
+            showDragJogInfo(message, 3000);
+        }
+    }
+
+    private void showDragJogInfo(String message, long durationMs) {
+        dragJogInfo = message;
+        dragJogInfoUntil = System.currentTimeMillis() + Math.max(800, durationMs);
+        repaint();
     }
 
     private void moveToClick(MouseEvent e) {
+        Camera jogCamera = camera;
+        long jogToken = screenJogGate.tryBegin();
+        if (jogToken < 0 || precisionCorrectionBusy) {
+            if (jogToken >= 0) {
+                screenJogGate.failedOrTimedOut(jogToken);
+            }
+            TransientNotification.show(this,
+                    "正在等待上一次移动完成并刷新画面，本次拖拽已忽略。", 1200);
+            return;
+        }
+        CameraViewPrecisionLocator.Target precisionTarget =
+                capturePrecisionTarget(e.getX(), e.getY());
+        Resolution visionScale = resolveVisionScaleAt(e.getX(), e.getY());
+        Location movementUnitsPerPixel = visionScale != null && visionScale.isApplied()
+                ? visionScale.getUnitsPerPixel()
+                : camera.getUnitsPerPixelAtZ();
+        showVisionScaleNotice(visionScale);
         // Get the offset from the Camera view center in Camera's units.
-        Location offsets = getCameraViewCenterOffsetsFromXy(e.getX(), e.getY());
+        Location offsets = getCameraViewCenterOffsetsFromXy(e.getX(), e.getY(),
+                movementUnitsPerPixel);
+        if (precisionTarget != null) {
+            Location offsetsInMm = offsets.convertToUnits(LengthUnit.Millimeters);
+            double commandedDistanceMm = offsetsInMm.getLinearDistanceTo(
+                    new Location(LengthUnit.Millimeters));
+            pendingPrecisionJog = new PendingPrecisionJog(jogToken, jogCamera,
+                    precisionTarget, movementUnitsPerPixel, commandedDistanceMm, zoom);
+        }
         // And move there.
         UiUtils.submitUiMachineTask(() -> {
-            // For non-movable cameras, move the nozzle so that the clicked position is centered in
-            // the camera's view.  For movable cameras, move the camera so that the clicked position
-            // is centered in the camera's view.
-            if (camera.getHead() == null) {
-                // The camera is non-movable
-                // Get the selected nozzle
-                Nozzle nozzle = MainFrame.get().getMachineControls().getSelectedNozzle();
-                Location currentLocation = nozzle.getLocation();
-                // Subtract the offsets from the nozzle position.
-                Location location = currentLocation.subtract(offsets);
-                // Only change X/Y. 
-                location = currentLocation.derive(location, true, true, false, false);
-                // Move the nozzle such that the clicked position is moved to the center of the camera view
-                if (currentLocation.getLinearLengthTo(camera.getLocation()).compareTo(camera.getRoamingRadius()) < 0
-                        && location.getLinearLengthTo(camera.getLocation()).compareTo(camera.getRoamingRadius()) < 0) {
-                    // Within the roaming area, no need to go to Safe Z.
-                    nozzle.moveTo(location, Motion.MotionOption.JogMotion);
+            moveByScreenOffset(jogCamera, offsets);
+            return null;
+        }, result -> {
+            long completedAtFrame = previewFrameSequence.get();
+            screenJogGate.motionCompleted(jogToken, completedAtFrame);
+            scheduledExecutor.schedule(() -> {
+                if (screenJogGate.failedOrTimedOut(jogToken)) {
+                    clearPendingPrecisionJog(jogToken);
                 }
-                else {
-                    // Current or new location outside roaming area. Move to safe Z.
-                    MovableUtils.moveToLocationAtSafeZ(nozzle, location);
-                }
+            }, SCREEN_JOG_FRAME_TIMEOUT_MS, TimeUnit.MILLISECONDS);
+        }, throwable -> {
+            screenJogGate.failedOrTimedOut(jogToken);
+            clearPendingPrecisionJog(jogToken);
+            showScreenJogFailure(throwable);
+        });
+    }
+
+    private void moveByScreenOffset(Camera jogCamera, Location offsets) throws Exception {
+        // For non-movable cameras, move the nozzle so that the selected position is centered.
+        if (jogCamera.getHead() == null) {
+            Nozzle nozzle = MainFrame.get().getMachineControls().getSelectedNozzle();
+            Location currentLocation = nozzle.getLocation();
+            Location location = currentLocation.subtract(offsets);
+            location = currentLocation.derive(location, true, true, false, false);
+            if (currentLocation.getLinearLengthTo(jogCamera.getLocation())
+                    .compareTo(jogCamera.getRoamingRadius()) < 0
+                    && location.getLinearLengthTo(jogCamera.getLocation())
+                            .compareTo(jogCamera.getRoamingRadius()) < 0) {
+                nozzle.moveTo(location, Motion.MotionOption.JogMotion);
             }
-            else { 
-                // The camera is movable
-                // Add the offsets to the Camera's position.
-                Location location = camera.getLocation().add(offsets);
-                // move the camera to the location
-                MovableUtils.moveToLocationAtSafeZ(camera, location);
+            else {
+                MovableUtils.moveToLocationAtSafeZ(nozzle, location);
             }
-            MovableUtils.fireTargetedUserAction(camera, true);
+        }
+        else {
+            Location location = jogCamera.getLocation().add(offsets);
+            MovableUtils.moveToLocationAtSafeZ(jogCamera, location);
+        }
+        MovableUtils.fireTargetedUserAction(jogCamera, true);
+    }
+
+    private void clearPendingPrecisionJog(long token) {
+        PendingPrecisionJog pending = pendingPrecisionJog;
+        if (pending != null && pending.token == token) {
+            pendingPrecisionJog = null;
+        }
+    }
+
+    private void runPrecisionCorrection(PendingPrecisionJog precisionJog,
+            BufferedImage settledFrame) {
+        int searchRadiusX = CameraViewCoordinateTransform.precisionSearchRadius(
+                settledFrame.getWidth(), precisionJog.viewZoom);
+        int searchRadiusY = CameraViewCoordinateTransform.precisionSearchRadius(
+                settledFrame.getHeight(), precisionJog.viewZoom);
+        CameraViewPrecisionLocator.Result match = CameraViewPrecisionLocator.locateNear(
+                settledFrame, precisionJog.target,
+                settledFrame.getWidth() / 2.0, settledFrame.getHeight() / 2.0,
+                searchRadiusX, searchRadiusY);
+        if (match == null || match.confidence < CameraViewPrecisionLocator.MIN_CONFIDENCE) {
+            precisionCorrectionBusy = false;
+            showDragJogInfo("拖拽定位完成 · 目标纹理不足，未执行自动微调", 2600);
+            return;
+        }
+        Point2D.Double residualPixels = CameraViewCoordinateTransform.centerOffset(
+                match.sourceX, match.sourceY, 0, 0,
+                settledFrame.getWidth(), settledFrame.getHeight(), 1, 1);
+        Location upp = precisionJog.unitsPerPixel;
+        Location correction = new Location(upp.getUnits(),
+                residualPixels.x * upp.getX(), residualPixels.y * upp.getY(), 0, 0);
+        Location correctionInMm = correction.convertToUnits(LengthUnit.Millimeters);
+        Location unitsPerPixelInMm = upp.convertToUnits(LengthUnit.Millimeters);
+        double correctionMm = correctionInMm
+                .getLinearDistanceTo(new Location(LengthUnit.Millimeters));
+        double onePixelMm = Math.max(Math.abs(unitsPerPixelInMm.getX()),
+                Math.abs(unitsPerPixelInMm.getY()));
+        if (correctionMm < onePixelMm) {
+            precisionCorrectionBusy = false;
+            return;
+        }
+        double correctionLimitMm = CameraViewCoordinateTransform.precisionCorrectionLimit(
+                precisionJog.commandedDistanceMm, onePixelMm, precisionJog.viewZoom,
+                MAX_PRECISION_CORRECTION_MM);
+        if (!Double.isFinite(correctionMm) || correctionMm > correctionLimitMm) {
+            precisionCorrectionBusy = false;
+            showDragJogInfo(String.format(Locale.ROOT,
+                    "拖拽定位完成 · 微调 %.3f mm 超过本次限值 %.3f mm，已忽略",
+                    correctionMm, correctionLimitMm), 3000);
+            return;
+        }
+        long correctionToken = screenJogGate.tryBegin();
+        if (correctionToken < 0) {
+            precisionCorrectionBusy = false;
+            return;
+        }
+        UiUtils.submitUiMachineTask(() -> {
+            moveByScreenOffset(precisionJog.camera, correction);
+            return null;
+        }, result -> {
+            precisionCorrectionBusy = false;
+            screenJogGate.motionCompleted(correctionToken, previewFrameSequence.get());
+            scheduledExecutor.schedule(
+                    () -> screenJogGate.failedOrTimedOut(correctionToken),
+                    SCREEN_JOG_FRAME_TIMEOUT_MS, TimeUnit.MILLISECONDS);
+            showDragJogInfo(String.format(Locale.ROOT,
+                    "拖拽定位 · 已微调 %.3f mm，置信度 %.0f%%",
+                    correctionMm, match.confidence * 100.0), 2600);
+        }, throwable -> {
+            precisionCorrectionBusy = false;
+            screenJogGate.failedOrTimedOut(correctionToken);
+            showScreenJogFailure(throwable);
         });
     }
     
@@ -1606,7 +2048,18 @@ public class CameraView extends JComponent implements CameraListener {
             location = location.derive(null, null, null, targetAngle);
             MovableUtils.moveToLocationAtSafeZ(selectedTool, location);
             MovableUtils.fireTargetedUserAction(selectedTool, true);
-        });
+            return null;
+        }, result -> {
+        }, throwable -> showScreenJogFailure(throwable));
+    }
+
+    private void showScreenJogFailure(Throwable throwable) {
+        if (TransientNotification.isTransientMotionFailure(throwable)) {
+            TransientNotification.showMotionFailure(this, throwable);
+        }
+        else {
+            UiUtils.showError(this, "Error", throwable);
+        }
     }
 
     private void toggleLight(MouseEvent e) {
@@ -1769,6 +2222,10 @@ public class CameraView extends JComponent implements CameraListener {
             if (e.isPopupTrigger() || e.isShiftDown() || SwingUtilities.isRightMouseButton(e)) {
                 return;
             }
+            if (guidedInspectionControlClickConsumed) {
+                guidedInspectionControlClickConsumed = false;
+                return;
+            }
             // double click captures an image from the camera and writes it to disk.
             if (e.getClickCount() == 2) {
                 captureSnapshot();
@@ -1787,6 +2244,10 @@ public class CameraView extends JComponent implements CameraListener {
             else if (e.isShiftDown()) {
                 moveToClick(e);
             }
+            else if (guidedInspectionControlAt(e.getX(), e.getY()) != null) {
+                guidedInspectionControlPressed = guidedInspectionControlAt(e.getX(), e.getY());
+                repaint();
+            }
             else if (isPointInsideLightToggle(e.getX(), e.getY())) {
                 beginTogglingLight();
             }
@@ -1799,6 +2260,23 @@ public class CameraView extends JComponent implements CameraListener {
             if (e.isPopupTrigger() && !isDragJogging()) {
                 new CameraViewPopupMenu(CameraView.this).show(e.getComponent(), e.getX(), e.getY());
                 return;
+            }
+            else if (guidedInspectionControlPressed != null) {
+                GuidedInspectionControl released = guidedInspectionControlAt(e.getX(), e.getY());
+                GuidedInspectionControl activated = guidedInspectionControlPressed;
+                guidedInspectionControlPressed = null;
+                guidedInspectionControlClickConsumed = true;
+                repaint();
+                if (released == activated && guidedInspectionControlListener != null) {
+                    if (activated == GuidedInspectionControl.Next) {
+                        SwingUtilities.invokeLater(
+                                guidedInspectionControlListener::completeAndNext);
+                    }
+                    else {
+                        SwingUtilities.invokeLater(
+                                guidedInspectionControlListener::completeAndExit);
+                    }
+                }
             }
             else if (isDragJogging()) {
                 dragJoggingEnd(e);
@@ -1816,6 +2294,11 @@ public class CameraView extends JComponent implements CameraListener {
     private MouseMotionListener mouseMotionListener = new MouseMotionAdapter() {
         @Override
         public void mouseMoved(MouseEvent e) {
+            GuidedInspectionControl previous = guidedInspectionControlHover;
+            guidedInspectionControlHover = guidedInspectionControlAt(e.getX(), e.getY());
+            if (previous != guidedInspectionControlHover) {
+                repaint();
+            }
             updateCursor();
         }
 

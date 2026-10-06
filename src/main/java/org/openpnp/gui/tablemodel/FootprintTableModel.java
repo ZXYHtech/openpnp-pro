@@ -19,18 +19,22 @@
 
 package org.openpnp.gui.tablemodel;
 
+import java.util.ArrayList;
+import java.util.List;
 import java.util.Locale;
 
 import javax.swing.table.AbstractTableModel;
 
 import org.openpnp.Translations;
+import org.openpnp.gui.components.RowReorderableTableModel;
+import org.openpnp.gui.support.RowReorderSupport;
 import org.openpnp.gui.support.LengthCellValue;
 import org.openpnp.model.Configuration;
 import org.openpnp.model.Footprint;
 import org.openpnp.model.Footprint.Pad;
 import org.openpnp.model.Length;
 
-public class FootprintTableModel extends AbstractTableModel {
+public class FootprintTableModel extends AbstractTableModel implements RowReorderableTableModel {
     private String[] columnNames =
             new String[] {
                     Translations.getString("FootPrintTableModel.ColumnName.Name"), //$NON-NLS-1$
@@ -161,5 +165,18 @@ public class FootprintTableModel extends AbstractTableModel {
             default:
                 return null;
         }
+    }
+    @Override
+    public boolean reorderRows(List<Integer> rows, int targetRow) {
+        List<Pad> ordered = RowReorderSupport.reorder(
+                new ArrayList<>(footprint.getPads()), rows, targetRow);
+        if (ordered == null) {
+            return false;
+        }
+        footprint.getPads().clear();
+        footprint.getPads().addAll(ordered);
+        pkg.fireFootprintChanged();
+        fireTableDataChanged();
+        return true;
     }
 }

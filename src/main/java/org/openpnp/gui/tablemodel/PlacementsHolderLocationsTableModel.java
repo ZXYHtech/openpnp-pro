@@ -19,6 +19,7 @@
 
 package org.openpnp.gui.tablemodel;
 
+import java.util.ArrayList;
 import java.util.List;
 
 import javax.swing.SwingUtilities;
@@ -26,6 +27,9 @@ import javax.swing.event.TableModelEvent;
 
 import org.openpnp.Translations;
 import org.openpnp.events.PlacementsHolderLocationChangedEvent;
+import org.openpnp.events.DefinitionStructureChangedEvent;
+import org.openpnp.gui.components.RowReorderableTableModel;
+import org.openpnp.gui.support.RowReorderSupport;
 import org.openpnp.gui.support.LengthCellValue;
 import org.openpnp.gui.support.RotationCellValue;
 import org.openpnp.model.Abstract2DLocatable;
@@ -40,10 +44,11 @@ import org.openpnp.model.Job;
 import org.openpnp.model.Length;
 import org.openpnp.model.Location;
 import org.openpnp.model.PanelLocation;
+import org.openpnp.util.IdentifiableList;
 
 @SuppressWarnings("serial")
 public class PlacementsHolderLocationsTableModel extends AbstractObjectTableModel 
-        implements ColumnAlignable, ColumnWidthSaveable {
+        implements ColumnAlignable, ColumnWidthSaveable, RowReorderableTableModel {
     private final Configuration configuration;
 
     private final String[] columnNames = new String[] {
@@ -419,5 +424,58 @@ public class PlacementsHolderLocationsTableModel extends AbstractObjectTableMode
     @Override
     public int[] getColumnWidthTypes() {
         return columnWidthTypes;
+    }
+    @Override
+    public boolean reorderRows(List<Integer> rows, int targetRow) {
+        List<PlacementsHolderLocation<?>> displayed = getPlacementsHolderLocations();
+        if (displayed == null || rows.isEmpty()) {
+            return false;
+        }
+        List<PlacementsHolderLocation<?>> selected = new ArrayList<>();
+        PanelLocation parent = null;
+        for (Integer row : rows) {
+            if (row == null || row < 0 || row >= displayed.size()) {
+                continue;
+            }
+            PlacementsHolderLocation<?> location = displayed.get(row);
+            if (!(location.getParent() instanceof PanelLocation)) {
+                return false;
+            }
+            if (parent == null) {
+                parent = (PanelLocation) location.getParent();
+            }
+            else if (parent != location.getParent()) {
+                return false;
+            }
+            selected.add(location);
+        }
+        if (parent == null || selected.isEmpty()) {
+            return false;
+        }
+        List<PlacementsHolderLocation<?>> siblings = new ArrayList<>(parent.getChildren());
+        List<Integer> siblingRows = new ArrayList<>();
+        for (PlacementsHolderLocation<?> location : selected) {
+            siblingRows.add(siblings.indexOf(location));
+        }
+        int siblingTarget = siblings.size();
+        if (targetRow >= 0 && targetRow < displayed.size()) {
+            PlacementsHolderLocation<?> target = displayed.get(targetRow);
+            if (target.getParent() != parent) {
+                return false;
+            }
+            siblingTarget = siblings.indexOf(target);
+        }
+        List<PlacementsHolderLocation<?>> ordered =
+                RowReorderSupport.reorder(siblings, siblingRows, siblingTarget);
+        if (ordered == null) {
+            return false;
+        }
+        IdentifiableList<PlacementsHolderLocation<?>> reordered = new IdentifiableList<>();
+        reordered.addAll(ordered);
+        parent.getPanel().setChildren(reordered);
+        fireTableDataChanged();
+        configuration.getBus().post(new DefinitionStructureChangedEvent(
+                parent.getPanel().getDefinition(), "children", this));
+        return true;
     }
 }

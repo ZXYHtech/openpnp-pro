@@ -89,6 +89,9 @@ public abstract class ReferenceCamera extends AbstractBroadcastingCamera impleme
     @Attribute(required = false)
     private int captureTryTimeoutMs = 2000;
 
+    private volatile long lastRawCaptureDurationNanos = -1;
+    private volatile long lastImageTransformDurationNanos = -1;
+
     @Element(required = false)
     private Location headOffsets = new Location(LengthUnit.Millimeters);
 
@@ -236,7 +239,23 @@ public abstract class ReferenceCamera extends AbstractBroadcastingCamera impleme
      */
     @Override
     public BufferedImage captureTransformed() {
-        return transformImage(captureRaw());
+        long captureStartedNanos = System.nanoTime();
+        BufferedImage raw = captureRaw();
+        lastRawCaptureDurationNanos = System.nanoTime() - captureStartedNanos;
+        long transformStartedNanos = System.nanoTime();
+        BufferedImage transformed = transformImage(raw);
+        lastImageTransformDurationNanos = System.nanoTime() - transformStartedNanos;
+        return transformed;
+    }
+
+    public double getLastRawCaptureDurationMillis() {
+        return lastRawCaptureDurationNanos < 0 ? -1
+                : lastRawCaptureDurationNanos / 1_000_000.0;
+    }
+
+    public double getLastImageTransformDurationMillis() {
+        return lastImageTransformDurationNanos < 0 ? -1
+                : lastImageTransformDurationNanos / 1_000_000.0;
     }
     
     /**

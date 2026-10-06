@@ -56,7 +56,8 @@ public class FeederUtils {
         ArrayList<Feeder> feeders = new ArrayList<Feeder>();
         Feeder.Priority highestPriority = Feeder.Priority.Low;
         for (Feeder feeder : machine.getFeeders()) {
-            if (feeder.getPart() == part && feeder.isEnabled()) {
+            if (part != null && part.isInterchangeableWith(feeder.getPart())
+                    && feeder.isEnabled()) {
                 feeders.add(feeder);
                 Feeder.Priority p = feeder.getPriority();
                 if (p.ordinal()<highestPriority.ordinal()) {  // NB enum ordinal values are larger for low priorities

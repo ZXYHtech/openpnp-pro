@@ -40,6 +40,8 @@ public class Icons {
     
     public static Icon start = getIcon("/icons/control-start.svg");
     public static Icon pause = getIcon("/icons/control-pause.svg");
+    public static Icon pauseWhenNozzlesEmpty =
+            getIcon("/icons/control-pause-empty-nozzle.svg");
     public static Icon step = getIcon("/icons/control-next.svg");
     public static Icon stop = getIcon("/icons/control-stop.svg");
 
@@ -62,6 +64,8 @@ public class Icons {
     public static Icon showPart = getIcon("/icons/feeder-show-part-outline.svg");
     public static Icon editFeeder = getIcon("/icons/feeder-edit.svg");
     public static Icon feeder = getIcon("/icons/feeder.svg");
+    public static Icon feederInspect = getIcon("/icons/feeder-inspect.svg");
+    public static Icon job = getIcon("/icons/job.svg");
     
 
     public static Icon partAlign = getIcon("/icons/part-align.svg");

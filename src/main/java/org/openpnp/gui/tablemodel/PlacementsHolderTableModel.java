@@ -24,6 +24,8 @@ import java.util.function.Supplier;
 
 import org.openpnp.Translations;
 import org.openpnp.events.PlacementsHolderChangedEvent;
+import org.openpnp.gui.components.RowReorderableTableModel;
+import org.openpnp.gui.support.RowReorderSupport;
 import org.openpnp.gui.support.LengthCellValue;
 import org.openpnp.model.Board;
 import org.openpnp.model.Configuration;
@@ -33,7 +35,8 @@ import org.openpnp.model.Location;
 import org.openpnp.model.Panel;
 
 @SuppressWarnings("serial")
-public class PlacementsHolderTableModel extends AbstractObjectTableModel implements ColumnAlignable, ColumnWidthSaveable {
+public class PlacementsHolderTableModel extends AbstractObjectTableModel
+        implements ColumnAlignable, ColumnWidthSaveable, RowReorderableTableModel {
     private final Configuration configuration;
 
     private String[] columnNames = new String[] {"PlacementsHolder Name", //$NON-NLS-1$
@@ -162,5 +165,21 @@ public class PlacementsHolderTableModel extends AbstractObjectTableModel impleme
     @Override
     public int[] getColumnWidthTypes() {
         return columnWidthTypes;
+    }
+    @Override
+    public boolean reorderRows(List<Integer> rows, int targetRow) {
+        if (classType == Board.class) {
+            @SuppressWarnings("unchecked")
+            List<Board> current = (List<Board>) (List<?>) placementsHolders.get();
+            List<Board> ordered = RowReorderSupport.reorder(current, rows, targetRow);
+            return ordered != null && configuration.reorderBoards(ordered);
+        }
+        if (classType == Panel.class) {
+            @SuppressWarnings("unchecked")
+            List<Panel> current = (List<Panel>) (List<?>) placementsHolders.get();
+            List<Panel> ordered = RowReorderSupport.reorder(current, rows, targetRow);
+            return ordered != null && configuration.reorderPanels(ordered);
+        }
+        return false;
     }
 }

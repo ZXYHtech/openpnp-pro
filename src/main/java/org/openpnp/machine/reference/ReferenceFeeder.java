@@ -24,6 +24,14 @@ public abstract class ReferenceFeeder extends AbstractFeeder {
     @Attribute(required=false)
     protected FeedOptions feedOptions = FeedOptions.Normal;
 
+    /** Percentage-point adjustment applied to the task feeder auto-alignment confidence. */
+    @Attribute(required=false)
+    protected double autoAlignConfidenceAdjustment;
+
+    /** Absolute final threshold. Null means this feeder follows the global threshold. */
+    @Attribute(required=false)
+    protected Double autoAlignConfidencePercent;
+
     /**
      * Additional feed options which enable feeder implement skipping physical movement.
      * The implementation is on feeder itself as even movement is disabled then still
@@ -82,6 +90,29 @@ public abstract class ReferenceFeeder extends AbstractFeeder {
         firePropertyChange("feedOptions", oldValue, feedOptions);
     }
 
+    public double getAutoAlignConfidenceAdjustment() {
+        return autoAlignConfidenceAdjustment;
+    }
+
+    public void setAutoAlignConfidenceAdjustment(double adjustment) {
+        double bounded = Math.max(-40.0, Math.min(20.0, adjustment));
+        double oldValue = autoAlignConfidenceAdjustment;
+        autoAlignConfidenceAdjustment = bounded;
+        firePropertyChange("autoAlignConfidenceAdjustment", oldValue, bounded);
+    }
+
+    public Double getAutoAlignConfidencePercent() {
+        return autoAlignConfidencePercent;
+    }
+
+    public void setAutoAlignConfidencePercent(Double percent) {
+        Double bounded = percent == null ? null
+                : Math.max(50.0, Math.min(99.5, percent));
+        Double oldValue = autoAlignConfidencePercent;
+        autoAlignConfidencePercent = bounded;
+        firePropertyChange("autoAlignConfidencePercent", oldValue, bounded);
+    }
+
     /**
      * Do general sanity for takeBackPart(). Intended to call from feeder implementation.
      */
@@ -94,7 +125,7 @@ public abstract class ReferenceFeeder extends AbstractFeeder {
                 nozzle.getName())
             );
         }
-        if (!nozzle.getPart().equals(getPart())) {
+        if (!nozzle.getPart().isInterchangeableWith(getPart())) {
             throw new UnsupportedOperationException(
                 String.format(Translations.getString("ReferenceFeeder.TakePartBack.PartMismatch.Exception.Message"),    //$NON-NLS-1$
                 getName(), nozzle.getPart().getId(), getPart().getId())

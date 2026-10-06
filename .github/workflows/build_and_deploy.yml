@@ -49,7 +49,8 @@ jobs:
           wget -q https://openpnp.s3-us-west-2.amazonaws.com/install4j_unix_10_0_5.tar.gz
           tar -xzf install4j_unix_10_0_5.tar.gz
           ./install4j10.0.5/bin/install4jc -L ${{secrets.INSTALL4J_10_LICENSE_KEY }}
-          VERSION=`java --add-opens=java.base/java.lang=ALL-UNNAMED --add-opens=java.desktop/java.awt=ALL-UNNAMED --add-opens=java.desktop/java.awt.color=ALL-UNNAMED -cp target/openpnp-gui-0.0.1-alpha-SNAPSHOT.jar:target/lib org.openpnp.Main --version`
+          APP_VERSION=`cat VERSION.txt`
+          VERSION=`java --add-opens=java.base/java.lang=ALL-UNNAMED --add-opens=java.desktop/java.awt=ALL-UNNAMED --add-opens=java.desktop/java.awt.color=ALL-UNNAMED -cp target/openpnp-gui-$APP_VERSION.jar:target/lib org.openpnp.Main --version`
           ./install4j10.0.5/bin/install4jc -r $VERSION -d installers -D mediaFileVersion=$BRANCH_NAME --mac-keystore-password "${{secrets.MAC_CODE_SIGNING_CERT_PASSWORD }}" --apple-id-password "${{secrets.MAC_NOTARIZATION_APP_PASSWORD }}" OpenPnP.install4j
           mv installers/updates.xml installers/updates-$BRANCH_NAME.xml
           mkdir -p installers/$BRANCH_NAME/$VERSION

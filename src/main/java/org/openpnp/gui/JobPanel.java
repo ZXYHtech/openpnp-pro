@@ -37,6 +37,7 @@ import java.beans.PropertyChangeListener;
 import java.io.File;
 import java.io.FilenameFilter;
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -56,6 +57,7 @@ import javax.swing.JScrollPane;
 import javax.swing.JSplitPane;
 import javax.swing.JTable;
 import javax.swing.JToolBar;
+import javax.swing.JToggleButton;
 import javax.swing.KeyStroke;
 import javax.swing.ListSelectionModel;
 import javax.swing.RowFilter;
@@ -69,6 +71,7 @@ import javax.swing.table.TableModel;
 import javax.swing.table.TableRowSorter;
 
 import org.openpnp.ConfigurationListener;
+import org.openpnp.Main;
 import org.openpnp.Translations;
 import org.openpnp.events.DefinitionStructureChangedEvent;
 import org.openpnp.events.PlacementsHolderLocationSelectedEvent;
@@ -77,7 +80,9 @@ import org.openpnp.events.PlacementSelectedEvent;
 import org.openpnp.events.PlacementsHolderLocationChangedEvent;
 import org.openpnp.gui.JobPanel.OpenRecentJobAction;
 import org.openpnp.gui.components.AutoSelectTextTable;
+import org.openpnp.gui.components.CameraView;
 import org.openpnp.gui.components.ExistingBoardOrPanelDialog;
+import org.openpnp.gui.components.reticle.BoardPlacementReticle;
 import org.openpnp.gui.processes.MultiPlacementBoardLocationProcess;
 import org.openpnp.gui.support.ActionGroup;
 import org.openpnp.gui.support.CustomBooleanRenderer;
@@ -88,6 +93,7 @@ import org.openpnp.gui.support.CustomPlacementsHolderRenderer;
 import org.openpnp.gui.support.Helpers;
 import org.openpnp.gui.support.Icons;
 import org.openpnp.gui.support.LengthCellValue;
+import org.openpnp.gui.support.JobTelemetryManager;
 import org.openpnp.gui.support.MessageBoxes;
 import org.openpnp.gui.support.RotationCellValue;
 import org.openpnp.gui.support.TableUtils;
@@ -104,12 +110,14 @@ import org.openpnp.model.Length;
 import org.openpnp.model.Location;
 import org.openpnp.model.Panel;
 import org.openpnp.model.PanelLocation;
+import org.openpnp.machine.reference.ReferencePnpJobProcessor;
 import org.openpnp.model.Part;
 import org.openpnp.model.Motion;
 import org.openpnp.model.Placement;
 import org.openpnp.model.Placement.Type;
 import org.openpnp.spi.Camera;
 import org.openpnp.spi.Feeder;
+import org.openpnp.spi.Head;
 import org.openpnp.spi.HeadMountable;
 import org.openpnp.spi.JobProcessor;
 import org.openpnp.spi.JobProcessor.JobProcessorException;
@@ -149,6 +157,10 @@ public class JobPanel extends JPanel {
     private JSplitPane splitPane;
 
     private PlacementsHolderLocationViewerDialog jobViewer;
+    private static final String BOARD_PLACEMENT_RETICLE_KEY =
+            JobPanel.class.getName() + ".boardPlacementProjection";
+    private CameraView boardPlacementCameraView;
+    private BoardPlacementReticle boardPlacementReticle;
     
     private ActionGroup singleSelectionActionGroup;
     private ActionGroup multiSelectionActionGroup;
@@ -166,17 +178,20 @@ public class JobPanel extends JPanel {
     private Job job;
 
     private JobProcessor jobProcessor;
+    private final JobTelemetryManager telemetryManager;
     
     private State state = State.Stopped;
+    private volatile boolean pauseWhenNozzlesEmptyRequested;
     
     public JobPanel(Configuration configuration, MainFrame frame) {
         this.configuration = configuration;
         this.mainFrame = frame;
+        telemetryManager = new JobTelemetryManager(configuration);
 
         singleSelectionActionGroup =
                 new ActionGroup(captureToolBoardLocationAction, moveCameraToBoardLocationAction,
                         moveCameraToBoardLocationNextAction, moveToolToBoardLocationAction,
-                        twoPointLocateBoardLocationAction, fiducialCheckAction,
+                        twoPointLocateBoardLocationAction, fiducialCheckAction, packageAlignmentCheckAction,
                         setEnabledAction, setCheckFidsAction, setSideAction);
         singleSelectionActionGroup.setEnabled(false);
         
@@ -187,7 +202,7 @@ public class JobPanel extends JPanel {
         singleTopLevelSelectionActionGroup = new ActionGroup(captureToolBoardLocationAction, removeBoardAction, captureCameraBoardLocationAction,
                 moveCameraToBoardLocationAction,
                 moveCameraToBoardLocationNextAction, moveToolToBoardLocationAction,
-                twoPointLocateBoardLocationAction, fiducialCheckAction,
+                twoPointLocateBoardLocationAction, fiducialCheckAction, packageAlignmentCheckAction,
                 setEnabledAction, setCheckFidsAction, setSideAction);
         singleTopLevelSelectionActionGroup.setEnabled(false);
         
@@ -251,7 +266,7 @@ public class JobPanel extends JPanel {
         jobTable.setDefaultRenderer(RotationCellValue.class, new MonospacedFontWithAffineStatusTableCellRenderer());
         jobTable.getColumnModel().getColumn(2).setCellRenderer(new MonospacedFontTableCellRenderer());
         jobTable.getColumnModel().getColumn(3).setCellRenderer(new MonospacedFontTableCellRenderer());
-        jobTable.setAutoResizeMode(JTable.AUTO_RESIZE_NEXT_COLUMN);
+        jobTable.setAutoResizeMode(JTable.AUTO_RESIZE_OFF);
         
         TableUtils.setColumnAlignment(jobTableModel, jobTable);
         
@@ -262,6 +277,7 @@ public class JobPanel extends JPanel {
             public void tableChanged(TableModelEvent e) {
                 SwingUtilities.invokeLater(() -> {
                     jobPlacementsPanel.refresh();
+                    refreshBoardPlacementProjection();
                 });
             }
         });
@@ -347,6 +363,7 @@ public class JobPanel extends JPanel {
                         if (jobViewer != null) {
                             jobViewer.setPlacementsHolder(job.getRootPanelLocation().getPlacementsHolder(), getSelections());
                         }
+                        refreshBoardPlacementProjection();
                     }
                 });
 
@@ -384,6 +401,11 @@ public class JobPanel extends JPanel {
         JButton btnStopJob = new JButton(stopJobAction);
         btnStopJob.setHideActionText(true);
         toolBarBoards.add(btnStopJob);
+        JToggleButton btnPauseWhenNozzlesEmpty =
+                new JToggleButton(pauseWhenNozzlesEmptyAction);
+        btnPauseWhenNozzlesEmpty.setHideActionText(true);
+        btnPauseWhenNozzlesEmpty.setFocusable(false);
+        toolBarBoards.add(btnPauseWhenNozzlesEmpty);
         toolBarBoards.addSeparator();
         JButton btnDeferErrors = new JButton(deferErrorsAction);
         btnDeferErrors.setHideActionText(true);
@@ -443,6 +465,11 @@ public class JobPanel extends JPanel {
         JButton btnFiducialCheck = new JButton(fiducialCheckAction);
         toolBarBoards.add(btnFiducialCheck);
         btnFiducialCheck.setHideActionText(true);
+
+        JToggleButton btnPackageAlignmentCheck = new JToggleButton(packageAlignmentCheckAction);
+        btnPackageAlignmentCheck.setText("顶部视觉投射");
+        toolBarBoards.add(btnPackageAlignmentCheck);
+        btnPackageAlignmentCheck.setHideActionText(false);
         
         toolBarBoards.addSeparator();
         
@@ -512,7 +539,44 @@ public class JobPanel extends JPanel {
     
     void setState(State newState) {
         this.state = newState;
+        if (newState == State.Stopped || newState == State.Paused
+                || newState == State.Stopping) {
+            setPauseWhenNozzlesEmptyRequested(false);
+        }
+        telemetryManager.stateChanged(newState.name(), job);
         updateJobActions();
+    }
+
+    public boolean isJobInMotion() {
+        return state == State.Running || state == State.Pausing || state == State.Stopping;
+    }
+
+    private void setPauseWhenNozzlesEmptyRequested(boolean requested) {
+        pauseWhenNozzlesEmptyRequested = requested;
+        pauseWhenNozzlesEmptyAction.putValue(Action.SELECTED_KEY, requested);
+        pauseWhenNozzlesEmptyAction.putValue(Action.SHORT_DESCRIPTION, requested
+                ? "已请求：完成吸嘴上的物料贴装后暂停；再次点击可取消"
+                : "完成所有吸嘴上的物料贴装，确认吸嘴为空后暂停");
+    }
+
+    private boolean shouldPauseWithEmptyNozzles() {
+        return pauseWhenNozzlesEmptyRequested
+                && areAllNozzlesEmpty(configuration.getMachine());
+    }
+
+    static boolean areAllNozzlesEmpty(Machine machine) {
+        for (Head head : machine.getHeads()) {
+            for (Nozzle nozzle : head.getNozzles()) {
+                if (nozzle.getPart() != null) {
+                    return false;
+                }
+            }
+        }
+        return true;
+    }
+
+    static boolean shouldPauseImmediatelyWhenNozzlesEmpty(State state, Machine machine) {
+        return state == State.Running && areAllNozzlesEmpty(machine);
     }
     
     public JTable getPlacementsHolderLocationsTable() {
@@ -548,6 +612,7 @@ public class JobPanel extends JPanel {
     public void selectPlacementsHolderLocation(PlacementsHolderLocation<?> placementsHolderLocation) {
         if (placementsHolderLocation == null) {
             jobTable.getSelectionModel().clearSelection();
+            return;
         }
         for (int i = 0; i < jobTableModel.getRowCount(); i++) {
             if (job.getBoardAndPanelLocations().get(i).getDefinition() == placementsHolderLocation) {
@@ -560,11 +625,37 @@ public class JobPanel extends JPanel {
         }
     }
 
+    /**
+     * Selects one concrete board/panel instance from a panelized job. Unlike definition linking,
+     * this deliberately distinguishes multiple instances that share the same definition.
+     */
+    public boolean selectPlacementsHolderLocationInstance(
+            PlacementsHolderLocation<?> placementsHolderLocation) {
+        if (placementsHolderLocation == null) {
+            jobTable.getSelectionModel().clearSelection();
+            return false;
+        }
+        for (int i = 0; i < jobTableModel.getRowCount(); i++) {
+            if (jobTableModel.getRowObjectAt(i) == placementsHolderLocation) {
+                int index = jobTable.convertRowIndexToView(i);
+                if (index < 0) {
+                    return false;
+                }
+                jobTable.getSelectionModel().setSelectionInterval(index, index);
+                jobTable.scrollRectToVisible(
+                        new Rectangle(jobTable.getCellRect(index, 0, true)));
+                return true;
+            }
+        }
+        return false;
+    }
+
     public Job getJob() {
         return job;
     }
 
     public void setJob(Job job) {
+        disableBoardPlacementProjection();
         if (this.job != null) {
             this.job.removePropertyChangeListener("dirty", titlePropertyChangeListener); //$NON-NLS-1$
             this.job.removePropertyChangeListener("file", titlePropertyChangeListener); //$NON-NLS-1$
@@ -608,6 +699,10 @@ public class JobPanel extends JPanel {
             }
         }
         updateRecentJobsMenu();
+    }
+
+    public List<File> getRecentJobs() {
+        return Collections.unmodifiableList(new ArrayList<>(recentJobs));
     }
 
     private void saveRecentJobs() {
@@ -759,6 +854,7 @@ public class JobPanel extends JPanel {
      * Updates the Job controls based on the Job state and the Machine's readiness.
      */
     private void updateJobActions() {
+        pauseWhenNozzlesEmptyAction.setEnabled(state == State.Running);
         if (state == State.Stopped) {
             startPauseResumeJobAction.setEnabled(true);
             startPauseResumeJobAction.putValue(AbstractAction.NAME,
@@ -816,11 +912,13 @@ public class JobPanel extends JPanel {
             startPauseResumeJobAction.setEnabled(false);
             stopJobAction.setEnabled(false);
             stepJobAction.setEnabled(false);
+            pauseWhenNozzlesEmptyAction.setEnabled(false);
         }
     }
 
     private void updateTitle() {
-        String title = String.format("OpenPnP - %s%s", job.isDirty() ? "*" : "", //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$
+        String title = String.format("OpenPnP Pro %s - %s%s", Main.getVersionString(),
+                job.isDirty() ? "*" : "", //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$
                 (job.getFile() == null ? UNTITLED_JOB_FILENAME : job.getFile().getName()));
         mainFrame.setTitle(title);
         if (jobViewer != null) {
@@ -937,7 +1035,50 @@ public class JobPanel extends JPanel {
                 jobPlacementsPanel.refresh();
             }
         }
-        jobProcessor.initialize(job);
+        telemetryManager.start(job);
+        try {
+            jobProcessor.initialize(job);
+            jobRun();
+        }
+        catch (Exception exception) {
+            setState(State.Stopped);
+            throw exception;
+        }
+    }
+
+    /** Starts a complete native PnP cycle for exactly one selected placement. */
+    public void startTrialPlacement(BoardLocation boardLocation, Placement placement)
+            throws Exception {
+        if (state != State.Stopped) {
+            throw new Exception("请先停止当前任务，再开始试贴纠偏。");
+        }
+        Machine machine = configuration.getMachine();
+        if (!machine.isEnabled()) {
+            throw new Exception("机器尚未启动，请先启用机器。");
+        }
+        if (!machine.isHomed()) {
+            throw new Exception("机器尚未回零，请先完成 Home。");
+        }
+        if (!boardLocation.isEnabled()) {
+            throw new Exception("所选单板已禁用，不能执行试贴。");
+        }
+        if (!placement.isEnabled() || placement.getType() != Placement.Type.Placement
+                || placement.getSide() != boardLocation.getGlobalSide()
+                || placement.getPart() == null) {
+            throw new Exception("所选行不是当前板面的可用贴装器件。");
+        }
+        if (job.retrievePlacedStatus(boardLocation, placement.getId())) {
+            throw new Exception("所选器件已经标记为已贴，请选择一个未贴器件。");
+        }
+        JobProcessor selectedProcessor = machine.getPnpJobProcessor();
+        if (!(selectedProcessor instanceof ReferencePnpJobProcessor)) {
+            throw new Exception("试贴纠偏目前需要 Reference PnP Job Processor。");
+        }
+        jobProcessor = selectedProcessor;
+        telemetryManager.start(job);
+        ((ReferencePnpJobProcessor) jobProcessor).initializeTrialPlacement(job,
+                boardLocation, placement);
+        setState(State.Running);
         jobRun();
     }
     
@@ -947,9 +1088,17 @@ public class JobPanel extends JPanel {
             MotionPlanner motionPlanner = Configuration.get().getMachine().getMotionPlanner();
             Motion pastMotion = motionPlanner.getLastMotion();
             do {
-                do { 
+                do {
+                    if (shouldPauseWithEmptyNozzles()) {
+                        setState(State.Pausing);
+                        break;
+                    }
                     if (!jobProcessor.next()) {
                         setState(State.Stopped);
+                        break;
+                    }
+                    else if (shouldPauseWithEmptyNozzles()) {
+                        setState(State.Pausing);
                         break;
                     }
                     else if (state == State.Pausing) {
@@ -971,6 +1120,8 @@ public class JobPanel extends JPanel {
         }, (e) -> {
 
         }, (t) -> {
+            telemetryManager.recordError(
+                    Translations.getString("JobPanel.JobRun.Error.ErrorBox.Title"), t); //$NON-NLS-1$
             /**
              * TODO It would be nice to give the user the ability to single click suppress errors
              * on the currently processing placement, but that requires knowledge of the currently
@@ -978,10 +1129,11 @@ public class JobPanel extends JPanel {
              * both dispense and PnP this is not possible. Once dispense is removed we can include
              * the current placement in the thrown error and add this feature.
              */
+            JobProcessorException processorException = null;
             if (t instanceof JobProcessorException) {
-                JobProcessorException jpe = (JobProcessorException)t;
-                selectJobProcessorExceptionSource(jpe.getSecondarySource(),false);
-                selectJobProcessorExceptionSource(jpe.getSource(),true);
+                processorException = (JobProcessorException)t;
+                selectJobProcessorExceptionSource(processorException.getSecondarySource(),false);
+                selectJobProcessorExceptionSource(processorException.getSource(),true);
             }
             
             // update the state before showing the error to allow exceptions with continuations to change it
@@ -993,10 +1145,68 @@ public class JobPanel extends JPanel {
             }
             
             // call showError() to support exceptions with continuation
-            UiUtils.showError(getTopLevelAncestor(), Translations.getString("JobPanel.JobRun.Error.ErrorBox.Title"), t); //$NON-NLS-1$
+            if (processorException == null || !showBottomVisionRecovery(processorException)) {
+                UiUtils.showError(getTopLevelAncestor(),
+                        Translations.getString("JobPanel.JobRun.Error.ErrorBox.Title"), t); //$NON-NLS-1$
+            }
         });
     }
 
+    private boolean showBottomVisionRecovery(JobProcessorException exception) {
+        if (!(jobProcessor instanceof ReferencePnpJobProcessor)
+                || !(exception.getSource() instanceof Part)
+                || !(exception.getSecondarySource() instanceof Nozzle)) {
+            return false;
+        }
+
+        ReferencePnpJobProcessor processor = (ReferencePnpJobProcessor) jobProcessor;
+        Nozzle nozzle = (Nozzle) exception.getSecondarySource();
+        if (!processor.canRecoverFailedAlignment(nozzle)) {
+            return false;
+        }
+        Part part = (Part) exception.getSource();
+        Object[] options = {
+                "Discard + Re-pick",
+                "Retry Vision",
+                "Keep Paused",
+                "Abort Job",
+                "Details"
+        };
+        String message = "Bottom-vision alignment failed for " + part.getId()
+                + " on " + nozzle.getName() + ".\n\n"
+                + exception.getMessage() + "\n\nChoose a safe recovery action:";
+        int choice = JOptionPane.showOptionDialog(getTopLevelAncestor(), message,
+                "Bottom Vision Recovery", JOptionPane.DEFAULT_OPTION,
+                JOptionPane.WARNING_MESSAGE, null, options, options[0]);
+
+        if (choice == 0) {
+            UiUtils.submitUiMachineTask(
+                    () -> processor.discardAndRequeueFailedAlignment(nozzle),
+                    requeued -> {
+                        if (Boolean.TRUE.equals(requeued)) {
+                            jobResume();
+                        }
+                        else {
+                            UiUtils.showError(new Exception(
+                                    "The failed alignment is no longer active; nothing was discarded."));
+                        }
+                    },
+                    failure -> UiUtils.showError(getTopLevelAncestor(),
+                            "Bottom Vision Recovery", failure));
+        }
+        else if (choice == 1) {
+            jobResume();
+        }
+        else if (choice == 3) {
+            setState(State.Stopping);
+            jobAbort();
+        }
+        else if (choice == 4) {
+            UiUtils.showError(getTopLevelAncestor(), "Bottom Vision Details", exception);
+        }
+        // Keep Paused and closing the dialog intentionally leave the processor paused.
+        return true;
+    }
     private void selectJobProcessorExceptionSource(Object source,boolean primary) {
         // decode the source of the exception and try to select as much as possible
         if (source==null)
@@ -1147,6 +1357,31 @@ public class JobPanel extends JPanel {
         }
     };
 
+    public final Action pauseWhenNozzlesEmptyAction = new AbstractAction(
+            "吸嘴清空后暂停", Icons.pauseWhenNozzlesEmpty) {
+        {
+            putValue(SHORT_DESCRIPTION,
+                    "完成所有吸嘴上的物料贴装，确认吸嘴为空后暂停");
+            putValue(SELECTED_KEY, false);
+            setEnabled(false);
+        }
+
+        @Override
+        public void actionPerformed(ActionEvent event) {
+            if (state != State.Running) {
+                return;
+            }
+            if (shouldPauseImmediatelyWhenNozzlesEmpty(state, configuration.getMachine())) {
+                // With no carried part there is nothing to drain. Behave exactly like the normal
+                // pause button instead of arming a request that can appear to do nothing.
+                setPauseWhenNozzlesEmptyRequested(false);
+                setState(State.Pausing);
+                return;
+            }
+            setPauseWhenNozzlesEmptyRequested(!pauseWhenNozzlesEmptyRequested);
+        }
+    };
+
     public final Action deferErrorsAction = new AbstractAction() {
         {
             putValue(SMALL_ICON, Icons.errorDefer);
@@ -1168,9 +1403,14 @@ public class JobPanel extends JPanel {
         }
 
         @Override
-        public void actionPerformed(ActionEvent arg0) {
-            job.removeAllPlacedStatus();
-            jobPlacementsPanel.refresh();
+        public void actionPerformed(ActionEvent event) {
+            int result = JOptionPane.showConfirmDialog(JobPanel.this,
+                    "确定把当前任务的全部器件复位为未贴片吗？此操作不会移动机器。",
+                    "复位贴片状态", JOptionPane.YES_NO_OPTION, JOptionPane.WARNING_MESSAGE);
+            if (result == JOptionPane.YES_OPTION) {
+                job.removeAllPlacedStatus();
+                jobPlacementsPanel.refresh();
+            }
         }
     };
 
@@ -1444,6 +1684,94 @@ public class JobPanel extends JPanel {
                     });
                 }
             };
+    private void enableBoardPlacementProjection() throws Exception {
+        PlacementsHolderLocation<?> selection = getSelection();
+        if (!(selection instanceof BoardLocation)) {
+            throw new Exception("请先在贴片板列表中只选择一块单板。");
+        }
+        if (selection.getPlacementsTransformStatus()
+                == PlacementsHolderLocation.PlacementsTransformStatus.NotSet) {
+            throw new Exception("所选单板还没有定义坐标原点和方向，请先完成单板定位。");
+        }
+        BoardLocation boardLocation = (BoardLocation) selection;
+        Head head = configuration.getMachine().getDefaultHead();
+        if (head == null || head.getDefaultCamera() == null) {
+            throw new Exception("当前机器没有可用的默认顶部相机。");
+        }
+        Camera camera = head.getDefaultCamera();
+        if (camera.getLooking() != Camera.Looking.Down) {
+            throw new Exception("默认相机不是向下的顶部相机，不能执行整板投射。");
+        }
+        CameraView cameraView = mainFrame.getCameraViews().ensureCameraVisible(camera);
+        if (cameraView == null) {
+            throw new Exception("无法打开顶部相机画面。");
+        }
+        BoardPlacementReticle reticle = new BoardPlacementReticle(camera, boardLocation, job);
+        cameraView.setReticle(BOARD_PLACEMENT_RETICLE_KEY, reticle);
+        cameraView.repaint();
+        boardPlacementCameraView = cameraView;
+        boardPlacementReticle = reticle;
+        packageAlignmentCheckAction.putValue(Action.SELECTED_KEY, true);
+    }
+
+    private void refreshBoardPlacementProjection() {
+        if (boardPlacementReticle == null) {
+            return;
+        }
+        PlacementsHolderLocation<?> selection = getSelection();
+        if (!(selection instanceof BoardLocation)
+                || selection.getPlacementsTransformStatus()
+                        == PlacementsHolderLocation.PlacementsTransformStatus.NotSet) {
+            disableBoardPlacementProjection();
+            return;
+        }
+        try {
+            BoardLocation boardLocation = (BoardLocation) selection;
+            Camera camera = boardPlacementCameraView.getCamera();
+            BoardPlacementReticle reticle = new BoardPlacementReticle(camera, boardLocation, job);
+            boardPlacementCameraView.setReticle(BOARD_PLACEMENT_RETICLE_KEY, reticle);
+            boardPlacementCameraView.repaint();
+            boardPlacementReticle = reticle;
+        }
+        catch (Exception exception) {
+            Logger.warn(exception, "Unable to refresh board placement projection");
+            disableBoardPlacementProjection();
+        }
+    }
+
+    void disableBoardPlacementProjection() {
+        if (boardPlacementCameraView != null) {
+            boardPlacementCameraView.removeReticle(BOARD_PLACEMENT_RETICLE_KEY);
+            boardPlacementCameraView.repaint();
+        }
+        boardPlacementCameraView = null;
+        boardPlacementReticle = null;
+        packageAlignmentCheckAction.putValue(Action.SELECTED_KEY, false);
+    }
+
+    public final Action packageAlignmentCheckAction = new AbstractAction() {
+        {
+            putValue(SMALL_ICON, Icons.footprintToggle);
+            putValue(NAME, "顶部视觉整板投射");
+            putValue(SHORT_DESCRIPTION,
+                    "<html>将已定位单板的板框、器件封装、方向和贴装状态实时叠加到顶部相机。<br>"
+                            + "青色：未贴，绿色：已贴，橙色：基准点，红色：缺少封装。<br>"
+                            + "本按钮只切换投射，不会移动机器。</html>");
+            putValue(Action.SELECTED_KEY, false);
+        }
+
+        @Override
+        public void actionPerformed(ActionEvent event) {
+            UiUtils.messageBoxOnException(() -> {
+                if (boardPlacementReticle != null) {
+                    disableBoardPlacementProjection();
+                }
+                else {
+                    enableBoardPlacementProjection();
+                }
+            });
+        }
+    };
     public final Action moveCameraToBoardLocationNextAction = new AbstractAction() {
                 {
                     putValue(SMALL_ICON, Icons.centerCameraMoveNext);
@@ -1739,6 +2067,17 @@ public class JobPanel extends JPanel {
         mainFrame.getFeedersTab().updateView();
     }
 
+    public void loadJobFromDashboard(File file) throws Exception {
+        if (!checkJobStopped() || !checkForModifications()) {
+            return;
+        }
+        loadJobExec(file);
+    }
+
+    public JobTelemetryManager getTelemetryManager() {
+        return telemetryManager;
+    }
+
     private final MachineListener machineListener = new MachineListener.Adapter() {
         @Override
         public void machineEnabled(Machine machine) {
@@ -1760,12 +2099,15 @@ public class JobPanel extends JPanel {
                 }
             };
 
-    private final TextStatusListener textStatusListener = text -> {
+    private final TextStatusListener textStatusListener = this::handleTextStatus;
+
+    private void handleTextStatus(String text) {
         MainFrame.get().setStatus(text);
+        telemetryManager.recordStatus(text);
         // Repainting here refreshes the tables, which contain status that needs to be updated.
         // Would be better to have property notifiers but this is going to have to do for now.
         repaint();
-    };
+    }
     
     boolean isAllPlaced() {
     	for (BoardLocation boardLocation : job.getBoardLocations()) {

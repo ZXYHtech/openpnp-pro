@@ -23,6 +23,8 @@ import java.util.ArrayList;
 import java.util.List;
 
 import org.openpnp.ConfigurationListener;
+import org.openpnp.gui.components.RowReorderableTableModel;
+import org.openpnp.gui.support.RowReorderSupport;
 import org.openpnp.Translations;
 import org.openpnp.model.Configuration;
 import org.openpnp.model.Part;
@@ -30,7 +32,7 @@ import org.openpnp.spi.Feeder;
 import org.openpnp.util.BeanUtils;
 import org.openpnp.machine.reference.ReferenceFeeder;
 
-public class FeedersTableModel extends AbstractObjectTableModel {
+public class FeedersTableModel extends AbstractObjectTableModel implements RowReorderableTableModel {
     final private Configuration configuration;
 
     private String[] columnNames = new String[] {
@@ -185,5 +187,10 @@ public class FeedersTableModel extends AbstractObjectTableModel {
             default:
                 return null;
         }
+    }
+    @Override
+    public boolean reorderRows(List<Integer> rows, int targetRow) {
+        List<Feeder> ordered = RowReorderSupport.reorder(feeders, rows, targetRow);
+        return ordered != null && configuration.getMachine().reorderFeeders(ordered);
     }
 }

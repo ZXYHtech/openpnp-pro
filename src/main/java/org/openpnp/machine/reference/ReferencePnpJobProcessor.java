@@ -33,6 +33,7 @@ import java.util.Map;
 import javax.swing.SwingUtilities;
 
 import org.openpnp.Translations;
+import org.openpnp.events.JobPlacementProcessingEvent;
 import org.openpnp.gui.JobPanel;
 import org.openpnp.gui.MainFrame;
 import org.openpnp.gui.support.Wizard;
@@ -83,6 +84,12 @@ import org.simpleframework.xml.Root;
 public class ReferencePnpJobProcessor extends AbstractPnpJobProcessor {
     interface Step {
         public Step step() throws JobProcessorException;
+    }
+
+    private void fireJobPlacementProcessing(JobPlacement jobPlacement,
+            JobPlacementProcessingEvent.Stage stage) {
+        Configuration.get().getBus().post(new JobPlacementProcessingEvent(
+                jobPlacement.getBoardLocation(), jobPlacement.getPlacement(), stage, this));
     }
     
     public enum JobOrderHint {
@@ -164,6 +171,23 @@ public class ReferencePnpJobProcessor extends AbstractPnpJobProcessor {
     
     protected List<JobPlacement> jobPlacements = new ArrayList<>();
 
+    // A one-shot target used by the operator trial-placement workflow. It is deliberately
+    // transient and is never serialized into the machine or job configuration.
+    private BoardLocation trialBoardLocation;
+    private Placement trialPlacement;
+
+    static boolean isTrialPlacementTarget(BoardLocation trialBoard,
+            Placement trialPlacement, BoardLocation candidateBoard,
+            Placement candidatePlacement) {
+        if (trialBoard == null && trialPlacement == null) {
+            return true;
+        }
+        if (trialBoard != candidateBoard) {
+            return false;
+        }
+        return candidatePlacement == null || trialPlacement == candidatePlacement;
+    }
+
     private Step currentStep = null;
 
     // This remembers the location of the first feeder in the first TSM plan of a cycle. It is used
@@ -184,10 +208,68 @@ public class ReferencePnpJobProcessor extends AbstractPnpJobProcessor {
             throw new Exception("Can't initialize with a null Job.");
         }
         this.job = job;
+        trialBoardLocation = null;
+        trialPlacement = null;
         currentStep = new PreFlight();
         this.fireJobState(Configuration.get().getMachine().getSignalers(), AbstractJobProcessor.State.STOPPED);
     }
 
+    /**
+     * Initializes the normal PnP pipeline, but exposes exactly one placement to pre-flight and
+     * planning. Pick, bottom vision, placement scripts and error handling remain unchanged.
+     */
+    public synchronized void initializeTrialPlacement(Job job, BoardLocation boardLocation,
+            Placement placement) throws Exception {
+        if (job == null || boardLocation == null || placement == null) {
+            throw new Exception("Trial placement requires a job, board and placement.");
+        }
+        if (!job.getBoardLocations().contains(boardLocation)
+                || !boardLocation.getBoard().getPlacements().contains(placement)) {
+            throw new Exception("The selected placement does not belong to the current job.");
+        }
+        this.job = job;
+        trialBoardLocation = boardLocation;
+        trialPlacement = placement;
+        currentStep = new PreFlight();
+        this.fireJobState(Configuration.get().getMachine().getSignalers(),
+                AbstractJobProcessor.State.STOPPED);
+    }
+
+    /**
+     * @return true when the processor is paused on a recoverable alignment for this nozzle
+     */
+    public synchronized boolean canRecoverFailedAlignment(Nozzle nozzle) {
+        if (!(currentStep instanceof Align) || nozzle == null) {
+            return false;
+        }
+        Align alignStep = (Align) currentStep;
+        return alignStep.plannedPlacements.stream()
+                .anyMatch(planned -> planned.nozzle == nozzle
+                        && planned.jobPlacement.getStatus() == Status.Processing);
+    }
+    /**
+     * Discard the failed part and return its placement to Pending. The planner will pick it
+     * again in a later cycle while other nozzles in the current cycle continue normally.
+     */    public synchronized boolean discardAndRequeueFailedAlignment(Nozzle nozzle)
+            throws JobProcessorException {
+        if (!(currentStep instanceof Align) || nozzle == null) {
+            return false;
+        }
+        Align alignStep = (Align) currentStep;
+        PlannedPlacement failedPlacement = alignStep.plannedPlacements.stream()
+                .filter(planned -> planned.nozzle == nozzle)
+                .filter(planned -> planned.jobPlacement.getStatus() == Status.Processing)
+                .findFirst()
+                .orElse(null);
+        if (failedPlacement == null) {
+            return false;
+        }
+
+        discard(nozzle);
+        failedPlacement.jobPlacement.setStatus(Status.Pending);
+        failedPlacement.alignmentOffsets = null;
+        return true;
+    }
     @Override
     public synchronized boolean next() throws JobProcessorException {
         this.fireJobState(Configuration.get().getMachine().getSignalers(), AbstractJobProcessor.State.RUNNING);
@@ -295,6 +377,10 @@ public class ReferencePnpJobProcessor extends AbstractPnpJobProcessor {
             fireTextStatus("Checking job for setup errors.");
 
             for (BoardLocation boardLocation : job.getBoardLocations()) {
+                if (!isTrialPlacementTarget(trialBoardLocation, trialPlacement,
+                        boardLocation, null)) {
+                    continue;
+                }
                 // Only check enabled boards
                 if (!boardLocation.isEnabled()) {
                     continue;
@@ -303,6 +389,10 @@ public class ReferencePnpJobProcessor extends AbstractPnpJobProcessor {
                 checkDuplicateRefs(boardLocation);
                 
                 for (Placement placement : boardLocation.getBoard().getPlacements()) {
+                    if (!isTrialPlacementTarget(trialBoardLocation, trialPlacement,
+                            boardLocation, placement)) {
+                        continue;
+                    }
                     // Ignore placements that aren't placements
                     if (placement.getType() != Placement.Type.Placement) {
                         continue;
@@ -330,7 +420,7 @@ public class ReferencePnpJobProcessor extends AbstractPnpJobProcessor {
                 }
             }
         }
-        
+
         private void checkJobPlacement(JobPlacement jobPlacement) throws JobProcessorException {
             BoardLocation boardLocation = jobPlacement.getBoardLocation();
             Placement placement = jobPlacement.getPlacement();
@@ -338,7 +428,7 @@ public class ReferencePnpJobProcessor extends AbstractPnpJobProcessor {
             // Make sure the part is not null
             if (placement.getPart() == null) {
                 throw new JobProcessorException(placement, String.format("Part not found for board %s, placement %s.",
-                        boardLocation.getBoard().getName(), placement.getId()));
+                        boardLocation.getBoard().getName(), placement.getDisplayId()));
             }
             
             Part part = placement.getPart();
@@ -422,7 +512,8 @@ public class ReferencePnpJobProcessor extends AbstractPnpJobProcessor {
             for (Feeder feeder : machine.getFeeders()) {
                 if (feeder.isEnabled() && feeder.getPart() != null) {
                     for (JobPlacement placement : getPendingJobPlacements()) {
-                        if (placement.getPartId().equals(feeder.getPart().getId())) {
+                        if (placement.getPlacement().getPart()
+                                .isInterchangeableWith(feeder.getPart())) {
                             if (feeder.getJobPreparationLocation() != null) {
                                 // only feeders with location added to the visit list
                                 // only add feeders once
@@ -483,12 +574,17 @@ public class ReferencePnpJobProcessor extends AbstractPnpJobProcessor {
         }
 
         private void checkDuplicateRefs(BoardLocation boardLocation) throws JobProcessorException {
+            int repaired = boardLocation.getBoard().ensureUniquePlacementIds();
+            if (repaired > 0) {
+                Logger.warn("Repaired {} duplicate placement ID(s) on board {} using hidden internal suffixes.",
+                        repaired, boardLocation.getBoard().getName());
+            }
             // Check for ID duplicates - throw error if any are found
             HashSet<String> idlist = new HashSet<String>();
             for (Placement placement : boardLocation.getBoard().getPlacements()) {
                 if (idlist.contains(placement.getId())) {
                     throw new JobProcessorException(boardLocation, 
-                            String.format("This board contains at least one duplicate ID entry: %s ",
+                            String.format("板文件包含无法自动修复的重复内部位号：%s",
                             placement.getId()));
                 } 
                 else {
@@ -882,7 +978,7 @@ public class ReferencePnpJobProcessor extends AbstractPnpJobProcessor {
                 // find feeder for this placement
                 final Part part = p.getPlacement().getPart();
                 for (int i = 0; i < feeders.size(); ++i) {
-                    if (feeders.get(i).getPart().equals(part)) {
+                    if (part.isInterchangeableWith(feeders.get(i).getPart())) {
                         p.setFeederIndex(i);
                         break;
                     }
@@ -1315,6 +1411,7 @@ public class ReferencePnpJobProcessor extends AbstractPnpJobProcessor {
             final Placement placement = jobPlacement.getPlacement();
             final Part part = placement.getPart();
             final BoardLocation boardLocation = jobPlacement.getBoardLocation();
+            fireJobPlacementProcessing(jobPlacement, JobPlacementProcessingEvent.Stage.Pick);
             
             /**
              * If anything goes wrong that causes us to fail all the retries, this is the error
@@ -1328,7 +1425,7 @@ public class ReferencePnpJobProcessor extends AbstractPnpJobProcessor {
                     // We expect the nozzle to be empty before a pick.
                 } else {
                     // Unexpected!
-                    if (nozzle.getPart() == part) {
+                    if (part.isInterchangeableWith(nozzle.getPart())) {
                         // The part on the nozzle matches the placement.
                         // How did this happen? The operator must have manually picked the part for us.
                         // We do not need to pick again.
@@ -1624,6 +1721,7 @@ public class ReferencePnpJobProcessor extends AbstractPnpJobProcessor {
                 return this;
             }
 
+            fireJobPlacementProcessing(jobPlacement, JobPlacementProcessingEvent.Stage.Align);
             align(plannedPlacement, partAlignment);
             
             checkPartOn(nozzle);
@@ -1640,7 +1738,7 @@ public class ReferencePnpJobProcessor extends AbstractPnpJobProcessor {
 
             Exception lastException = null;
             for (int i = 0; i < Math.max(1,ReferencePnpJobProcessor.this.getMaxVisionRetries()); i++) {
-                fireTextStatus("Aligning %s for %s using nozzle %s.", part.getId(), placement.getId(), nozzle.getName());
+                fireTextStatus("Aligning %s for %s using nozzle %s.", part.getId(), placement.getDisplayId(), nozzle.getName());
                 try {
                     plannedPlacement.alignmentOffsets = VisionUtils.findPartAlignmentOffsets(
                             partAlignment,
@@ -1754,6 +1852,7 @@ public class ReferencePnpJobProcessor extends AbstractPnpJobProcessor {
             final Placement placement = jobPlacement.getPlacement();
             final Part part = placement.getPart();
             final BoardLocation boardLocation = plannedPlacement.jobPlacement.getBoardLocation();
+            fireJobPlacementProcessing(jobPlacement, JobPlacementProcessingEvent.Stage.Place);
 
             scriptBeforeAssembly(plannedPlacement);
             
@@ -1784,6 +1883,11 @@ public class ReferencePnpJobProcessor extends AbstractPnpJobProcessor {
             
             scriptComplete(plannedPlacement, placementLocation);
 
+            // Emitted only after the part is released, verified off the nozzle, retracted to safe
+            // Z and recorded as placed. UI workflows may therefore observe it without racing the
+            // physical placement operation.
+            fireJobPlacementProcessing(jobPlacement, JobPlacementProcessingEvent.Stage.Complete);
+
             // update placements within the UI thread (we are currently in a machine thread)
             SwingUtilities.invokeLater(() -> {
                 MainFrame f = MainFrame.get();
@@ -1796,7 +1900,7 @@ public class ReferencePnpJobProcessor extends AbstractPnpJobProcessor {
         }
         
         private void place(Nozzle nozzle, Part part, Placement placement, Location placementLocation) throws JobProcessorException {
-            fireTextStatus("Placing %s for %s using nozzle %s.", part.getId(), placement.getId(), nozzle.getName());
+            fireTextStatus("Placing %s for %s using nozzle %s.", part.getId(), placement.getDisplayId(), nozzle.getName());
             
             try {
                 // Move to the placement location
@@ -1817,7 +1921,7 @@ public class ReferencePnpJobProcessor extends AbstractPnpJobProcessor {
             if (part == null || nozzle.getPart() == null) {
                 throw new JobProcessorException(part, nozzle, "No part on nozzle before place.");
             }
-            if (part != nozzle.getPart()) {
+            if (!part.isInterchangeableWith(nozzle.getPart())) {
                 throw new JobProcessorException(part, nozzle, "Part mismatch with part on nozzle before place.");
             }
 

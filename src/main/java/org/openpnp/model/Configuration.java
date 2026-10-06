@@ -30,9 +30,11 @@ import java.io.ObjectOutputStream;
 import java.nio.file.Files;
 import java.nio.file.Paths;
 import java.nio.file.StandardCopyOption;
+import java.nio.charset.StandardCharsets;
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
+import java.util.Collection;
 import java.util.Collections;
 import java.util.HashSet;
 import java.util.LinkedHashMap;
@@ -196,6 +198,10 @@ public class Configuration extends AbstractModelObject {
 
     public File getConfigurationDirectory() {
         return configurationDirectory;
+    }
+
+    public boolean isLoaded() {
+        return loaded;
     }
 
     public LengthUnit getSystemUnits() {
@@ -635,6 +641,60 @@ public class Configuration extends AbstractModelObject {
         }
     }
 
+    /**
+     * Writes a non-destructive recovery snapshot without changing regular file locations or
+     * clearing dirty flags.
+     *
+     * @param directory dedicated recovery snapshot directory
+     * @param job currently loaded job, may be null
+     * @throws Exception if a recovery file cannot be serialized
+     */
+    public synchronized void saveRecoverySnapshot(File directory, Job job) throws Exception {
+        directory.mkdirs();
+        saveMachine(new File(directory, "machine.xml"));
+        savePackages(new File(directory, "packages.xml"));
+        saveParts(new File(directory, "parts.xml"));
+        saveVisionSettings(new File(directory, "vision-settings.xml"));
+        saveScriptState(new File(directory, "script-state.xml"));
+
+        Serializer serializer = createSerializer();
+        File boardsDirectory = new File(directory, "boards");
+        File panelsDirectory = new File(directory, "panels");
+        boardsDirectory.mkdirs();
+        panelsDirectory.mkdirs();
+        List<String> manifest = new ArrayList<>();
+        int index = 1;
+        for (Board board : getBoards()) {
+            String sourceName = board.getFile() == null ? "unsaved-board.xml"
+                    : board.getFile().getName();
+            File recoveryFile = new File(boardsDirectory,
+                    String.format("%03d-%s", index++, safeRecoveryName(sourceName)));
+            serializer.write(board, recoveryFile);
+            manifest.add("BOARD " + recoveryFile.getName() + " <- "
+                    + (board.getFile() == null ? "(unsaved)" : board.getFile().getAbsolutePath()));
+        }
+        index = 1;
+        for (Panel panel : getPanels()) {
+            String sourceName = panel.getFile() == null ? "unsaved-panel.xml"
+                    : panel.getFile().getName();
+            File recoveryFile = new File(panelsDirectory,
+                    String.format("%03d-%s", index++, safeRecoveryName(sourceName)));
+            serializer.write(panel, recoveryFile);
+            manifest.add("PANEL " + recoveryFile.getName() + " <- "
+                    + (panel.getFile() == null ? "(unsaved)" : panel.getFile().getAbsolutePath()));
+        }
+        if (job != null) {
+            serializer.write(job, new File(directory, "current-job.xml"));
+            manifest.add("JOB current-job.xml <- "
+                    + (job.getFile() == null ? "(unsaved)" : job.getFile().getAbsolutePath()));
+        }
+        Files.write(new File(directory, "recovery-info.txt").toPath(), manifest,
+                StandardCharsets.UTF_8);
+    }
+
+    private static String safeRecoveryName(String name) {
+        return name.replaceAll("[^a-zA-Z0-9._-]", "_");
+    }
     protected File createBackedUpFile(String fileName, LocalDateTime now) throws Exception {
         File file = new File(configurationDirectory, fileName);
         if (file.exists()) {
@@ -663,6 +723,19 @@ public class Configuration extends AbstractModelObject {
         return Collections.unmodifiableList(new ArrayList<>(packages.values()));
     }
 
+    public boolean reorderPackages(List<Package> ordered) {
+        if (!sameElements(packages.values(), ordered)) {
+            return false;
+        }
+        packages.clear();
+        for (Package value : ordered) {
+            packages.put(value.getId().toUpperCase(), value);
+        }
+        // LinkedHashMap.equals() ignores iteration order. Force notification for pure reorders.
+        firePropertyChange("packages", null, packages);
+        return true;
+    }
+
     public void addPackage(Package pkg) {
         if (null == pkg.getId()) {
             throw new Error("Package with null Id cannot be added to Configuration.");
@@ -685,6 +758,19 @@ public class Configuration extends AbstractModelObject {
 
     public List<Part> getParts() {
         return Collections.unmodifiableList(new ArrayList<>(parts.values()));
+    }
+
+    public boolean reorderParts(List<Part> ordered) {
+        if (!sameElements(parts.values(), ordered)) {
+            return false;
+        }
+        parts.clear();
+        for (Part value : ordered) {
+            parts.put(value.getId().toUpperCase(), value);
+        }
+        // LinkedHashMap.equals() ignores iteration order. Force notification for pure reorders.
+        firePropertyChange("parts", null, parts);
+        return true;
     }
 
     public void addPart(Part part) {
@@ -712,6 +798,19 @@ public class Configuration extends AbstractModelObject {
         return Collections.unmodifiableList(new ArrayList<>(visionSettings.values()));
     }
 
+    public boolean reorderVisionSettings(List<AbstractVisionSettings> ordered) {
+        if (!sameElements(visionSettings.values(), ordered)) {
+            return false;
+        }
+        LinkedHashMap<String, AbstractVisionSettings> oldValue = new LinkedHashMap<>(visionSettings);
+        visionSettings.clear();
+        for (AbstractVisionSettings value : ordered) {
+            visionSettings.put(value.getId().toUpperCase(), value);
+        }
+        firePropertyChange("visionSettings", oldValue, visionSettings);
+        return true;
+    }
+
     public AbstractVisionSettings getVisionSettings(String visionSettingsId) {
         if (visionSettingsId == null) {
             return null;
@@ -737,6 +836,37 @@ public class Configuration extends AbstractModelObject {
      */
     public List<Panel> getPanels() {
         return Collections.unmodifiableList(new ArrayList<>(panels.values()));
+    }
+
+    public boolean reorderPanels(List<Panel> ordered) {
+        if (!sameElements(panels.values(), ordered)) {
+            return false;
+        }
+        LinkedHashMap<File, Panel> oldValue = new LinkedHashMap<>(panels);
+        panels.clear();
+        for (Panel value : ordered) {
+            panels.put(value.getFile(), value);
+        }
+        firePropertyChange("panels", oldValue, panels);
+        return true;
+    }
+
+    public boolean reorderBoards(List<Board> ordered) {
+        if (!sameElements(boards.values(), ordered)) {
+            return false;
+        }
+        LinkedHashMap<File, Board> oldValue = new LinkedHashMap<>(boards);
+        boards.clear();
+        for (Board value : ordered) {
+            boards.put(value.getFile(), value);
+        }
+        firePropertyChange("boards", oldValue, boards);
+        return true;
+    }
+
+    private static boolean sameElements(Collection<?> existing, List<?> ordered) {
+        return ordered != null && existing.size() == ordered.size()
+                && existing.containsAll(ordered) && ordered.containsAll(existing);
     }
 
     /**

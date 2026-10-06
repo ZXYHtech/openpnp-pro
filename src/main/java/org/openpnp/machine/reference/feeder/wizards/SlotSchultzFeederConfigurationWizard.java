@@ -40,6 +40,7 @@ import org.jdesktop.beansbinding.AutoBinding.UpdateStrategy;
 import org.jdesktop.beansbinding.Binding;
 import org.openpnp.gui.components.ComponentDecorators;
 import org.openpnp.gui.components.LocationButtonsPanel;
+import org.openpnp.gui.components.RotationDialButton;
 import org.openpnp.gui.support.AbstractConfigurationWizard;
 import org.openpnp.gui.support.ActuatorsComboBoxModel;
 import org.openpnp.gui.support.DoubleConverter;
@@ -471,7 +472,7 @@ extends AbstractConfigurationWizard {
         pickLocButtons = new LocationButtonsPanel(xPickLocTf, yPickLocTf, zPickLocTf, rotPickLocTf);
 
         rotPickLocTf = new JTextField();
-        whateverPanel.add(rotPickLocTf, "10, 6");
+        whateverPanel.add(RotationDialButton.wrap(rotPickLocTf), "10, 6");
         rotPickLocTf.setColumns(10);
         whateverPanel.add(pickLocButtons, "12, 6");
 

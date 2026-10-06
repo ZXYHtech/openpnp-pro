@@ -82,6 +82,9 @@ import org.openpnp.gui.support.IdentifiableTableCellRenderer;
 import org.openpnp.gui.support.LengthCellValue;
 import org.openpnp.gui.support.MessageBoxes;
 import org.openpnp.gui.support.PartsComboBoxModel;
+import org.openpnp.gui.support.PartSearchSupport;
+import org.openpnp.gui.support.StablePartCellEditor;
+import org.openpnp.gui.support.SearchablePartComboBox;
 import org.openpnp.gui.support.RotationCellValue;
 import org.openpnp.gui.support.TableUtils;
 import org.openpnp.gui.tablemodel.PlacementsHolderPlacementsTableModel;
@@ -110,7 +113,7 @@ import io.github.classgraph.ScanResult;
 
 @SuppressWarnings("serial")
 public class BoardPlacementsPanel extends JPanel {
-    private JTable table;
+    private AutoSelectTextTable table;
     private PlacementsHolderPlacementsTableModel tableModel;
     private TableRowSorter<PlacementsHolderPlacementsTableModel> tableSorter;
     private ActionGroup singleSelectionActionGroup;
@@ -173,7 +176,8 @@ public class BoardPlacementsPanel extends JPanel {
         configuration = Configuration.get();
         
         singleSelectionActionGroup = new ActionGroup(removeAction, 
-                setTypeAction, setSideAction, setErrorHandlingAction, setEnabledAction);
+                setTypeAction, setSideAction, setErrorHandlingAction, setEnabledAction,
+                editPlacementFeederAction, replacePlacementFeederAction);
         singleSelectionActionGroup.setEnabled(false);
 
         multiSelectionActionGroup = new ActionGroup(removeAction,
@@ -181,7 +185,8 @@ public class BoardPlacementsPanel extends JPanel {
         multiSelectionActionGroup.setEnabled(false);
 
         @SuppressWarnings("unchecked")
-        JComboBox<PartsComboBoxModel> partsComboBox = new JComboBox<>(new PartsComboBoxModel());
+        JComboBox<PartsComboBoxModel> partsComboBox = new SearchablePartComboBox(new PartsComboBoxModel());
+        PartSearchSupport.install(partsComboBox);
         partsComboBox.setMaximumRowCount(20);
         partsComboBox.setRenderer(new IdentifiableListCellRenderer<Part>());
         JComboBox<Side> sidesComboBox = new JComboBox<>(Side.values());
@@ -202,6 +207,7 @@ public class BoardPlacementsPanel extends JPanel {
                 return null;
             }
         };
+        table.setMultiRowEditEnabled(true);
         
         TableColumnModel tcm = table.getColumnModel();
         tcm.removeColumn(tcm.getColumn(9)); //remove Status column
@@ -212,7 +218,7 @@ public class BoardPlacementsPanel extends JPanel {
         
         table.setSelectionMode(ListSelectionModel.MULTIPLE_INTERVAL_SELECTION);
         table.setDefaultEditor(Side.class, new DefaultCellEditor(sidesComboBox));
-        table.setDefaultEditor(Part.class, new DefaultCellEditor(partsComboBox));
+        table.setDefaultEditor(Part.class, new StablePartCellEditor(partsComboBox));
         table.setDefaultEditor(Type.class, new DefaultCellEditor(typesComboBox));
         table.setDefaultRenderer(Type.class, new TypeRenderer());
         table.setDefaultEditor(ErrorHandling.class, new DefaultCellEditor(errorHandlingComboBox));
@@ -220,7 +226,7 @@ public class BoardPlacementsPanel extends JPanel {
         table.setDefaultRenderer(Boolean.class, new CustomBooleanRenderer());
         table.setDefaultRenderer(LengthCellValue.class, new MonospacedFontTableCellRenderer());
         table.setDefaultRenderer(RotationCellValue.class, new MonospacedFontTableCellRenderer());
-        table.setAutoResizeMode(JTable.AUTO_RESIZE_NEXT_COLUMN);
+        table.setAutoResizeMode(JTable.AUTO_RESIZE_OFF);
         
         TableUtils.setColumnAlignment(tableModel, table);
         
@@ -295,6 +301,13 @@ public class BoardPlacementsPanel extends JPanel {
         
         JPopupMenu popupMenu = new JPopupMenu();
 
+        popupMenu.add(new SetEnabledAction(true));
+        popupMenu.add(new SetEnabledAction(false));
+        popupMenu.addSeparator();
+        popupMenu.add(replacePlacementFeederAction);
+        popupMenu.add(editPlacementFeederAction);
+        popupMenu.addSeparator();
+
         JMenu setTypeMenu = new JMenu(setTypeAction);
         setTypeMenu.add(new SetTypeAction(Placement.Type.Placement));
         setTypeMenu.add(new SetTypeAction(Placement.Type.Fiducial));
@@ -305,11 +318,6 @@ public class BoardPlacementsPanel extends JPanel {
             setSideMenu.add(new SetSideAction(side));
         }
         popupMenu.add(setSideMenu);
-
-        JMenu setEnabledMenu = new JMenu(setEnabledAction);
-        setEnabledMenu.add(new SetEnabledAction(true));
-        setEnabledMenu.add(new SetEnabledAction(false));
-        popupMenu.add(setEnabledMenu);
 
         JMenu setErrorHandlingMenu = new JMenu(setErrorHandlingAction);
         setErrorHandlingMenu.add(new SetErrorHandlingAction(ErrorHandling.Default));
@@ -674,6 +682,43 @@ public class BoardPlacementsPanel extends JPanel {
                 boardViewer.setExtendedState(Frame.NORMAL);
             }
             boardViewer.setVisible(true);
+        }
+    };
+
+    public final Action editPlacementFeederAction = new AbstractAction() {
+        {
+            putValue(SMALL_ICON, Icons.editFeeder);
+            putValue(NAME, "编辑贴片项所用飞达");
+            putValue(SHORT_DESCRIPTION, "打开飞达页面并选中与当前贴片项物料匹配的飞达。");
+        }
+
+        @Override
+        public void actionPerformed(ActionEvent event) {
+            Placement placement = getSelection();
+            if (placement != null && placement.getPart() != null) {
+                MainFrame.get().getFeedersTab().showFeederForPart(placement.getPart());
+            }
+        }
+    };
+
+    public final Action replacePlacementFeederAction = new AbstractAction() {
+        {
+            putValue(SMALL_ICON, Icons.editFeeder);
+            putValue(NAME, "替换到飞达...");
+            putValue(SHORT_DESCRIPTION, "不离开单板编辑，选择飞达并把当前贴片项物料写入飞达配置。");
+        }
+
+        @Override
+        public void actionPerformed(ActionEvent event) {
+            org.openpnp.util.UiUtils.messageBoxOnException(() -> {
+                Placement placement = getSelection();
+                if (placement == null || placement.getType() != Placement.Type.Placement) {
+                    throw new Exception("请先选择一个贴片元件。");
+                }
+                PlacementFeederAssignmentDialog dialog =
+                        new PlacementFeederAssignmentDialog(BoardPlacementsPanel.this, placement);
+                dialog.setVisible(true);
+            });
         }
     };
 

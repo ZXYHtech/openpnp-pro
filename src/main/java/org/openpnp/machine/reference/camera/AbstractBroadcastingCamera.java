@@ -56,12 +56,16 @@ public abstract class AbstractBroadcastingCamera extends AbstractSettlingCamera 
     protected Object captureNotifier = new Object();
 
     @Attribute(required = false)
-    protected double fps = 5;
+    protected volatile double fps = 5;
 
     @Attribute(required = false)
     protected boolean suspendPreviewInTasks = false;
 
     private volatile Thread thread;
+    private volatile long previewCaptureSequence;
+    private volatile long lastPreviewCaptureDurationNanos = -1;
+    private volatile long lastPreviewLoopDurationNanos = -1;
+    private volatile long nextOpenRetryNanos;
 
     private static BufferedImage CAPTURE_ERROR_IMAGE = null;
 
@@ -145,6 +149,45 @@ public abstract class AbstractBroadcastingCamera extends AbstractSettlingCamera 
         Object oldValue = this.fps;
         this.fps = fps;
         firePropertyChange("previewFps", oldValue, fps);
+        // Apply a changed preview rate immediately, including when waking an event-only (0 FPS)
+        // camera.
+        notifyCapture();
+    }
+
+    /**
+     * Sequence number of preview-thread capture attempts. Diagnostics can use this to avoid
+     * recording the same duration again when a frame came from a vision pipeline cache.
+     */
+    public long getPreviewCaptureSequence() {
+        return previewCaptureSequence;
+    }
+
+    public double getLastPreviewCaptureDurationMillis() {
+        return lastPreviewCaptureDurationNanos < 0 ? -1
+                : lastPreviewCaptureDurationNanos / 1_000_000.0;
+    }
+
+    public double getLastPreviewLoopDurationMillis() {
+        return lastPreviewLoopDurationNanos < 0 ? -1
+                : lastPreviewLoopDurationNanos / 1_000_000.0;
+    }
+
+    /**
+     * Returns the remaining time in the configured frame period. Previously the preview thread
+     * waited a complete frame period after capture and transform work, making actual FPS
+     * substantially lower than configured FPS.
+     *
+     * @return remaining nanoseconds, or -1 for event-only (0 FPS) preview
+     */
+    static long computePreviewWaitNanos(double configuredFps, long elapsedNanos) {
+        if (configuredFps == 0) {
+            return -1;
+        }
+        if (!Double.isFinite(configuredFps) || configuredFps < 0) {
+            return 0;
+        }
+        long periodNanos = (long) (1_000_000_000.0 / configuredFps);
+        return Math.max(0, periodNanos - Math.max(0, elapsedNanos));
     }
 
     public boolean isSuspendPreviewInTasks() {
@@ -259,6 +302,7 @@ public abstract class AbstractBroadcastingCamera extends AbstractSettlingCamera 
      */
     public synchronized void reinitialize() throws Exception {
         stop();
+        resetOpenRetry();
         ensureOpen();
         MovableUtils.fireTargetedUserAction(this);
     }
@@ -285,16 +329,45 @@ public abstract class AbstractBroadcastingCamera extends AbstractSettlingCamera 
             // we get calls to internalCapture() with an uninitialized Machine. 
             return false;
         }
-        if (!isOpen()) {
-            try {
-                open();
-            }
-            catch (Exception e) {
-                Logger.error(e);
-                return false;
-            }
+        if (isOpen()) {
+            nextOpenRetryNanos = 0;
+            return true;
         }
+
+        long now = System.nanoTime();
+        if (nextOpenRetryNanos != 0 && now < nextOpenRetryNanos) {
+            return false;
+        }
+        try {
+            open();
+        }
+        catch (Exception e) {
+            scheduleOpenRetry();
+            Logger.error(e);
+            return false;
+        }
+        if (!isOpen()) {
+            // Some camera backends report an unavailable device by returning from open()
+            // without creating a stream. Do not enumerate USB devices again for every preview
+            // frame and every safe-capture retry.
+            scheduleOpenRetry();
+            return false;
+        }
+        nextOpenRetryNanos = 0;
         return true;
+    }
+
+    protected long getOpenRetryDelayMillis() {
+        return 1000;
+    }
+
+    protected synchronized void resetOpenRetry() {
+        nextOpenRetryNanos = 0;
+    }
+
+    private void scheduleOpenRetry() {
+        nextOpenRetryNanos = System.nanoTime()
+                + Math.max(1, getOpenRetryDelayMillis()) * 1_000_000L;
     }
 
     public synchronized void open() throws Exception {
@@ -319,6 +392,8 @@ public abstract class AbstractBroadcastingCamera extends AbstractSettlingCamera 
     public void run() {
         Logger.trace("Camera "+getName()+" thread "+Thread.currentThread().getId()+" started.");
         while (!Thread.interrupted()) {
+            long loopStartedNanos = System.nanoTime();
+            boolean producedFrame = false;
             if (thread == null
                     ||thread.getId()!= Thread.currentThread().getId()) {
                 // The interrupt must have missed. We're not the running thread.
@@ -334,25 +409,39 @@ public abstract class AbstractBroadcastingCamera extends AbstractSettlingCamera 
                 if (img == null && !isPreviewSuspended()) {
                     if (hasNewFrame()){
                         // None available, try capture a new frame.
+                        long captureStartedNanos = System.nanoTime();
                         captureTransformed();
+                        lastPreviewCaptureDurationNanos =
+                                System.nanoTime() - captureStartedNanos;
+                        previewCaptureSequence++;
                         // Void the last image, so a new one will be triggered next time.
                         img = lastTransformedImage.getAndSet(null);
                     }
                 }
                 if (img != null) {
                     broadcastCapture(img);
+                    producedFrame = true;
                 }
             }
             catch (Exception e) {
                 e.printStackTrace();
             }
+            lastPreviewLoopDurationNanos = System.nanoTime() - loopStartedNanos;
             try {
                 synchronized(captureNotifier) {
-                    if (fps == 0) {
+                    long waitNanos = computePreviewWaitNanos(fps,
+                            System.nanoTime() - loopStartedNanos);
+                    if (waitNanos < 0) {
                         captureNotifier.wait();
                     }
-                    else {
-                        captureNotifier.wait((long) (1000. / fps));
+                    else if (waitNanos > 0) {
+                        long waitMillis = waitNanos / 1_000_000L;
+                        int waitNanoRemainder = (int) (waitNanos % 1_000_000L);
+                        captureNotifier.wait(waitMillis, waitNanoRemainder);
+                    }
+                    else if (!producedFrame) {
+                        // A non-blocking driver that reports no frame must not spin at 100% CPU.
+                        captureNotifier.wait(1);
                     }
                 }
             }

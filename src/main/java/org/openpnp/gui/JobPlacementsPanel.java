@@ -30,6 +30,7 @@ import java.awt.event.KeyEvent;
 import java.awt.event.MouseAdapter;
 import java.awt.event.MouseEvent;
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -50,8 +51,11 @@ import javax.swing.JScrollPane;
 import javax.swing.JTable;
 import javax.swing.JTextField;
 import javax.swing.JToolBar;
+import javax.swing.JToggleButton;
 import javax.swing.ListSelectionModel;
 import javax.swing.RowFilter;
+import javax.swing.RowSorter.SortKey;
+import javax.swing.SortOrder;
 import javax.swing.SwingUtilities;
 import javax.swing.UIManager;
 import javax.swing.border.LineBorder;
@@ -65,8 +69,11 @@ import javax.swing.table.TableRowSorter;
 
 import org.openpnp.events.DefinitionStructureChangedEvent;
 import org.openpnp.Translations;
+import org.openpnp.events.JobPlacementProcessingEvent;
 import org.openpnp.events.PlacementSelectedEvent;
 import org.openpnp.gui.components.AutoSelectTextTable;
+import org.openpnp.gui.components.CameraView;
+import org.openpnp.gui.components.reticle.FootprintReticle;
 import org.openpnp.gui.support.ActionGroup;
 import org.openpnp.gui.support.CustomBooleanRenderer;
 import org.openpnp.gui.support.MonospacedFontTableCellRenderer;
@@ -78,6 +85,9 @@ import org.openpnp.gui.support.IdentifiableTableCellRenderer;
 import org.openpnp.gui.support.LengthCellValue;
 import org.openpnp.gui.support.MessageBoxes;
 import org.openpnp.gui.support.PartsComboBoxModel;
+import org.openpnp.gui.support.PartSearchSupport;
+import org.openpnp.gui.support.StablePartCellEditor;
+import org.openpnp.gui.support.SearchablePartComboBox;
 import org.openpnp.gui.support.RotationCellValue;
 import org.openpnp.gui.support.TableUtils;
 import org.openpnp.gui.tablemodel.PlacementsHolderPlacementsTableModel;
@@ -100,11 +110,13 @@ import org.openpnp.spi.Nozzle;
 import org.openpnp.util.MovableUtils;
 import org.openpnp.util.UiUtils;
 import org.openpnp.util.Utils2D;
+import org.openpnp.util.VisionUtils;
 import com.google.common.eventbus.Subscribe;
+import org.pmw.tinylog.Logger;
 
 @SuppressWarnings("serial")
 public class JobPlacementsPanel extends JPanel {
-    private JTable table;
+    private AutoSelectTextTable table;
     private PlacementsHolderPlacementsTableModel tableModel;
     private TableRowSorter<PlacementsHolderPlacementsTableModel> tableSorter;
     private ActionGroup topLevelSingleInstanceActionGroup;
@@ -120,6 +132,14 @@ public class JobPlacementsPanel extends JPanel {
     private Preferences prefs = Preferences.userNodeForPackage(JobPlacementsPanel.class);
     private Configuration configuration;
     private boolean editDefinition;
+    private JToggleButton followRunningJobButton;
+    private volatile boolean followRunningJob;
+    private BoardLocation lastFollowedBoardLocation;
+    private Placement lastFollowedPlacement;
+
+    private static final String PREF_FOLLOW_RUNNING_JOB = "followRunningJob";
+    private static final String FOLLOW_RETICLE_KEY = JobPlacementsPanel.class.getName()
+            + ".followRunningJob";
 
 
     private static Color typeColorFiducial = new Color(157, 188, 255);
@@ -145,7 +165,8 @@ public class JobPlacementsPanel extends JPanel {
                 setTypeAction, setSideAction);
         topLevelSingleInstanceActionGroup.setEnabled(false);
 
-        editFeederActionGroup = new ActionGroup(editPlacementFeederAction);
+        editFeederActionGroup = new ActionGroup(editPlacementFeederAction,
+                replacePlacementFeederAction);
         editFeederActionGroup.setEnabled(false);
         
         singleSelectionActionGroup = new ActionGroup(setPlacedAction, setErrorHandlingAction, 
@@ -166,7 +187,8 @@ public class JobPlacementsPanel extends JPanel {
 
         // Suppress because adding the type specifiers breaks WindowBuilder.
         @SuppressWarnings({"unchecked", "rawtypes"})
-        JComboBox<PartsComboBoxModel> partsComboBox = new JComboBox(new PartsComboBoxModel());
+        JComboBox<PartsComboBoxModel> partsComboBox = new SearchablePartComboBox(new PartsComboBoxModel());
+        PartSearchSupport.install(partsComboBox);
         partsComboBox.setMaximumRowCount(20);
         partsComboBox.setRenderer(new IdentifiableListCellRenderer<Part>());
         @SuppressWarnings({"unchecked", "rawtypes"})
@@ -195,15 +217,19 @@ public class JobPlacementsPanel extends JPanel {
             @Override
             public String getToolTipText(MouseEvent evt) {
                 int column = convertColumnIndexToModel(columnAtPoint(evt.getPoint()));
-                if(column==11) { return Translations.getString("BoardsPanel.BoardPlacements.Placements.Rank.toolTip"); } //$NON-NLS-1$
-                return null;
+                if(column==11) { return Translations.getString("BoardsPanel.BoardPlacements.Placements.Rank.toolTip")
+                        + " — Right-drag selected rows to reorder"; } //$NON-NLS-1$ //$NON-NLS-2$
+                return super.getToolTipText(evt);
             }
         };
+        table.setMultiRowEditEnabled(true);
         table.setRowSorter(tableSorter);
+        tableSorter.setSortKeys(Collections.singletonList(new SortKey(11, SortOrder.ASCENDING)));
+        table.setRowReorderHandler(this::reorderPlacements);
         table.getTableHeader().setDefaultRenderer(new MultisortTableHeaderCellRenderer());
         table.setSelectionMode(ListSelectionModel.MULTIPLE_INTERVAL_SELECTION);
         table.setDefaultEditor(Side.class, new DefaultCellEditor(sidesComboBox));
-        table.setDefaultEditor(Part.class, new DefaultCellEditor(partsComboBox));
+        table.setDefaultEditor(Part.class, new StablePartCellEditor(partsComboBox));
         table.setDefaultEditor(Type.class, new DefaultCellEditor(typesComboBox));
         table.setDefaultEditor(ErrorHandling.class, new DefaultCellEditor(errorHandlingComboBox));
         table.setDefaultRenderer(Part.class, new IdentifiableTableCellRenderer<Part>());
@@ -212,7 +238,7 @@ public class JobPlacementsPanel extends JPanel {
         table.setDefaultRenderer(Boolean.class, new CustomBooleanRenderer());
         table.setDefaultRenderer(LengthCellValue.class, new MonospacedFontTableCellRenderer());
         table.setDefaultRenderer(RotationCellValue.class, new MonospacedFontTableCellRenderer());
-        table.setAutoResizeMode(JTable.AUTO_RESIZE_NEXT_COLUMN);
+        table.setAutoResizeMode(JTable.AUTO_RESIZE_OFF);
         
         TableUtils.setColumnAlignment(tableModel, table);
         
@@ -264,6 +290,7 @@ public class JobPlacementsPanel extends JPanel {
                         mainFrame.getPartsTab().selectPartInTableAndUpdateLinks(selectedPart);
                     }
                 }
+                updateTrialCorrectionAction();
             }
         });
         table.addMouseListener(new MouseAdapter() {
@@ -306,6 +333,18 @@ public class JobPlacementsPanel extends JPanel {
         
         JPopupMenu popupMenu = new JPopupMenu();
 
+        // Put the high-frequency production state actions directly on the first level.
+        popupMenu.add(new SetEnabledAction(true));
+        popupMenu.add(new SetEnabledAction(false));
+        popupMenu.addSeparator();
+        popupMenu.add(new SetPlacedAction(true));
+        popupMenu.add(new SetPlacedAction(false));
+        popupMenu.addSeparator();
+        popupMenu.add(replacePlacementFeederAction);
+        popupMenu.add(editPlacementFeederAction);
+        popupMenu.add(trialPlacementCorrectionAction);
+        popupMenu.addSeparator();
+
         JMenu setTypeMenu = new JMenu(setTypeAction);
         setTypeMenu.add(new SetTypeAction(Placement.Type.Placement));
         setTypeMenu.add(new SetTypeAction(Placement.Type.Fiducial));
@@ -317,15 +356,6 @@ public class JobPlacementsPanel extends JPanel {
         }
         popupMenu.add(setSideMenu);
 
-        JMenu setPlacedMenu = new JMenu(setPlacedAction);
-        setPlacedMenu.add(new SetPlacedAction(true));
-        setPlacedMenu.add(new SetPlacedAction(false));
-        popupMenu.add(setPlacedMenu);
-
-        JMenu setEnabledMenu = new JMenu(setEnabledAction);
-        setEnabledMenu.add(new SetEnabledAction(true));
-        setEnabledMenu.add(new SetEnabledAction(false));
-        popupMenu.add(setEnabledMenu);
 
         JMenu setErrorHandlingMenu = new JMenu(setErrorHandlingAction);
         setErrorHandlingMenu.add(new SetErrorHandlingAction(ErrorHandling.Default));
@@ -382,6 +412,32 @@ public class JobPlacementsPanel extends JPanel {
         btnEditFeeder.setHideActionText(true);
         toolBarPlacements.add(btnEditFeeder);
 
+        toolBarPlacements.addSeparator();
+        followRunningJobButton = new JToggleButton("跟随任务");
+        followRunningJobButton.setFocusable(false);
+        followRunningJobButton.setToolTipText(
+                "<html>任务运行时自动选中当前单板和贴片行。<br>"
+                + "进入底部视觉对位时自动打开底部相机，并持续显示当前封装轮廓。<br>"
+                + "仅改变界面显示，不移动机器，也不改变任务顺序。</html>");
+        followRunningJob = prefs.getBoolean(PREF_FOLLOW_RUNNING_JOB, false);
+        followRunningJobButton.setSelected(followRunningJob);
+        followRunningJobButton.addActionListener(e -> {
+            boolean selected = followRunningJobButton.isSelected();
+            followRunningJob = selected;
+            prefs.putBoolean(PREF_FOLLOW_RUNNING_JOB, selected);
+            if (!selected) {
+                lastFollowedBoardLocation = null;
+                lastFollowedPlacement = null;
+                removeFollowReticle();
+            }
+        });
+        toolBarPlacements.add(followRunningJobButton);
+
+        JButton trialCorrectionButton = new JButton(trialPlacementCorrectionAction);
+        trialCorrectionButton.setFocusable(false);
+        trialCorrectionButton.setHideActionText(false);
+        toolBarPlacements.add(trialCorrectionButton);
+
         JPanel panel_1 = new JPanel();
         panel.add(panel_1, BorderLayout.EAST);
 
@@ -421,13 +477,156 @@ public class JobPlacementsPanel extends JPanel {
         });
     }
 
+    @Subscribe
+    public void jobPlacementProcessing(JobPlacementProcessingEvent event) {
+        if (!followRunningJob || event.boardLocation == null
+                || event.placement == null) {
+            return;
+        }
+        SwingUtilities.invokeLater(() -> followJobPlacement(event));
+    }
+
+    private void followJobPlacement(JobPlacementProcessingEvent event) {
+        if (!followRunningJob) {
+            return;
+        }
+        boolean differentPlacement = lastFollowedBoardLocation != event.boardLocation
+                || lastFollowedPlacement != event.placement;
+        if (differentPlacement) {
+            if (jobPanel.selectPlacementsHolderLocationInstance(event.boardLocation)) {
+                selectPlacement(event.placement.getDefinition());
+                lastFollowedBoardLocation = event.boardLocation;
+                lastFollowedPlacement = event.placement;
+            }
+        }
+        if (event.stage == JobPlacementProcessingEvent.Stage.Align) {
+            showFollowReticleOnBottomCamera(event.placement);
+        }
+    }
+
+    private void showFollowReticleOnBottomCamera(Placement placement) {
+        try {
+            Part part = placement.getPart();
+            if (part == null || part.getPackage() == null) {
+                return;
+            }
+            Camera bottomCamera = VisionUtils.getBottomVisionCamera();
+            CameraView cameraView = MainFrame.get().getCameraViews()
+                    .ensureCameraVisible(bottomCamera);
+            if (cameraView == null) {
+                return;
+            }
+            cameraView.removeReticle(FOLLOW_RETICLE_KEY);
+            cameraView.setReticle(FOLLOW_RETICLE_KEY,
+                    new FootprintReticle(part.getPackage().getFootprint()));
+        }
+        catch (Exception e) {
+            // Following is a display aid and must never interrupt a running job.
+            Logger.debug(e, "Unable to show the followed package on the bottom camera");
+        }
+    }
+
+    private void removeFollowReticle() {
+        try {
+            Camera bottomCamera = VisionUtils.getBottomVisionCamera();
+            CameraView cameraView = MainFrame.get().getCameraViews().getCameraView(bottomCamera);
+            if (cameraView != null) {
+                cameraView.removeReticle(FOLLOW_RETICLE_KEY);
+            }
+        }
+        catch (Exception e) {
+            Logger.debug(e, "Unable to remove the followed package from the bottom camera");
+        }
+    }
+
     private void search() {
         updateRowFilter();
     }
     
+    private boolean reorderPlacements(List<Integer> selectedModelRows, int targetModelRow) {
+        if (boardOrPanelLocation == null || selectedModelRows.isEmpty()
+                || tableModel.getPlacementsHolder() == null) {
+            return false;
+        }
+        int placementCount = tableModel.getPlacementsHolder().getPlacements().size();
+        List<Integer> selectedRows = new ArrayList<>();
+        for (int modelRow : selectedModelRows) {
+            if (modelRow >= 0 && modelRow < placementCount) {
+                selectedRows.add(modelRow);
+            }
+        }
+        if (selectedRows.isEmpty()) {
+            return false;
+        }
+
+        List<Integer> orderedRows = new ArrayList<>();
+        for (int modelRow = 0; modelRow < placementCount; modelRow++) {
+            orderedRows.add(modelRow);
+        }
+        orderedRows.sort((left, right) -> {
+            int rankComparison = Integer.compare(tableModel.getRowObjectAt(left).getRank(),
+                    tableModel.getRowObjectAt(right).getRank());
+            return rankComparison != 0 ? rankComparison : Integer.compare(left, right);
+        });
+        selectedRows.sort((left, right) -> Integer.compare(orderedRows.indexOf(left),
+                orderedRows.indexOf(right)));
+
+        Integer targetRow = targetModelRow >= 0 && targetModelRow < placementCount
+                ? targetModelRow : null;
+        if (targetRow != null && selectedRows.contains(targetRow)) {
+            return false;
+        }
+        orderedRows.removeAll(selectedRows);
+        int insertionIndex = targetRow == null ? orderedRows.size() : orderedRows.indexOf(targetRow);
+        if (insertionIndex < 0) {
+            insertionIndex = orderedRows.size();
+        }
+        orderedRows.addAll(insertionIndex, selectedRows);
+
+        List<Placement> selectedPlacements = new ArrayList<>();
+        for (int selectedRow : selectedRows) {
+            selectedPlacements.add(tableModel.getRowObjectAt(selectedRow));
+        }
+        for (int rank = 0; rank < orderedRows.size(); rank++) {
+            Placement placement = tableModel.getRowObjectAt(orderedRows.get(rank));
+            Placement definition = placement.getDefinition() == null ? placement
+                    : (Placement) placement.getDefinition();
+            if (definition.getRank() != rank) {
+                definition.setRank(rank);
+            }
+        }
+        tableSorter.setSortKeys(Collections.singletonList(new SortKey(11, SortOrder.ASCENDING)));
+        tableModel.fireTableDataChanged();
+        configuration.getBus().post(new DefinitionStructureChangedEvent(
+                tableModel.getPlacementsHolder().getDefinition(), "placements", this));
+        SwingUtilities.invokeLater(() -> {
+            table.clearSelection();
+            for (Placement placement : selectedPlacements) {
+                int modelRow = tableModel.indexOf(placement);
+                int viewRow = modelRow < 0 ? -1 : table.convertRowIndexToView(modelRow);
+                if (viewRow >= 0) {
+                    table.addRowSelectionInterval(viewRow, viewRow);
+                }
+            }
+        });
+        return true;
+    }
     public void refresh() {
         tableModel.fireTableDataChanged();
         updateActivePlacements();
+        updateTrialCorrectionAction();
+    }
+
+    private void updateTrialCorrectionAction() {
+        Placement selected = getSelection();
+        boolean available = boardOrPanelLocation instanceof BoardLocation
+                && getSelections().size() == 1 && selected != null
+                && selected.getType() == Placement.Type.Placement
+                && selected.isEnabled() && selected.getPart() != null
+                && selected.getSide() == boardOrPanelLocation.getGlobalSide()
+                && !jobPanel.getJob().retrievePlacedStatus(boardOrPanelLocation,
+                        selected.getId());
+        trialPlacementCorrectionAction.setEnabled(available);
     }
 
     public void refreshSelectedRow() {
@@ -443,6 +642,9 @@ public class JobPlacementsPanel extends JPanel {
         for (int i = 0; i < tableModel.getRowCount(); i++) {
             if (tableModel.getRowObjectAt(i).getDefinition() == placement) {
                 int index = table.convertRowIndexToView(i);
+                if (index < 0) {
+                    return;
+                }
                 table.getSelectionModel().setSelectionInterval(index, index);
                 table.scrollRectToVisible(new Rectangle(table.getCellRect(index, 0, true)));
                 break;
@@ -463,6 +665,7 @@ public class JobPlacementsPanel extends JPanel {
                 totalActivePlacements, 
                 blTotalActivePlacements - blActivePlacements, 
                 blTotalActivePlacements);
+        updateTrialCorrectionAction();
     }
     
     private void updateRowFilter() {
@@ -510,6 +713,7 @@ public class JobPlacementsPanel extends JPanel {
             updateRowFilter();
         }
         updateActivePlacements();
+        updateTrialCorrectionAction();
     }
 
     public Placement getSelection() {
@@ -626,6 +830,52 @@ public class JobPlacementsPanel extends JPanel {
             updateActivePlacements();
         }
     };
+
+    public final Action trialPlacementCorrectionAction = new AbstractAction("试贴纠偏") {
+        {
+            putValue(SHORT_DESCRIPTION,
+                "只试贴选中的一个器件，以顶部相机固定中心和淡化封装轮廓反补 Bottom Vision XY 偏移");
+            setEnabled(false);
+        }
+
+        @Override
+        public void actionPerformed(ActionEvent event) {
+            Placement selected = getSelection();
+            if (!(boardOrPanelLocation instanceof BoardLocation) || selected == null) {
+                MessageBoxes.errorBox(getTopLevelAncestor(), "试贴纠偏",
+                        "请先在贴片列表中只选择一个未贴器件。");
+                return;
+            }
+            openTrialCorrection((BoardLocation) boardOrPanelLocation, selected);
+        }
+    };
+
+    private void openTrialCorrection(BoardLocation boardLocation, Placement target) {
+        TrialPlacementCorrectionDialog dialog = new TrialPlacementCorrectionDialog(
+                MainFrame.get(), this, boardLocation, target,
+                () -> openNextTrialCorrection(boardLocation, target));
+        dialog.setVisible(true);
+    }
+
+    private void openNextTrialCorrection(BoardLocation boardLocation, Placement previous) {
+        Placement next = boardLocation.getBoard().getPlacements().stream()
+                .filter(candidate -> candidate != previous)
+                .filter(candidate -> candidate.getType() == Placement.Type.Placement)
+                .filter(Placement::isEnabled)
+                .filter(candidate -> candidate.getSide() == boardLocation.getGlobalSide())
+                .filter(candidate -> candidate.getPart() == previous.getPart())
+                .filter(candidate -> !jobPanel.getJob().retrievePlacedStatus(boardLocation,
+                        candidate.getId()))
+                .findFirst().orElse(null);
+        if (next == null) {
+            JOptionPane.showMessageDialog(this,
+                    "当前单板没有更多使用同一 Part 的未贴器件。纠偏已经保存。",
+                    "试贴纠偏", JOptionPane.INFORMATION_MESSAGE);
+            return;
+        }
+        selectPlacement(next.getDefinition());
+        openTrialCorrection(boardLocation, next);
+    }
 
     public final Action moveCameraToPlacementLocation = new AbstractAction() {
         {
@@ -758,6 +1008,28 @@ public class JobPlacementsPanel extends JPanel {
         public void actionPerformed(ActionEvent arg0) {
             Placement placement = getSelection();
             MainFrame.get().getFeedersTab().showFeederForPart(placement.getPart());
+        }
+    };
+
+    public final Action replacePlacementFeederAction = new AbstractAction() {
+        {
+            putValue(SMALL_ICON, Icons.editFeeder);
+            putValue(NAME, "替换到飞达...");
+            putValue(SHORT_DESCRIPTION,
+                    "不离开贴片任务，选择飞达并把当前任务元件反向写入飞达配置。");
+        }
+
+        @Override
+        public void actionPerformed(ActionEvent event) {
+            UiUtils.messageBoxOnException(() -> {
+                Placement placement = getSelection();
+                if (placement == null || placement.getType() != Placement.Type.Placement) {
+                    throw new Exception("请先选择一个待贴装元件。");
+                }
+                PlacementFeederAssignmentDialog dialog =
+                        new PlacementFeederAssignmentDialog(JobPlacementsPanel.this, placement);
+                dialog.setVisible(true);
+            });
         }
     };
 

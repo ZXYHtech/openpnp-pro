@@ -25,6 +25,7 @@ import java.util.List;
 
 import javax.swing.JScrollPane;
 import javax.swing.JTable;
+import org.openpnp.gui.components.AutoSelectTextTable;
 import javax.swing.table.AbstractTableModel;
 
 import org.openpnp.Translations;
@@ -59,7 +60,7 @@ public class ReferenceNozzleCompatibleNozzleTipsWizard extends AbstractConfigura
         contentPanel.add(scrollPane);
         
         tableModel = new NozzleTipsTableModel();
-        table = new JTable(tableModel);
+        table = new AutoSelectTextTable(tableModel);
         scrollPane.setViewportView(table);
     }
 

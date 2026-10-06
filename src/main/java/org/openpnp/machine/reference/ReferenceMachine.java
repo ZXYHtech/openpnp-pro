@@ -525,6 +525,23 @@ public class ReferenceMachine extends AbstractMachine {
 
     @Override
     public void home() throws Exception {
+        if (!(getMotionPlanner() instanceof
+                org.openpnp.machine.reference.driver.AbstractMotionPlanner)) {
+            homeWithoutCoreXY();
+            return;
+        }
+        org.openpnp.corexy.agent.CoreXYRuntime.beginHome(
+                (org.openpnp.machine.reference.driver.AbstractMotionPlanner) getMotionPlanner());
+        try {
+            homeWithoutCoreXY();
+        }
+        finally {
+            org.openpnp.corexy.agent.CoreXYRuntime.endHome(
+                    (org.openpnp.machine.reference.driver.AbstractMotionPlanner) getMotionPlanner());
+        }
+    }
+
+    private void homeWithoutCoreXY() throws Exception {
         Logger.debug("homing machine");
 
         if (isHomed()) {
@@ -539,6 +556,10 @@ public class ReferenceMachine extends AbstractMachine {
         Configuration.get().getScripting().on("Machine.AfterHoming", null);
 
         // if homing went well, set machine homed-flag true
+        if (getMotionPlanner() instanceof org.openpnp.machine.reference.driver.AbstractMotionPlanner) {
+            org.openpnp.corexy.agent.CoreXYRuntime.beforeMachineHomed(
+                    (org.openpnp.machine.reference.driver.AbstractMotionPlanner) getMotionPlanner());
+        }
         this.setHomed(true);
         
         if (isParkAfterHomed()) {

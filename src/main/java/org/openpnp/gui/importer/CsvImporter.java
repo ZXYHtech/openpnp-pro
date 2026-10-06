@@ -61,6 +61,7 @@ import org.openpnp.model.Location;
 import org.openpnp.model.Package;
 import org.openpnp.model.Part;
 import org.openpnp.model.Placement;
+import org.openpnp.packageimport.PackageResolutionService;
 import org.openpnp.util.Utils2D;
 import org.pmw.tinylog.Logger;
 
@@ -327,6 +328,7 @@ public abstract class CsvImporter {
         ArrayList<Placement> placements = new ArrayList<>();
         String line;
         Configuration cfg = Configuration.get();
+        String importBatchId = "CSV-BOM-" + file.getName() + "-" + file.lastModified();
 
         // search for a maximum number of lines for headings describing the content
         for (int i = 0; i++ < maxHeaderLines && (line = reader.readLine()) != null;) {
@@ -372,11 +374,9 @@ public abstract class CsvImporter {
                     part = new Part(partId);
                     Length l = new Length(heightZ, LengthUnit.Millimeters);
                     part.setHeight(l);
-                    Package pkg = cfg.getPackage(as[packageIndex]);
-                    if (pkg == null) {
-                        pkg = new Package(as[packageIndex]);
-                        cfg.addPackage(pkg);
-                    }
+                    Package pkg = PackageResolutionService.resolveOrCreatePlaceholder(cfg,
+                            as[packageIndex], Package.SourceType.BOM, file.getName(),
+                            importBatchId);
                     part.setPackage(pkg);
 
                     cfg.addPart(part);

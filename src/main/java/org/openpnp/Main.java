@@ -21,8 +21,11 @@ package org.openpnp;
 
 import java.awt.EventQueue;
 import java.io.File;
+import java.io.InputStream;
+import java.nio.charset.StandardCharsets;
 import java.util.Locale;
 
+import javax.swing.JOptionPane;
 import javax.swing.ToolTipManager;
 import javax.swing.UIManager;
 
@@ -30,6 +33,8 @@ import org.openpnp.gui.MainFrame;
 import org.openpnp.gui.components.ThemeDialog;
 import org.openpnp.gui.components.ThemeInfo;
 import org.openpnp.gui.components.ThemeSettingsPanel;
+import org.openpnp.gui.support.ProStartupGuard;
+import org.openpnp.gui.support.StartupSplash;
 import org.openpnp.logging.ConsoleWriter;
 import org.openpnp.logging.SystemLogger;
 import org.openpnp.model.Configuration;
@@ -59,14 +64,25 @@ public class Main {
 
     public static String getVersionString() {
         String version = null;
-        try {
-            version = FileUtils.readFileToString(new File("VERSION.txt"));
+        try (InputStream stream = Main.class.getResourceAsStream("/VERSION.txt")) {
+            if (stream != null) {
+                version = new String(stream.readAllBytes(), StandardCharsets.UTF_8);
+            }
         }
         catch (Exception e) {
         }
 
-        if (version==null) {
-            version = "n/a";
+        if (version == null || version.isBlank()) {
+            try {
+                version = FileUtils.readFileToString(new File("VERSION.txt"),
+                        StandardCharsets.UTF_8);
+            }
+            catch (Exception e) {
+            }
+        }
+
+        if (version == null || version.isBlank()) {
+            version = "2.6P3-beta34";
         }
 
         return version.strip();
@@ -152,6 +168,20 @@ public class Main {
     }
 
     public static void main(String[] args) {
+        if (!ProStartupGuard.checkOtherOpenPnpInstances()) {
+            return;
+        }
+        final File preparedConfigurationDirectory;
+        try {
+            preparedConfigurationDirectory = ProStartupGuard.prepareConfigurationDirectory();
+        }
+        catch (Exception exception) {
+            JOptionPane.showMessageDialog(null, exception.getMessage(),
+                    "OpenPnP Pro · 启动已停止", JOptionPane.ERROR_MESSAGE);
+            return;
+        }
+        StartupSplash.showSplash();
+        StartupSplash.update(5, "Preparing runtime...");
         monkeyPatchBeansBinding();
         
         for (String s : args) {
@@ -170,15 +200,9 @@ public class Main {
             throw new Error(e);
         }
 
-        File configurationDirectory = new File(System.getProperty("user.home"));
-        configurationDirectory = new File(configurationDirectory, ".openpnp2");
+        File configurationDirectory = preparedConfigurationDirectory;
 
-        if (System.getProperty("configDir") != null) {
-            configurationDirectory = new File(System.getProperty("configDir"));
-        }
-
-        configurationDirectory.mkdirs();
-
+        StartupSplash.update(14, "Preparing configuration and logs...");
         configureLogging(configurationDirectory);
 
         Configuration.initialize(configurationDirectory);
@@ -186,6 +210,7 @@ public class Main {
         Locale.setDefault(Configuration.get().getLocale());
 
         ThemeInfo theme = configuration.getThemeInfo();
+        StartupSplash.update(23, "Applying workspace theme...");
         new ThemeSettingsPanel().setTheme(theme, configuration.getFontSize(), configuration.isAlternateRows());
         ThemeDialog.getInstance().setOldTheme(theme);
         ToolTipManager.sharedInstance().setDismissDelay(60000);
@@ -193,12 +218,30 @@ public class Main {
         EventQueue.invokeLater(new Runnable() {
             public void run() {
                 try {
+                    StartupSplash.update(30, "Building the production workspace...");
                     MainFrame frame = new MainFrame(configuration);
                     frame.setVisible(true);
+                    StartupSplash.update(100, "Ready");
+                    StartupSplash.close();
                     Logger.info(String.format("Bienvenue, Bienvenido, Willkommen, Hello, Namaskar, Welkom, Bonjour to OpenPnP version %s.", Main.getVersion()));
-                    configuration.getScripting().on("Startup", null);
+                    Runtime runtime = Runtime.getRuntime();
+                    Logger.info("JVM memory: maxHeap={} MiB, initialHeap={} MiB, availableProcessors={}",
+                            runtime.maxMemory() / (1024 * 1024),
+                            runtime.totalMemory() / (1024 * 1024),
+                            runtime.availableProcessors());
+                    // Give the main window one paint cycle before running optional startup scripts.
+                    EventQueue.invokeLater(() -> {
+                        try {
+                            configuration.getScripting().on("Startup", null);
+                        }
+                        catch (Exception e) {
+                            Logger.warn(e, "Startup script failed.");
+                        }
+                        org.openpnp.corexy.CoreXYIntegration.initialize(configuration);
+                    });
                 }
                 catch (Exception e) {
+                    StartupSplash.close();
                     e.printStackTrace();
                 }
             }

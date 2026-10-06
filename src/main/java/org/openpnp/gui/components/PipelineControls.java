@@ -47,12 +47,16 @@ import javax.swing.SwingUtilities;
 import javax.swing.Timer;
 import javax.swing.event.ChangeEvent;
 import javax.swing.event.ChangeListener;
+import javax.swing.filechooser.FileNameExtensionFilter;
 
 import org.opencv.core.Mat;
 import org.openpnp.Translations;
 import org.openpnp.gui.MainFrame;
+import org.openpnp.gui.SmartVisionStudioDialog;
 import org.openpnp.gui.support.Icons;
 import org.openpnp.gui.support.MessageBoxes;
+import org.openpnp.gui.support.PathSelectionDialog;
+import org.openpnp.gui.support.PathSelectionDialog.Mode;
 import org.openpnp.model.Location;
 import org.openpnp.spi.Camera;
 import org.openpnp.spi.HeadMountable;
@@ -67,6 +71,7 @@ import org.openpnp.vision.pipeline.CvStage;
 import org.openpnp.vision.pipeline.CvStage.Result;
 import org.openpnp.vision.pipeline.ui.CvPipelineEditor;
 import org.openpnp.vision.pipeline.ui.CvPipelineEditorDialog;
+import org.openpnp.vision.pipeline.ui.CvPipelineFileIo;
 import org.pmw.tinylog.Logger;
 
 import com.jgoodies.forms.layout.ColumnSpec;
@@ -80,8 +85,10 @@ public abstract class PipelineControls extends JPanel {
 
     private JButton btnEdit;
     private JButton btnReset;
+    private JButton btnSmartVision;
     private boolean editable = true;
     private boolean resetable = true;
+    private boolean smartVisionEnabled;
     private Timer timer;
 
     public PipelineControls() { 
@@ -132,6 +139,17 @@ public abstract class PipelineControls extends JPanel {
         }
     }
 
+    public boolean isSmartVisionEnabled() {
+        return smartVisionEnabled;
+    }
+
+    public void setSmartVisionEnabled(boolean smartVisionEnabled) {
+        this.smartVisionEnabled = smartVisionEnabled;
+        if (btnSmartVision != null) {
+            btnSmartVision.setVisible(smartVisionEnabled);
+        }
+    }
+
     public Map<String, Object> getPipelineParameterAssignments() {
         return pipelineParameterAssignments;
     }
@@ -172,6 +190,14 @@ public abstract class PipelineControls extends JPanel {
      * @throws Exception
      */
     public abstract void resetPipeline() throws Exception;
+
+    /**
+     * Open the context-specific smart vision assistant. Vision setting wizards
+     * opt in and prepare the pipeline exactly as they do for normal editing.
+     */
+    public void openSmartVision() throws Exception {
+        throw new UnsupportedOperationException("Smart vision is not available for this pipeline.");
+    }
 
     /**
      * Open the Pipeline Editor with all the necessary handling before/after.
@@ -225,6 +251,42 @@ public abstract class PipelineControls extends JPanel {
      */
     public void openPipelineEditor(String pipelineTitle, CvPipeline pipeline) {
         openPipelineEditor(pipelineTitle, pipeline, null, null, null);
+    }
+
+    /**
+     * Open smart assistance from a concrete vision-settings editor. When a
+     * movable and location are supplied, this deliberately reuses the same
+     * confirmation and safe-Z positioning sequence as the native pipeline
+     * editor. The assistant itself does not invent a second motion path.
+     */
+    public void openSmartVisionStudio(String title, CvPipeline pipeline,
+            SmartVisionStudioDialog.VisionContext context, Camera camera,
+            String moveBeforeEditDescription, HeadMountable movable, Location location,
+            SmartVisionStudioDialog.VisionTestAction testAction) {
+        java.util.concurrent.atomic.AtomicBoolean livePositionPrepared =
+                new java.util.concurrent.atomic.AtomicBoolean(
+                        context != SmartVisionStudioDialog.VisionContext.BOTTOM);
+        UiUtils.confirmMoveToLocationAndAct(getTopLevelAncestor(),
+                moveBeforeEditDescription, true,
+                () -> {
+                    if (pipeline.getPipelineShotsCount() > 0) {
+                        pipeline.getPipelineShot(0).apply();
+                    }
+                    else if (movable != null && location != null) {
+                        MovableUtils.moveToLocationAtSafeZ(movable, location);
+                        MovableUtils.fireTargetedUserAction(movable);
+                        movable.waitForCompletion(CompletionType.WaitForStillstand);
+                    }
+                    livePositionPrepared.set(true);
+                },
+                () -> new SmartVisionStudioDialog(MainFrame.get(), title, context,
+                        pipeline, camera, testAction, livePositionPrepared.get()).setVisible(true));
+    }
+
+    public void openSmartVisionStudio(String title, CvPipeline pipeline,
+            SmartVisionStudioDialog.VisionContext context, Camera camera,
+            SmartVisionStudioDialog.VisionTestAction testAction) {
+        openSmartVisionStudio(title, pipeline, context, camera, null, null, null, testAction);
     }
 
     private Object getParameterValue(CvAbstractParameterStage paramStage) {
@@ -329,7 +391,7 @@ public abstract class PipelineControls extends JPanel {
         JPanel panel = this;
         List<CvAbstractParameterStage> parameterStages = getPipeline() != null ? 
                 getPipeline().getParameterStages() : new ArrayList<>();
-        int rows = 1 + parameterStages.size();
+        int rows = 2 + parameterStages.size();
         panel.setLayout(new FormLayout(new ColumnSpec[] {
                 FormSpecs.RELATED_GAP_COLSPEC,
                 ColumnSpec.decode("max(70dlu;default)"),
@@ -369,15 +431,37 @@ public abstract class PipelineControls extends JPanel {
         });
         panel.add(btnReset, "6, 2, default, fill");
 
+        btnSmartVision = new JButton("智能视觉辅助...");
+        btnSmartVision.setToolTipText("在当前顶部/底部视觉设置中分析图像、离线样本和 AI 建议；保留原管线全部自定义能力。");
+        btnSmartVision.setEnabled(isEnabled());
+        btnSmartVision.setVisible(smartVisionEnabled);
+        btnSmartVision.addActionListener(event ->
+                UiUtils.messageBoxOnException(() -> openSmartVision()));
+        panel.add(btnSmartVision, "8, 2, 3, 1, default, fill");
+
+        JLabel lblExchange = new JLabel("文件 / 剪贴板");
+        lblExchange.setToolTipText("XML 文件导入导出与原有复制粘贴使用完全相同的管线格式。");
+        lblExchange.setEnabled(isEnabled());
+        panel.add(lblExchange, "2, 4, right, default");
+
+        JButton btnImport = new JButton(importFileAction);
+        btnImport.setEnabled(isEnabled() && editable);
+        btnImport.setVisible(editable);
+        panel.add(btnImport, "4, 4, default, fill");
+
+        JButton btnExport = new JButton(exportFileAction);
+        btnExport.setEnabled(isEnabled());
+        panel.add(btnExport, "6, 4, default, fill");
+
         btnCopy = new JButton(copyAction);
-        add(btnCopy, "8, 2, right, default");
+        add(btnCopy, "8, 4, right, default");
 
         btnPaste = new JButton(pasteAction);
         btnPaste.setEnabled(isEnabled());
         btnPaste.setVisible(editable);
-        add(btnPaste, "10, 2, left, default");
+        add(btnPaste, "10, 4, left, default");
 
-        int formRow = 2;
+        int formRow = 3;
         for (CvAbstractParameterStage parameter : parameterStages) {
             //Logger.trace("    rebuild "+parameter.getParameterName()+" invokation "+invokation);
             if (parameter instanceof CvAbstractScalarParameterStage) {
@@ -425,6 +509,82 @@ public abstract class PipelineControls extends JPanel {
         revalidate();
         repaint();
     }
+
+    public final Action importFileAction = new AbstractAction("导入 XML...") {
+        {
+            putValue(SMALL_ICON, Icons.importt);
+            putValue(SHORT_DESCRIPTION, "从 UTF-8 XML 文件替换当前管线。导入前会要求确认。");
+        }
+
+        @Override
+        public void actionPerformed(ActionEvent event) {
+            java.io.File[] selected = PathSelectionDialog.chooseOpen(getTopLevelAncestor(),
+                    "pipeline-controls-import", "导入视觉管线 XML", Mode.FILES, false,
+                    org.openpnp.model.Configuration.get().getConfigurationDirectory(),
+                    pipelineFileFilter());
+            if (selected == null) {
+                return;
+            }
+            java.io.File file = selected[0];
+            int result = JOptionPane.showConfirmDialog(getTopLevelAncestor(),
+                    "将用文件中的管线替换当前管线。是否继续？\n" + file,
+                    "导入视觉管线", JOptionPane.YES_NO_OPTION, JOptionPane.WARNING_MESSAGE);
+            if (result != JOptionPane.YES_OPTION) {
+                return;
+            }
+            try {
+                CvPipeline pipeline = getPipeline();
+                CvPipelineFileIo.replace(pipeline, file);
+                setPipeline(null);
+                setPipeline(pipeline);
+            }
+            catch (Exception error) {
+                MessageBoxes.errorBox(getTopLevelAncestor(), "导入视觉管线失败", error);
+            }
+        }
+    };
+
+    public final Action exportFileAction = new AbstractAction("导出 XML...") {
+        {
+            putValue(SMALL_ICON, Icons.export);
+            putValue(SHORT_DESCRIPTION, "把当前管线以 UTF-8 XML 文件保存，可再次导入或备份。");
+        }
+
+        @Override
+        public void actionPerformed(ActionEvent event) {
+            java.io.File selected = PathSelectionDialog.chooseSave(getTopLevelAncestor(),
+                    "pipeline-controls-export", "导出视觉管线 XML",
+                    new java.io.File("vision-pipeline.xml"),
+                    org.openpnp.model.Configuration.get().getConfigurationDirectory(),
+                    pipelineFileFilter());
+            if (selected == null) {
+                return;
+            }
+            java.io.File file = CvPipelineFileIo.normalizeExportFile(selected);
+            if (file.exists()) {
+                int result = JOptionPane.showConfirmDialog(getTopLevelAncestor(),
+                        "文件已存在，是否覆盖？\n" + file,
+                        "导出视觉管线", JOptionPane.YES_NO_OPTION, JOptionPane.WARNING_MESSAGE);
+                if (result != JOptionPane.YES_OPTION) {
+                    return;
+                }
+            }
+            try {
+                CvPipelineFileIo.write(getPipeline(), file);
+                JOptionPane.showMessageDialog(getTopLevelAncestor(),
+                        "视觉管线已导出：\n" + file,
+                        "导出完成", JOptionPane.INFORMATION_MESSAGE);
+            }
+            catch (Exception error) {
+                MessageBoxes.errorBox(getTopLevelAncestor(), "导出视觉管线失败", error);
+            }
+        }
+    };
+
+    private FileNameExtensionFilter pipelineFileFilter() {
+        return new FileNameExtensionFilter("OpenPnP vision pipeline (*.xml)", "xml");
+    }
+
     public final Action copyAction = new AbstractAction() {
         {
             putValue(SMALL_ICON, Icons.copy);

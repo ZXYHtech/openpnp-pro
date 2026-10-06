@@ -20,8 +20,8 @@ public class CvPipelineEditorDialog extends JDialog {
             public void windowClosing(WindowEvent e) {
                 if (editor.isDirty()) {
                     int selection = JOptionPane.showConfirmDialog(owner,
-                            "Save pipeline changes?",
-                            "Closing Pipeline Editor!",
+                            "是否保存视觉管线修改？",
+                            "关闭视觉管线编辑器",
                             JOptionPane.YES_NO_CANCEL_OPTION,
                             JOptionPane.QUESTION_MESSAGE,
                             null

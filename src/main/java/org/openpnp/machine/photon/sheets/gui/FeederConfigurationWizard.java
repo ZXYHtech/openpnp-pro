@@ -19,6 +19,7 @@ import org.jdesktop.beansbinding.BeanProperty;
 import org.jdesktop.beansbinding.Bindings;
 import org.openpnp.Translations;
 import org.openpnp.gui.components.LocationButtonsPanel;
+import org.openpnp.gui.components.RotationDialButton;
 import org.openpnp.gui.support.AbstractConfigurationWizard;
 import org.openpnp.gui.support.DoubleConverter;
 import org.openpnp.gui.support.IdentifiableListCellRenderer;
@@ -212,7 +213,7 @@ public class FeederConfigurationWizard extends AbstractConfigurationWizard {
 		zSlotTf.setColumns(10);
 		
 		rotSlotTf = new JTextField();
-		locationPanel.add(rotSlotTf, "10, 4, left, center"); //$NON-NLS-1$
+		locationPanel.add(RotationDialButton.wrap(rotSlotTf), "10, 4, left, center"); //$NON-NLS-1$
 		rotSlotTf.setColumns(10);
 
 		slotLocationPanel = new LocationButtonsPanel(xSlotTf, ySlotTf, zSlotTf, rotSlotTf);

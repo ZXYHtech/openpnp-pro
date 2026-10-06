@@ -28,6 +28,7 @@ import javax.swing.border.TitledBorder;
 import org.jdesktop.beansbinding.AutoBinding.UpdateStrategy;
 import org.openpnp.gui.components.ComponentDecorators;
 import org.openpnp.gui.components.LocationButtonsPanel;
+import org.openpnp.gui.components.RotationDialButton;
 import org.openpnp.gui.support.AbstractConfigurationWizard;
 import org.openpnp.gui.support.DoubleConverter;
 import org.openpnp.gui.support.IdentifiableListCellRenderer;
@@ -35,6 +36,8 @@ import org.openpnp.gui.support.IntegerConverter;
 import org.openpnp.gui.support.LengthConverter;
 import org.openpnp.gui.support.MutableLocationProxy;
 import org.openpnp.gui.support.PartsComboBoxModel;
+import org.openpnp.gui.support.PartSearchSupport;
+import org.openpnp.gui.support.SearchablePartComboBox;
 import org.openpnp.machine.reference.ReferenceFeeder;
 import org.openpnp.model.Configuration;
 import org.openpnp.model.Part;
@@ -103,11 +106,12 @@ public abstract class AbstractReferenceFeederConfigurationWizard
                 FormSpecs.RELATED_GAP_ROWSPEC,
                 FormSpecs.DEFAULT_ROWSPEC,}));
 
-        comboBoxPart = new JComboBox();
+        comboBoxPart = new SearchablePartComboBox();
         comboBoxPart.setMaximumRowCount(20);
         try {
             partsComboBoxModel = new PartsComboBoxModel();
             comboBoxPart.setModel(partsComboBoxModel);
+        PartSearchSupport.install(comboBoxPart);
         }
         catch (Throwable t) {
             // Swallow this error. This happens during parsing in
@@ -181,7 +185,7 @@ public abstract class AbstractReferenceFeederConfigurationWizard
             textFieldLocationZ.setColumns(8);
 
             textFieldLocationC = new JTextField();
-            panelLocation.add(textFieldLocationC, "8, 4");
+            panelLocation.add(RotationDialButton.wrap(textFieldLocationC), "8, 4");
             textFieldLocationC.setColumns(8);
 
             locationButtonsPanel = new LocationButtonsPanel(textFieldLocationX, textFieldLocationY,

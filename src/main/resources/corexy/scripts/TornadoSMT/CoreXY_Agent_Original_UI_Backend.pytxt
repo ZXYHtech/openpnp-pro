@@ -1,0 +1,2585 @@
+import math
+import sys
+from java.awt import Color, Desktop, FlowLayout, Font
+from java.io import File, FileOutputStream
+from java.nio.file import (AtomicMoveNotSupportedException, Files,
+                           StandardCopyOption)
+from java.security import MessageDigest
+from java.text import SimpleDateFormat
+from java.util import Date, Properties
+from javax.swing import (AbstractButton, Box, JButton, JComboBox, JComponent,
+                         JLabel, JOptionPane, JPanel, Timer)
+from javax.swing.border import TitledBorder
+from org.openpnp.spi import Axis
+
+
+def external_fixed_usage_text(language="zh_CN"):
+    if language == "en":
+        return u"""OpenPnP External CoreXY Repeatability Compensation
+
+[1. Purpose and scope]
+
+This tool measures and compensates small direction-state errors that repeat under the same direction, distance and speed. The top camera observes the Primary Fiducial while the tool measures the virtual A=X+Y and B=X-Y drive chains, derives fixed two-dimensional state vectors, and applies them through an external Agent at the OpenPnP motion-planning stage.
+
+The system does not modify OpenPnP source code or installation files. Configuration, measurements and reports remain under the external script directory. Fixed vectors cannot repair loose belts, changing cable-chain force, loose pulleys, unreliable gantry return, rail binding or unstable vision. Repair those causes first. Position-dependent errors require a future two-dimensional position-error model.
+
+[2. Implementation boundary]
+
+This is different from OpenPnP single-axis backlash compensation. It does not rewrite normal G-code and does not send G92. The planner inserts a drive-state offset while converting logical motion to drive motion, and subtracts that drive offset from position reports so OpenPnP logical coordinates remain unchanged.
+
+[3. Preparation]
+
+1. Check motor pulleys, set screws, belt tension, idlers, gantry squareness and rail resistance.
+2. Place a board or Mark near the work-area center and define the Primary Fiducial X/Y/Z and feature diameter on Detection & Diagnostics. X and Y cannot both be zero.
+3. To start a new calibration, the machine must be Disabled and unhomed.
+4. Clear the complete test envelope and remove all nozzles from N1/N2 and the nozzle dock.
+5. A new calibration sets native OpenPnP X/Y backlash to None and saves machine.xml. Make a manual machine.xml backup first; this tool does not restore native backlash automatically.
+
+For a new-machine package, the normal OpenPnP setup, machine commissioning, mechanical checks and user backup are prerequisites already completed before installation. The installer does not ask the user to repeat them. On first startup it detects the top-camera X/Y controller axes and creates a disabled zero-compensation profile without motion; do not import another machine's private data.
+
+[4. Start a new calibration]
+
+Open Current Status and click Start New Calibration while the machine is Disabled and unhomed. The tool creates an isolated same-session data set and loads uncompensated baseline mode. Workflow confirmations no longer require typed English phrases: read the message and click OK. Then Enable and Home, and follow the Next Step instruction.
+
+Each calibration uses a separate Session. Older measurements are not mixed into the new candidate.
+
+[5. Detection and diagnostics]
+
+Fixed profile: distances 15, 28, 34, 60, 180 and 270 mm; speeds 40%, 70% and 90%; three repeats per condition. The tool captures an uncompensated baseline, separates A+/A- and B+/B- return states, and calculates thresholds, correction vectors, scatter and a recommended candidate. After baseline capture, follow the status instruction to Disable/unhome before generating the candidate.
+
+[6. Candidate and residuals]
+
+The same-session recommendation is filled automatically. Compensation defaults to 100%; use 25%, 50% or 75% only if overcompensation is observed. While compensation is stopped, A/B thresholds, vectors, enable states and percentage remain editable.
+
+The upper Absolute Return Distribution plots show where returns land relative to Primary. Distance from the origin is absolute positioning error; concentration describes repeatability. The gray 0.05 mm circle is a visual reference, not the health PASS limit.
+
+The lower Direction-state Residual plots show separation between opposite return states. This is the quantity optimized by the fixed A/B model. A health PASS and all absolute returns being inside 0.05 mm are independent conclusions.
+
+Direction-state residual = sqrt((opposite-return X difference)^2 + (opposite-return Y difference)^2). The horizontal axis is travel distance in mm and the vertical axis is residual in mm. Warm colors identify A and cool colors identify B; point colors distinguish positive/negative return states, while line colors distinguish 40%, 70% and 90% speeds.
+
+Read the plots in this order: a cloud center nearer the origin means better absolute positioning; a tighter same-color cloud means better repeatability; smaller A+/A- or B+/B- separation means less direction-state error. If all colors shift together while remaining tight, suspect a common Primary/reference or position-dependent offset rather than an A/B direction-state error.
+
+Click Interpretation at the bottom of the Residual Distribution page to open a separate modeless window containing the formula, reading guide and conclusions for the current measurements. The plots remain fully visible while this window is open.
+
+[7. Apply compensation]
+
+Check the percentage and A/B values, ensure no production job is running, then click Apply Compensation. The Agent waits for motion to stop, saves the displayed values, clears A/B state and automatically Disables the machine without cancellation motion. Enable and Home again before any verification. Use an unloaded round-trip check for supervised observation or Health Check for quantitative measurement.
+
+[8. Active state]
+
+While production compensation is active, the percentage and A/B fields are locked. Apply and Stop are allowed from Enabled, Homed or non-zero A/B states only when no production job is running. Each switch waits for standstill, clears state and Disables the machine; Enable and Home again afterward.
+
+[9. Health check]
+
+Health Check compares the active compensation against the uncompensated baseline from the same Session and refreshes the compensated residual plots and latest report. The PASS guard is three top-camera pixels and the WARNING guard is six pixels. A suspicious cell is automatically repeated seven times before the final result. P95 means that 95% of measurements are no larger than the reported value. The machine is Disabled when the check ends; Enable and Home before another check.
+
+[10. Stop and readjust]
+
+Stop Compensation can be used whenever no production job is running. The Agent waits for standstill, Disables the machine, clears state and preserves the stored vectors. The Tuner reloads the same-session recommendation and unlocks the controls. Stopping does not restore an older CoreXY profile or native OpenPnP backlash.
+
+[11. Safety]
+
+Before any automatic motion, verify the horizontal envelope and Safe Z. Soft limits cannot identify feeders, fixtures, PCBs, cables or loose objects. Never apply or stop compensation during a production job. Recalibrate after mechanical changes or camera calibration changes."""
+    return u"""CoreXY 外置重复定位补偿使用说明
+
+界面默认使用中文。可在“当前状态”页切换“中文 / English”，选择会持久保存；语言切换只改变显示文本，不会应用或停用补偿，也不会触发运动、Disable 或 Home。
+
+【一、工具用途与适用范围】
+
+本工具用于检测并补偿贴片机上能够稳定复现的方向状态微小剩余误差，例如 X 轴往返后留下 Y 方向偏差、Y 轴往返后留下 X 方向偏差，且误差在相同方向、距离和速度下具有一定程度的一致性。
+
+工具通过顶部相机观察主要标定点，分别测量 A=X+Y 和 B=X-Y 两条虚拟传动链，生成二维状态补偿。应用补偿后，可通过健康检查或空载往返检查验证改善程度。最后由外置 Agent 在 OpenPnP 运动规划阶段持续应用 A/B 固定二维补偿向量。
+
+整个补偿系统不修改 OpenPnP 源码，不修改 OpenPnP 安装文件。正式参数、试验参数、测量数据和报告均保存在外置脚本目录中。
+
+固定向量只能修正稳定、可重复的方向性偏差，不能替代机械维修。它不适用于修复皮带松动、拖链拉力变化、皮带轮或紧定螺钉松动、横梁不能稳定复位、导轨卡滞或视觉识别漂移等随机误差。此类问题应先处理机械传动结构、润滑或视觉系统，位置相关误差可在后续使用二维位置误差图处理（正在开发中）。
+
+【二、实现边界】
+
+二维 CoreXY 补偿不同于 OpenPnP 自带的单轴反向间隙补偿。它不会改写普通 G-code 文本，也不会发送 G92。规划器在逻辑运动转换为驱动运动时插入状态偏置修正，并在位置回报中扣除驱动偏置，因此 OpenPnP 逻辑坐标保持不变。
+
+【三、准备工作】
+
+1. 检查 A/B 电机主动轮、紧定螺钉、皮带张力、惰轮阻力、横梁正交和导轨阻力，确认误差具有重复性。
+2. 将标定板或 Mark 点放在工作台面中心区域。在“检测与诊断”页定义主要标定点的 X/Y/Z 和特征直径；X 或 Y 不能为 0。
+3. 开始新标定时，OpenPnP 机器必须处于 Disable（软关机）且未 Home 状态。
+4. 清空测试范围、吸嘴坞及 N1/N2 中的吸嘴，确认台面没有障碍物。
+5. 新标定会自动把 OpenPnP 原生 X/Y backlash 设置为 None 并保存。工具不提供自动恢复，请提前手工备份 .openpnp2/machine.xml。
+
+使用新机器安装包时，以上 OpenPnP 调试、机器配置、机械检查和用户备份均视为安装前已经完成，安装流程不要求重复操作。第一次启动会自动识别顶部相机 X/Y 控制轴并建立停用的全零补偿配置，不产生运动；不得导入其他机器的私有数据。
+
+【四、开始新的标定】
+
+1. 打开“当前状态”页。
+2. 在机器 Disable 且未 Home 时点击“开始新标定”。
+3. 工具建立独立的同期 Session，并加载未补偿基线模式。
+4. Enable 机器并正常 Home。
+5. 根据“当前状态”页的“下一步”提示进入“检测与诊断”继续操作。
+
+每次新标定使用独立 Session，旧测量结果不会混入本次候选。主流程确认弹窗无需输入英文口令，阅读内容后点击“确定”即可继续。流程中如提示重新 Home，应先完成 Home 再继续下一步。
+
+【五、检测与诊断】
+
+检测使用固定参数：
+
+运动距离：15、28、34、60、180、270 mm
+速度比例：40%、70%、90%
+每个条件重复：3 次
+
+工具首先采集没有 CoreXY 补偿的基线，然后分离 A+、B+ 方向偏差，计算触发阈值、二维修正向量、测量离散和推荐候选。
+
+基线采集完成后，根据状态提示 Disable 机器并进入未 Home 状态，再点击“继续：生成固定向量候选”。
+
+【六、查看候选和残差】
+
+候选生成后，推荐值会自动填入“候选与应用”页。默认补偿比例为 100%；如果实际观察到补偿过度，可以选择 25%、50%、75% 或 100%。
+
+补偿停用时，可以人工修改 A/B 阈值、X/Y 修正分量、A/B 启用状态和补偿比例。补偿生效时这些字段锁定并变灰。
+
+“残差分布”页同时显示两类不同指标：
+
+上方“绝对落点分布”以 Primary 为原点。散点方向表示落点偏向哪一侧，离原点越远表示绝对定位偏差越大，点云越集中表示重复性越好。灰色 0.05 mm 圈只用于直观观察，不是健康检查 PASS 门限。
+
+下方“方向状态残差”表示相反返回方向之间的差，是当前固定 A/B 向量主要优化的对象。健康检查 PASS 与绝对落点是否进入 0.05 mm 圈是两项独立结论；PASS 不能解释为全部落点已进入该圆圈。
+
+方向状态残差的计算为：残差 = sqrt((正向返回X - 负向返回X)^2 + (正向返回Y - 负向返回Y)^2)。横轴是运动距离（mm），纵轴是方向状态残差（mm）。暖色表示 A，冷色表示 B；散点颜色区分正/负返回状态，曲线颜色区分 40%、70%、90% 三种速度。
+
+阅读顺序：点云中心离原点越近，绝对定位越准；同色点越集中，该方向重复性越好；A+ 与 A- 越接近，A 状态误差越小；B+ 与 B- 越接近，B 状态误差越小。若四种颜色整体向同一方向平移但仍然集中，更接近 Primary 基准或位置相关偏移，不应继续当作 A/B 方向状态误差修正。
+
+点击残差页底部的“解读信息”，会打开独立的非模态窗口。其中集中显示残差公式、A+、A-、B+、B- 的样本数、分组中心、最远落点、相反状态中心分离量，以及针对当前数据的自动结论。窗口打开时仍可完整查看和操作四幅图。
+
+【七、应用补偿】
+
+1. 选择补偿比例并检查 A/B 参数。
+2. 确认没有正在执行的生产任务，点击“应用补偿”。
+3. Agent 等待当前运动完全静止，保存页面参数，清空 A/B 状态，并自动 Disable 机器；不会执行抵消运动。
+4. Enable 机器并重新 Home。应用补偿后必须重新 Home，才能进行后续运动或检查。
+5. 可运行“空载往返检查”做手动体感验证，也可点击“健康检查”做自动定量验证。
+6. 如果补偿过度或不足，先点击“停用补偿”，调整 25% / 50% / 75% / 100% 比例或 A/B 参数，再次应用、Home 和验证。
+
+“应用补偿”直接写入外置正式配置并在后续 OpenPnP 运行中持续使用，不再区分临时补偿和正式补偿。自动健康检查标准可能比用户实际可接受标准严格；即使系统判定 FAIL，仍可结合实际复测、P95、最大误差和生产需求决定是否继续使用。系统不会因 FAIL 自动停用补偿，但会在检查结束后自动 Disable 机器。
+
+【八、补偿生效状态】
+
+应用后，A/B 参数、启用项和补偿比例会锁定并变灰，绿色粗体文字显示当前生效比例。补偿会在后续 OpenPnP 运行中持续使用。
+
+允许机器已 Enable、已 Home 或 A/B 状态非零时应用或停用，但必须确保没有生产任务运行。每次切换都会等待当前运动停止，自动 Disable，清空 Agent 的 A/B 状态且不执行抵消运动；随后必须重新 Enable 和 Home。
+
+【九、健康检查】
+
+应用补偿并重新 Home 后，点击“健康检查”。Tuner 会自动识别 Enabled/Home 状态并启用按钮，无需手工刷新当前状态。健康检查把当前补偿测量与同一 Session 的未补偿基线比较，并刷新“残差分布”页的补偿后图形及最新报告。只要补偿仍在应用，健康检查可以重复运行：
+
+PASS：当前补偿状态正常。
+WARNING：存在可见变化，建议检查机械状态并继续观察。
+FAIL：误差持续超过警告范围，建议停用补偿并检查机械结构。
+
+门限以顶部相机像素尺寸为基础：PASS 参考线为 3 像素，WARNING 参考线为 6 像素。
+
+P95 表示 95% 的测量结果不超过该数值，比单次最大值更适合观察总体稳定性。健康检查运行期间按钮不可用，检查结束后机器自动 Disable；如需再次检查，请重新 Enable 和 Home。最新报告可在“当前状态”页点击“打开最新健康检查报告”查看。
+
+健康检查报告采用中文/英文并列标题，保留 PASS、WARNING、FAIL、RMS、P95、UPP 和 A/B 状态等固定技术标识。
+
+【十、停用和重新调整】
+
+“停用补偿”可在没有生产任务运行时随时使用。Agent 会等待当前运动停止，自动 Disable，停用 A/B 补偿并清空 A/B 状态，不执行抵消运动。停用后，工具重新读取本次同期推荐值并按当前补偿比例填入，A/B 参数和启用项恢复可编辑；人工修改内容会被推荐值替换。
+
+停用不会恢复以前的旧补偿，也不会恢复 OpenPnP 原生 X/Y backlash。停用后如需进行无补偿对照或再次应用，必须重新 Enable 和 Home。
+
+【十一、安全原则】
+
+任何自动运动前都必须确认水平运动路径和 Safe Z 安全。软限位不能识别夹具、飞达、PCB、线缆和其他实体障碍物。应用或停用补偿时，不得有正在执行的贴片任务。机械结构或相机标定发生变化后，应重新进行完整标定。"""
+
+
+UI_TEXT_PAIRS = [
+    (u"当前状态", u"Current Status"),
+    (u"检测与诊断", u"Detection & Diagnostics"),
+    (u"残差分布", u"Residual Distribution"),
+    (u"CoreXY示意", u"CoreXY Diagram"),
+    (u"候选与应用", u"Candidate & Apply"),
+    (u"解读信息", u"Interpretation"),
+    (u"残差分布解读", u"Residual Interpretation"),
+    (u"打开残差公式、图形阅读方法和针对当前测量的自动结论。",
+     u"Open the residual formula, plot-reading guide and conclusions for the current measurements."),
+    (u"使用说明", u"Instructions"),
+    (u"CoreXY外置补偿", u"External CoreXY"),
+    (u"刷新当前状态", u"Refresh Status"),
+    (u"开始新标定", u"Start New Calibration"),
+    (u"等待启用并Home", u"Waiting for Enable & Home"),
+    (u"运行健康检查", u"Run Health Check"),
+    (u"打开最新健康检查报告", u"Open Latest Health Report"),
+    (u"健康检查", u"Health Check"),
+    (u"应用补偿", u"Apply Compensation"),
+    (u"停用补偿", u"Stop Compensation"),
+    (u"补偿比例", u"Compensation Percentage"),
+    (u"尚未应用补偿。", u"Compensation is not applied."),
+    (u"A电机", u"Motor A"),
+    (u"B电机", u"Motor B"),
+    (u"A触发阈值 (mm)", u"A trigger threshold (mm)"),
+    (u"B触发阈值 (mm)", u"B trigger threshold (mm)"),
+    (u"A+的X修正量 (mm)", u"A+ X correction (mm)"),
+    (u"A+的Y修正量 (mm)", u"A+ Y correction (mm)"),
+    (u"B+的X修正量 (mm)", u"B+ X correction (mm)"),
+    (u"B+的Y修正量 (mm)", u"B+ Y correction (mm)"),
+    (u"启用A方向补偿", u"Enable A compensation"),
+    (u"启用B方向补偿", u"Enable B compensation"),
+    (u"A+：顺时针；A-：逆时针，参考 (0,0) mm",
+     u"A+: clockwise; A-: counterclockwise; reference (0,0) mm"),
+    (u"B+：顺时针；B-：逆时针，参考 (0,0) mm",
+     u"B+: clockwise; B-: counterclockwise; reference (0,0) mm"),
+    (u"示例运动", u"Example Motion"),
+    (u"空载往返检查（不修改配置、不进行视觉测量）",
+     u"Unloaded Round-trip Check (no configuration change or vision measurement)"),
+    (u"L1 距离 (mm)", u"L1 distance (mm)"),
+    (u"循环次数", u"Cycles"),
+    (u"随机路径", u"Random Path"),
+    (u"点击方向后立即进行该方向的往返；中心按钮执行随机多点路径",
+     u"Click a direction for an immediate round trip; the center button runs a random multi-point path"),
+    (u"检测参数", u"Detection Parameters"),
+    (u"主要标定点Primary Fiducial", u"Primary Fiducial"),
+    (u"刷新", u"Refresh"),
+    (u"捕获当前相机位置", u"Capture Camera Position"),
+    (u"保存主要标定点", u"Save Primary Fiducial"),
+    (u"相机安全前往", u"Move Camera at Safe Z"),
+    (u"特征直径 (mm)", u"Feature diameter (mm)"),
+    (u"固定检测参数：距离 15、28、34、60、180、270 mm；速度 40%、70%、90%；每档重复 3 次；用户目标 0.050 mm；最小可信位移 0.015 mm。",
+     u"Fixed profile: distances 15, 28, 34, 60, 180, 270 mm; speeds 40%, 70%, 90%; three repeats per condition; user target 0.050 mm; trusted displacement floor 0.015 mm."),
+    (u"请提前检查台面有无障碍物、收纳撤下所有吸嘴，保障运行安全。",
+     u"Clear the table and remove all nozzles before running."),
+    (u"测试前会检查X/Y高低软限位、起点、目标点和2 mm余量。",
+     u"Before motion, the tool checks X/Y limits, start, target and a 2 mm margin."),
+    (u"未补偿：绝对落点分布", u"Uncompensated: Absolute Return Distribution"),
+    (u"补偿后：绝对落点分布", u"Compensated: Absolute Return Distribution"),
+    (u"未补偿：方向状态残差 / 运动距离",
+     u"Uncompensated: Direction-state Residual / Distance"),
+    (u"补偿后：方向状态残差 / 运动距离",
+     u"Compensated: Direction-state Residual / Distance"),
+    (u"上方散点（返回状态）：", u"Upper points (return state):"),
+    (u"下方曲线（运动速度）：", u"Lower curves (motion speed):"),
+    (u"暖色=A，冷色=B；散点颜色区分正/负返回状态，曲线颜色区分速度。",
+     u"Warm=A, cool=B; point colors distinguish +/- return states, curve colors distinguish speeds."),
+    (u"X：距离(mm) 15/28/34/60/180/270    Y：状态残差(mm)",
+     u"X: distance (mm) 15/28/34/60/180/270    Y: state residual (mm)"),
+    (u"CoreXY外置补偿（F1-F6：传统固定A/B；0-12：曲面校准）",
+     u"External CoreXY (F1-F6: fixed A/B; 0-12: surface calibration)"),
+    (u"阶段", u"Stage"),
+    (u"当前结果", u"Current Result"),
+    (u"操作", u"Action"),
+    (u"刷新工作流状态", u"Refresh Workflow Status")
+    ,(u"CoreXY状态示意（标准Swing组件，不代表实时电机遥测）",
+      u"CoreXY State Diagram (not live motor telemetry)")
+    ,(u"================  CoreXY皮带路径  ================",
+      u"================  CoreXY belt path  ================")
+    ,(u"X横梁  ───────────────  [贴装头]  ───────────────  → X+",
+      u"X gantry  ───────────────  [Head]  ───────────────  → X+")
+    ,(u"[贴装头]  ↑ Y+", u"[Head]  ↑ Y+")
+    ,(u"A-、B-均为(0,0) mm参考状态；修正是状态偏置，不会逐次累加。",
+      u"A- and B- are (0,0) mm reference states; corrections are state offsets and do not accumulate.")
+    ,(u"完成一次完整诊断后显示散点。",
+      u"Complete one calibration to display residual points.")
+    ,(u"以主要标定点为(0,0)。点落在哪个象限，就表示回归定位偏向哪一侧。",
+      u"Primary is (0,0). The quadrant shows the direction of return-position bias.")
+    ,(u"使用与未补偿图相同的方向定义。靠近原点表示绝对定位更准，集中表示重复性更好；两者需分开理解。",
+      u"Uses the same axes as the uncompensated plot. Nearer the origin means better absolute positioning; tighter clustering means better repeatability.")
+    ,(u"横轴是往返运动距离，纵轴是两方向回归点之间的径向差值；上升表示长行程误差更明显。",
+      u"Horizontal axis is travel distance; vertical axis is radial separation between opposite return states.")
+    ,(u"与左图对比：曲线整体下降表示有效；局部抬升用于定位特定速度和距离的过补偿或机械扰动。",
+      u"Compare with the left plot: an overall drop indicates improvement; a local rise identifies overcompensation or disturbance at a specific condition.")
+]
+
+
+UI_EN_REPLACEMENTS = [
+    (u"候选状态：", u"Candidate status: "),
+    (u"当前操作：", u"Current action: "),
+    (u"等待条件：", u"Waiting for: "),
+    (u"下一步操作：", u"Next action: "),
+    (u"下一步：", u"Next: "),
+    (u"外置Agent：", u"External Agent: "),
+    (u"当前补偿：", u"Current compensation: "),
+    (u"模型：", u"Model: "),
+    (u"补偿比例：", u"Compensation: "),
+    (u"持久性：", u"Persistence: "),
+    (u"机器：", u"Machine: "),
+    (u"正式版本：", u"Production revision: "),
+    (u"最近候选：", u"Latest candidate: "),
+    (u"最近健康：", u"Latest health: "),
+    (u"相机门限：", u"Camera guard: "),
+    (u"时间：", u"Time: "),
+    (u"不可用", u"Unavailable"),
+    (u"可用", u"Available"),
+    (u"尚未执行", u"Not run"),
+    (u"当前版本尚未执行", u"Not run for current revision"),
+    (u"进行中", u"Running"),
+    (u"固定A/B补偿生效中", u"Fixed A/B compensation active"),
+    (u"固定A/B正式补偿已停用（参数仍保留）",
+     u"Fixed A/B compensation stopped (parameters retained)"),
+    (u"新机器初始化完成（零补偿，等待首次标定）",
+     u"New machine initialized (zero compensation; calibration pending)"),
+    (u"未补偿基线模式已加载（仅当前进程）",
+     u"Uncompensated baseline mode loaded (current process only)"),
+    (u"候选已生成，等待选择补偿比例并应用",
+     u"Candidate generated; choose percentage and apply"),
+    (u"正式配置已应用", u"Production configuration applied"),
+    (u"已归档：", u"Archived: "),
+    (u"尚未生成", u"Not generated"),
+    (u"尚未进行健康检查", u"Health check not run"),
+    (u"顶部相机像素门限：", u"Top-camera pixel guard: "),
+    (u"健康检查进行中", u"Health check running"),
+    (u"健康检查正在进行。", u"Health check is running."),
+    (u"请先完成标定并生成固定A/B候选。",
+     u"Complete calibration and generate a fixed A/B candidate first."),
+    (u"CoreXY补偿已生效；如需调整，请先停用补偿。",
+     u"CoreXY compensation is active; stop it before editing."),
+    (u"应用补偿后，请Enable机器并正常Home。",
+     u"After applying, Enable and Home the machine."),
+    (u"请提前检查台面有无障碍物、收纳撤下所有吸嘴，保障运行安全。",
+     u"Clear the table and remove all nozzles before running."),
+    (u"数据生成时间：", u"Data generated: "),
+    (u"未补偿", u"Uncompensated"),
+    (u"补偿后", u"Compensated"),
+    (u"最远回归点", u"farthest return "),
+    (u"点云中心", u" cloud center"),
+    (u"主要偏向", u"bias "),
+    (u"方向状态健康判定", u"Direction-state health"),
+    (u"绝对落点参考", u"Absolute-return reference"),
+    (u"两项相互独立", u"The two results are independent"),
+    (u"未达到", u"outside"),
+    (u"达到", u"inside"),
+    (u"流程：开始新标定 → 采集并生成候选 → 选择补偿比例 → 应用补偿（自动Disable） → 重新Enable/Home → 健康检查或空载往返检查",
+     u"Workflow: new calibration → capture and generate candidate → select percentage → apply (automatic Disable) → Enable/Home → health or unloaded check"),
+    (u"操作提示：应用或停用都会等待运动静止并自动Disable；切换后必须重新Enable和Home。补偿生效时参数锁定，停用后恢复编辑并重载同期推荐值。",
+     u"Operation: Apply and Stop wait for standstill and automatically Disable. Enable and Home after switching. Active parameters are locked; Stop unlocks and reloads the same-session recommendation."),
+    (u"可运行健康检查或空载往返检查",
+     u"Run a health check or unloaded round-trip check"),
+    (u"请Enable并重新Home，再运行健康检查或空载往返检查",
+     u"Enable and Home again, then run a health or unloaded check"),
+    (u"补偿已停用；可修改补偿比例和A/B数值，然后点击应用补偿",
+     u"Compensation is stopped; adjust percentage or A/B values, then apply"),
+    (u"在候选与应用页确认补偿比例和A/B值，然后点击应用补偿",
+     u"Confirm percentage and A/B values on Candidate & Apply, then apply"),
+    (u"打开检测与诊断页开始或继续标定",
+     u"Open Detection & Diagnostics to start or continue calibration"),
+    (u"机器已初始化；请在当前状态页点击开始新标定",
+     u"Machine initialized; click Start New Calibration on Current Status"),
+    (u"新机器CoreXY初始化已完成；请点击“开始新标定”。",
+     u"New-machine CoreXY initialization is complete; click Start New Calibration."),
+    (u"运动 ", u"Motion "),
+    (u"当前状态合成修正", u"Combined state correction"),
+    (u"顺时针", u"clockwise"),
+    (u"逆时针", u"counterclockwise"),
+    (u"正向修正", u"positive correction"),
+    (u"参考状态", u"reference state"),
+    (u"当前阶段：", u"Current stage: "),
+    (u"总体进度", u"Overall progress"),
+    (u"已读取机器配置；捕获或编辑后需点击保存。",
+     u"Machine configuration loaded; save after capture or editing."),
+    (u"X和Y必须是已定义的非零机器坐标；捕获后仍需点击保存。",
+     u"X and Y must be defined non-zero machine coordinates; save after capture."),
+    (u"尚未执行诊断。", u"Diagnostics have not run."),
+    (u"检测完成后，本页会给出结论、误差来源、候选参数和补偿前后验证结果。",
+     u"After measurement, this page shows conclusions, error sources, candidate values and before/after results."),
+    (u"二维图以主要标定点为原点", u"The 2D plots use Primary as the origin"),
+    (u"上方图显示绝对落点，下方图显示相反方向之间的状态残差。",
+     u"Upper plots show absolute returns; lower plots show residual separation between opposite states."),
+    (u"灰色0.05 mm圈仅为视觉参考，不是健康检查PASS门限。",
+     u"The gray 0.05 mm circle is a visual reference, not the health PASS limit."),
+    (u"阅读方法：", u"How to read: "),
+    (u"尚未进行健康检查；右侧图将在健康检查完成后显示。",
+     u"Health check not run; right-side plots appear after completion."),
+    (u"最坏往返单元", u"worst round-trip cell"),
+    (u"径向差", u"radial separation"),
+    (u"右/X+", u"right/X+"),
+    (u"左/X-", u"left/X-"),
+    (u"上/Y+", u"up/Y+"),
+    (u"下/Y-", u"down/Y-"),
+    (u"X居中", u"X centered"),
+    (u"Y居中", u"Y centered"),
+    (u"已载入", u"Loaded"),
+    (u"两图使用相同尺度", u"both plots use the same scale"),
+    (u"灰圈仅为0.05 mm视觉参考", u"gray circle is only a 0.05 mm visual reference")
+]
+
+
+def ui_language_file():
+    return agent_artifact("config/ui-language.properties")
+
+
+def read_ui_language():
+    props = read_agent_properties(ui_language_file())
+    return "en" if props.getProperty("ui.language", "zh_CN") == "en" else "zh_CN"
+
+
+def write_ui_language(language):
+    props = Properties()
+    props.setProperty("ui.language", "en" if language == "en" else "zh_CN")
+    write_backend_properties(props, ui_language_file(), "CoreXY Tuner UI language")
+
+
+def tuner_language(self):
+    return getattr(self, "ui_language", read_ui_language())
+
+
+def ui_exact_text(value, language):
+    if value is None:
+        return None
+    value = unicode(value)
+    for chinese, english in UI_TEXT_PAIRS:
+        if value == chinese or value == english:
+            return english if language == "en" else chinese
+    return value
+
+
+def ui_dynamic_text(value, language):
+    value = ui_exact_text(value, language)
+    if value is None or language != "en":
+        return value
+    for chinese, english in UI_EN_REPLACEMENTS:
+        value = value.replace(chinese, english)
+    return value
+
+
+def localize_component_tree(component, language):
+    if isinstance(component, (JLabel, AbstractButton)):
+        component.setText(ui_dynamic_text(component.getText(), language))
+    if isinstance(component, JComponent):
+        tooltip = component.getToolTipText()
+        if tooltip:
+            component.setToolTipText(ui_dynamic_text(tooltip, language))
+        border = component.getBorder()
+        if isinstance(border, TitledBorder):
+            border.setTitle(ui_exact_text(border.getTitle(), language))
+    if hasattr(component, "getComponents"):
+        for child in component.getComponents():
+            localize_component_tree(child, language)
+
+
+def apply_ui_language(self):
+    language = tuner_language(self)
+    self.setTitle(u"CoreXY Repeatability Compensation" if language == "en" else
+                  u"CoreXY 重复定位补偿")
+    titles = ([u"Current Status", u"Detection & Diagnostics",
+               u"Residual Distribution", u"CoreXY Diagram",
+               u"Candidate & Apply", u"Instructions", u"External CoreXY"]
+              if language == "en" else
+              [u"当前状态", u"检测与诊断", u"残差分布", u"CoreXY示意",
+               u"候选与应用", u"使用说明", u"CoreXY外置补偿"])
+    for index in range(min(self.tabs.getTabCount(), len(titles))):
+        self.tabs.setTitleAt(index, titles[index])
+    localize_component_tree(self.getContentPane(), language)
+    if hasattr(self, "ui_language_label"):
+        self.ui_language_label.setText(
+            u"Language" if language == "en" else u"界面语言")
+    if (hasattr(self, "residual_interpretation_dialog") and
+            self.residual_interpretation_dialog is not None and
+            self.residual_interpretation_dialog.isDisplayable()):
+        self.residual_interpretation_dialog.setTitle(
+            u"Residual Interpretation" if language == "en" else
+            u"残差分布解读")
+    usage_view = self.explanation_panel.getViewport().getView()
+    usage_view.setText(external_fixed_usage_text(language))
+    usage_view.setCaretPosition(0)
+    if language == "en":
+        self.status_area.setText(ui_dynamic_text(self.status_area.getText(), language))
+        self.residual_note.setText(ui_dynamic_text(
+            self.residual_note.getText(), language))
+        self.residual_interpretation_area.setText(ui_dynamic_text(
+            self.residual_interpretation_area.getText(), language))
+        self.scatter_status_label.setText(ui_dynamic_text(
+            self.scatter_status_label.getText(), language))
+    self.revalidate()
+    self.repaint()
+
+
+def change_ui_language(self):
+    if getattr(self, "ui_language_updating", False):
+        return
+    self.ui_language = ("en" if unicode(
+        self.ui_language_combo.getSelectedItem()) == u"English" else "zh_CN")
+    write_ui_language(self.ui_language)
+    self.refresh_status()
+    self.refresh_external_fixed_artifacts()
+    apply_ui_language(self)
+
+
+def write_backend_properties(props, path, comment):
+    stream = FileOutputStream(path)
+    try:
+        props.store(stream, comment)
+    finally:
+        stream.close()
+
+
+def backend_sha256(path):
+    digest = MessageDigest.getInstance("SHA-256")
+    values = digest.digest(Files.readAllBytes(path.toPath()))
+    return "".join(["{0:02x}".format((value + 256) % 256)
+                    for value in values])
+
+
+def same_backend_path(left, right):
+    if not left or not right:
+        return False
+    return (File(unicode(left)).getCanonicalPath().lower() ==
+            File(unicode(right)).getCanonicalPath().lower())
+
+
+def save_fixed_calibration_profile(self):
+    distances = parse_numbers(self.diag_distance_field.getText(), u"距离", 3)
+    speeds = parse_numbers(self.diag_speed_field.getText(), u"速度", 2)
+    repeats = int(self.diag_repeats_spinner.getValue())
+    target = float(self.diag_target_field.getText().strip())
+    trusted_floor = float(self.diag_floor_field.getText().strip())
+    if max(speeds) > 1.0 or min(speeds) <= 0.0:
+        raise ValueError(u"速度系数必须大于0且不超过1.0。")
+    if min(distances) <= 0.0:
+        raise ValueError(u"检测距离必须大于0。")
+    if target <= 0.0 or trusted_floor <= 0.0:
+        raise ValueError(u"目标精度和最小可信位移必须大于0。")
+    profile = Properties()
+    profile.setProperty("schema.version", "1")
+    profile.setProperty("calibration.distances.mm", ",".join([
+        "{0:.6f}".format(value) for value in distances]))
+    profile.setProperty("calibration.speeds", ",".join([
+        "{0:.6f}".format(value) for value in speeds]))
+    profile.setProperty("calibration.repeats", str(repeats))
+    profile.setProperty("target.radial-tolerance.mm", "{0:.9f}".format(target))
+    profile.setProperty("target.minimum-trusted-displacement.mm",
+                        "{0:.9f}".format(trusted_floor))
+    path = agent_artifact("sessions/pending-fixed-calibration.properties")
+    parent = path.getParentFile()
+    if not parent.isDirectory() and not parent.mkdirs():
+        raise IOError(u"无法创建Session目录。")
+    write_backend_properties(profile, path, "Pending fixed-vector calibration profile")
+    return profile
+
+
+def ensure_native_backlash_disabled(self):
+    formal = read_agent_properties(agent_artifact("config/corexy.properties"))
+    x_axis = machine.getAxis(formal.getProperty("axis.x.id", ""))
+    y_axis = machine.getAxis(formal.getProperty("axis.y.id", ""))
+    if x_axis is None or y_axis is None:
+        raise RuntimeError(u"无法定位正式配置中的X/Y控制器轴。")
+    already_disabled = (
+        str(x_axis.getBacklashCompensationMethod()) == "None" and
+        str(y_axis.getBacklashCompensationMethod()) == "None")
+    if already_disabled:
+        return False
+    x_axis.setBacklashCompensationMethod(
+        BacklashCompensationMethod.valueOf("None"))
+    y_axis.setBacklashCompensationMethod(
+        BacklashCompensationMethod.valueOf("None"))
+    config.save()
+    return True
+
+
+def current_fixed_candidate():
+    path = agent_artifact("candidates/latest-fresh-fixed-vector.properties")
+    session_path = agent_artifact("sessions/current-session.properties")
+    if not path.isFile() or not session_path.isFile():
+        return None, None
+    candidate = read_agent_properties(path)
+    session = read_agent_properties(session_path)
+    formal_path = agent_artifact("config/corexy.properties")
+    formal = read_agent_properties(formal_path)
+    archived_by_production = (
+        formal.getProperty("model.kind", "") == "FRESH_FIXED_VECTOR_V1" and
+        formal.getProperty("production.persistence", "") == "persistent" and
+        formal_path.isFile() and path.lastModified() <= formal_path.lastModified())
+    valid = (
+        candidate.getProperty("source", "") ==
+        "external-fresh-fixed-vector-analysis" and
+        candidate.getProperty("state", "") == "fitted-not-applied" and
+        candidate.getProperty("session.id", "") ==
+        session.getProperty("session.id", "") and not archived_by_production)
+    return (path, candidate) if valid else (None, None)
+
+
+def latest_fixed_candidate():
+    path = agent_artifact("candidates/latest-fresh-fixed-vector.properties")
+    return (path, read_agent_properties(path)) if path.isFile() else (None, None)
+
+
+def adjustable_fixed_candidate():
+    path, candidate = current_fixed_candidate()
+    if candidate is not None:
+        return path, candidate
+    formal = read_agent_properties(agent_artifact("config/corexy.properties"))
+    source_path = formal.getProperty("production.source-candidate", "")
+    if source_path:
+        path = File(source_path)
+        candidate = read_agent_properties(path)
+        if (path.isFile() and candidate.getProperty("source", "") ==
+                "external-fresh-fixed-vector-analysis" and
+                candidate.getProperty("state", "") == "fitted-not-applied"):
+            return path, candidate
+    path, candidate = latest_fixed_candidate()
+    if (candidate is not None and
+            formal.getProperty("model.kind", "") == "FRESH_FIXED_VECTOR_V1" and
+            formal.getProperty("production.persistence", "") == "persistent" and
+            candidate.getProperty("source", "") ==
+            "external-fresh-fixed-vector-analysis" and
+            candidate.getProperty("state", "") == "fitted-not-applied"):
+        return path, candidate
+    return None, None
+
+
+def selected_fixed_gain_percent(self):
+    value = unicode(self.fixed_gain_combo.getSelectedItem()).replace("%", "")
+    return int(str(value).strip())
+
+
+def set_candidate_runtime_notice(self, text, color):
+    if not hasattr(self, "candidate_runtime_status_label"):
+        return
+    self.candidate_runtime_status_label.setText(text)
+    self.candidate_runtime_status_label.setForeground(color)
+    self.candidate_runtime_status_label.setFont(
+        Font("Dialog", Font.BOLD, 13))
+
+
+def populate_agent_fixed_candidate(self, path, candidate, gain_percent):
+    self.agent_populating_candidate = True
+    try:
+        gain = gain_percent / 100.0
+        self.cross_source_combo.setSelectedIndex(self.axis_index_by_id(
+            candidate.getProperty("corexy_x_axis_id", ""), Axis.Type.X))
+        self.cross_target_combo.setSelectedIndex(self.axis_index_by_id(
+            candidate.getProperty("corexy_y_axis_id", ""), Axis.Type.Y))
+        threshold_a = (500.0 if candidate.getProperty(
+            "fit.a.disabled", "false") == "true" else agent_float(
+                candidate, "corexy_min_move_a_mm", 0.0))
+        threshold_b = (500.0 if candidate.getProperty(
+            "fit.b.disabled", "false") == "true" else agent_float(
+                candidate, "corexy_min_move_b_mm", 0.0))
+        self.cross_threshold_field.setText("{0:.3f}".format(threshold_a))
+        self.cross_threshold_b_field.setText("{0:.3f}".format(threshold_b))
+        for field, key in [
+                (self.cross_a_x_field, "corexy_a_positive_x_mm"),
+                (self.cross_positive_field, "corexy_a_positive_y_mm"),
+                (self.cross_b_x_field, "corexy_b_positive_x_mm"),
+                (self.cross_b_y_field, "corexy_b_positive_y_mm")]:
+            field.setText("{0:.3f}".format(
+                gain * agent_float(candidate, key, 0.0)))
+        self.cross_speed_field.setText("0.250000000")
+        self.cross_a_enabled_checkbox.setSelected(
+            candidate.getProperty("fit.a.disabled", "false") != "true")
+        self.cross_b_enabled_checkbox.setSelected(
+            candidate.getProperty("fit.b.disabled", "false") != "true")
+        self.agent_fixed_candidate_path = path
+        self.agent_fixed_candidate_revision = path.lastModified()
+        self.agent_fixed_gain = gain
+        self.loaded_candidate_signature = self.cross_signature()
+        self.candidate_validation_status = "not_run"
+        self.cross_enabled.setSelected(False)
+        status_text = u"候选状态：同期推荐值已自动填入，补偿比例{}%；允许人工修改".format(
+            gain_percent)
+        self.candidate_status_label.setText(status_text)
+        self.candidate_page_status_label.setText(status_text)
+        set_candidate_runtime_notice(
+            self,
+            u"已选择{}%补偿比例，尚未应用。".format(gain_percent),
+            Color(185, 35, 35))
+        self.diagram.set_motion(self.diagram.motion)
+        self.append_log(status_text)
+    finally:
+        self.agent_populating_candidate = False
+
+
+def populate_agent_fixed_trial(self, path, candidate, active_path, active):
+    gain_percent = int(round(agent_float(active, "model.gain", 0.25) * 100.0))
+    gain_percent = min([25, 50, 75, 100], key=lambda value: abs(value - gain_percent))
+    populate_agent_fixed_candidate(self, path, candidate, gain_percent)
+    self.agent_populating_candidate = True
+    try:
+        self.fixed_gain_combo.setSelectedItem("{0}%".format(gain_percent))
+        for field, key in [
+                (self.cross_threshold_field, "threshold.a.mm"),
+                (self.cross_threshold_b_field, "threshold.b.mm"),
+                (self.cross_a_x_field, "offset.a.positive.x.mm"),
+                (self.cross_positive_field, "offset.a.positive.y.mm"),
+                (self.cross_b_x_field, "offset.b.positive.x.mm"),
+                (self.cross_b_y_field, "offset.b.positive.y.mm")]:
+            field.setText(active.getProperty(key, field.getText()))
+        self.cross_speed_field.setText(active.getProperty(
+            "speed-factor", "0.250000000"))
+        a_magnitude = math.hypot(
+            agent_float(active, "offset.a.positive.x.mm", 0.0),
+            agent_float(active, "offset.a.positive.y.mm", 0.0))
+        b_magnitude = math.hypot(
+            agent_float(active, "offset.b.positive.x.mm", 0.0),
+            agent_float(active, "offset.b.positive.y.mm", 0.0))
+        self.cross_a_enabled_checkbox.setSelected(a_magnitude > 0.000000001)
+        self.cross_b_enabled_checkbox.setSelected(b_magnitude > 0.000000001)
+        self.loaded_candidate_signature = self.cross_signature()
+        self.agent_fixed_trial_revision = active_path.lastModified()
+        status_text = (u"候选状态：当前进程已加载固定A/B临时补偿，"
+                       u"验证比例{}%；显示值与实际运行配置一致。".format(
+                           gain_percent))
+        self.candidate_status_label.setText(status_text)
+        self.candidate_page_status_label.setText(status_text)
+        set_candidate_runtime_notice(
+            self,
+            u"已选择{}%验证比例。重新Home后，请进行手动空载验证或自动视觉验证。".format(
+                gain_percent),
+            Color(185, 35, 35))
+    finally:
+        self.agent_populating_candidate = False
+
+
+def populate_agent_fixed_production(self, path, production):
+    self.agent_populating_candidate = True
+    try:
+        gain_percent = int(round(
+            agent_float(production, "model.gain", 1.0) * 100.0))
+        gain_percent = min([25, 50, 75, 100],
+                           key=lambda value: abs(value - gain_percent))
+        self.fixed_gain_combo.setSelectedItem("{0}%".format(gain_percent))
+        self.cross_source_combo.setSelectedIndex(self.axis_index_by_id(
+            production.getProperty("axis.x.id", ""), Axis.Type.X))
+        self.cross_target_combo.setSelectedIndex(self.axis_index_by_id(
+            production.getProperty("axis.y.id", ""), Axis.Type.Y))
+        for field, key in [
+                (self.cross_threshold_field, "threshold.a.mm"),
+                (self.cross_threshold_b_field, "threshold.b.mm"),
+                (self.cross_a_x_field, "offset.a.positive.x.mm"),
+                (self.cross_positive_field, "offset.a.positive.y.mm"),
+                (self.cross_b_x_field, "offset.b.positive.x.mm"),
+                (self.cross_b_y_field, "offset.b.positive.y.mm")]:
+            field.setText("{0:.3f}".format(agent_float(
+                production, key, float(field.getText().strip()))))
+        self.cross_speed_field.setText(production.getProperty(
+            "speed-factor", "0.250000000"))
+        a_magnitude = math.hypot(
+            agent_float(production, "offset.a.positive.x.mm", 0.0),
+            agent_float(production, "offset.a.positive.y.mm", 0.0))
+        b_magnitude = math.hypot(
+            agent_float(production, "offset.b.positive.x.mm", 0.0),
+            agent_float(production, "offset.b.positive.y.mm", 0.0))
+        self.cross_a_enabled_checkbox.setSelected(a_magnitude > 0.000000001)
+        self.cross_b_enabled_checkbox.setSelected(b_magnitude > 0.000000001)
+        self.cross_enabled.setSelected(True)
+        adjustment_path, adjustment_candidate = adjustable_fixed_candidate()
+        self.agent_fixed_candidate_path = adjustment_path
+        self.agent_fixed_gain = gain_percent / 100.0
+        self.loaded_candidate_signature = self.cross_signature()
+        self.agent_fixed_production_revision = path.lastModified()
+        status_text = (
+            u"当前正式运行配置：A阈值={:.3f} mm，B阈值={:.3f} mm；补偿比例{}%。".format(
+                agent_float(production, "threshold.a.mm", 0.0),
+                agent_float(production, "threshold.b.mm", 0.0),
+                gain_percent))
+        self.candidate_status_label.setText(status_text)
+        self.candidate_page_status_label.setText(status_text)
+        set_candidate_runtime_notice(
+            self,
+            u"正式CoreXY补偿生效中，补偿比例{}%，可随时进行健康检查或空载往返检查。".format(
+                gain_percent),
+            Color(20, 125, 60))
+    finally:
+        self.agent_populating_candidate = False
+
+
+def load_agent_fixed_candidate(self):
+    path, candidate = adjustable_fixed_candidate()
+    if candidate is None:
+        JOptionPane.showMessageDialog(
+            self,
+            u"没有找到当前同期会话的固定A+/B+候选。\n"
+            u"请在‘检测与诊断’页完成自动视觉标定。",
+            u"没有同期固定向量候选", JOptionPane.WARNING_MESSAGE)
+        return
+    gain_text = (unicode(self.fixed_gain_combo.getSelectedItem()).replace("%", "")
+                 if hasattr(self, "fixed_gain_combo") else "100")
+    try:
+        gain_percent = int(str(gain_text).strip())
+    except Exception:
+        gain_percent = -1
+    if gain_percent not in [25, 50, 75, 100]:
+        JOptionPane.showMessageDialog(
+            self, u"增益只能是25、50、75或100。",
+            u"固定向量增益无效", JOptionPane.ERROR_MESSAGE)
+        return
+    populate_agent_fixed_candidate(self, path, candidate, gain_percent)
+
+
+def reload_agent_fixed_gain(self):
+    if getattr(self, "agent_populating_candidate", False):
+        return
+    path, candidate = adjustable_fixed_candidate()
+    if candidate is not None:
+        gain_percent = selected_fixed_gain_percent(self)
+        populate_agent_fixed_candidate(self, path, candidate, gain_percent)
+
+
+def refresh_agent_fixed_candidate_status(self):
+    path, candidate = current_fixed_candidate()
+    if candidate is None:
+        archived_path, archived = latest_fixed_candidate()
+        formal = read_agent_properties(agent_artifact("config/corexy.properties"))
+        if (archived is not None and formal.getProperty(
+                "model.kind", "") == "FRESH_FIXED_VECTOR_V1" and
+                formal.getProperty("production.persistence", "") == "persistent"):
+            text = u"候选状态：最近候选已归档并正式应用；新标定将创建独立Session"
+        else:
+            text = u"候选状态：尚未生成当前同期固定A+/B+候选"
+    else:
+        a_state = (u"关闭" if candidate.getProperty(
+            "fit.a.disabled", "false") == "true" else u"启用")
+        b_state = (u"关闭" if candidate.getProperty(
+            "fit.b.disabled", "false") == "true" else u"启用")
+        text = u"候选状态：同期拟合完成；A={}，B={}；尚未载入".format(
+            a_state, b_state)
+    self.candidate_status_label.setText(text)
+    self.candidate_page_status_label.setText(text)
+
+
+def apply_agent_fixed_trial(self):
+    try:
+        values = self.validated_cross_values()
+        candidate_path = getattr(self, "agent_fixed_candidate_path", None)
+        candidate_source_path, candidate_source = adjustable_fixed_candidate()
+        if candidate_path is None or not candidate_path.isFile():
+            candidate_path = candidate_source_path
+        if candidate_path is None or not candidate_path.isFile():
+            raise RuntimeError(u"请先载入当前同期固定A+/B+候选。")
+        gain = selected_fixed_gain_percent(self) / 100.0
+        if machine.isEnabled() or machine.isHomed():
+            raise RuntimeError(u"加载临时补偿前必须禁用机器并处于未Home状态。")
+        status = parse_agent_status(current_agent_status())
+        if status.get("installed") != "true" or status.get("configured") != "true":
+            raise RuntimeError(u"外置CoreXY Agent尚未正确安装。")
+        formal_path = agent_artifact("config/corexy.properties")
+        policy_path = agent_artifact("config/calibration-policy.properties")
+        if not formal_path.isFile() or not policy_path.isFile():
+            raise RuntimeError(u"Agent正式配置或标定策略文件缺失。")
+        formal = read_agent_properties(formal_path)
+        policy = read_agent_properties(policy_path)
+        x_axis, y_axis, threshold_a, threshold_b, a_x, a_y, b_x, b_y, speed = values
+        safety_maximum = float(policy.getProperty(
+            "target.absolute-maximum.mm", "0.075"))
+        applied_maximum = max(
+            math.hypot(a_x, a_y), math.hypot(b_x, b_y),
+            math.hypot(a_x + b_x, a_y + b_y))
+        if applied_maximum > safety_maximum + 0.000000001:
+            raise ValueError(
+                u"当前A/B合成修正{:.6f} mm超过安全上限{:.6f} mm。".format(
+                    applied_maximum, safety_maximum))
+        unchanged = self.cross_signature(values) == self.loaded_candidate_signature
+        warning = (u"字段与同期候选一致。" if unchanged else
+                   u"字段已被手工修改，原候选预测不再适用。")
+        answer = JOptionPane.showConfirmDialog(
+            self,
+            warning + u"\n\n将通过外置Agent加载进程级固定向量临时补偿。\n"
+            u"增益记录：{:.0f}%\n最大合成修正：{:.6f} mm\n"
+            u"不会修改OpenPnP源码、machine.xml或正式曲面配置。\n\n是否继续？".format(
+                gain * 100.0, applied_maximum),
+            u"加载外置固定向量试用", JOptionPane.YES_NO_OPTION,
+            JOptionPane.WARNING_MESSAGE)
+        if answer != JOptionPane.YES_OPTION:
+            return False
+
+        trial = Properties()
+        trial.setProperty("schema.version", "1")
+        trial.setProperty("mode", "state-offset")
+        trial.setProperty("enabled", "true")
+        trial.setProperty("dry-run", "false")
+        for key in ["fail-closed", "require-homed", "openpnp.version-policy",
+                    "openpnp.implementation-version",
+                    "safety.soft-limit-margin.mm"]:
+            trial.setProperty(key, formal.getProperty(key))
+        trial.setProperty("axis.x.id", x_axis.getId())
+        trial.setProperty("axis.y.id", y_axis.getId())
+        for key, value in [
+                ("threshold.a.mm", threshold_a),
+                ("threshold.b.mm", threshold_b),
+                ("offset.a.positive.x.mm", a_x),
+                ("offset.a.positive.y.mm", a_y),
+                ("offset.b.positive.x.mm", b_x),
+                ("offset.b.positive.y.mm", b_y),
+                ("speed-factor", speed),
+                ("safety.max-offset.mm", safety_maximum),
+                ("model.gain", gain)]:
+            trial.setProperty(key, "{0:.9f}".format(value))
+        for key in ["offset.a.negative.x.mm", "offset.a.negative.y.mm",
+                    "offset.b.negative.x.mm", "offset.b.negative.y.mm"]:
+            trial.setProperty(key, "0.000000000")
+        trial.setProperty("model.kind", "FRESH_FIXED_VECTOR_V1")
+        trial.setProperty("trial.kind", "legacy-fixed-vector-physical")
+        trial.setProperty("trial.persistence", "process-only")
+        trial.setProperty("trial.source-candidate",
+                          candidate_path.getCanonicalPath())
+        candidate = read_agent_properties(candidate_path)
+        trial.setProperty("trial.source-validation", candidate.getProperty(
+            "source-uncompensated-baseline"))
+        tolerance = candidate.getProperty(
+            "target.radial-tolerance.mm", policy.getProperty(
+                "target.radial-tolerance.mm", "0.050000000"))
+        effective = candidate.getProperty(
+            "diagnostic-floor.mm", policy.getProperty(
+                "target.effective-minimum.mm", "0.021883000"))
+        trial.setProperty("target.radial-tolerance.mm", tolerance)
+        trial.setProperty("target.minimum-measurable.mm", effective)
+        trial.setProperty("target.maximum-residual-guard.mm",
+                          "{0:.9f}".format(float(tolerance) + float(effective)))
+
+        trials_dir = agent_artifact("trials")
+        if not trials_dir.isDirectory() and not trials_dir.mkdirs():
+            raise IOError(u"无法创建Agent临时配置目录。")
+        stamp = SimpleDateFormat("yyyyMMdd-HHmmss").format(Date())
+        stamped = File(trials_dir,
+                       "legacy-fixed-physical-fresh-" + stamp + ".properties")
+        latest = File(trials_dir, "latest-legacy-fixed-physical.properties")
+        write_backend_properties(trial, stamped,
+                                 "Transient fresh fixed-vector trial")
+        write_backend_properties(trial, latest,
+                                 "Transient fresh fixed-vector trial")
+        for relative in [
+                "diagnostics/latest-legacy-fixed-physical-validation.properties",
+                "diagnostics/latest-legacy-fixed-physical-review.properties",
+                "diagnostics/latest-profile-comparison.properties"]:
+            stale = agent_artifact(relative)
+            if stale.isFile() and not stale.delete():
+                raise IOError(u"无法清除旧验收结果：" + stale.getAbsolutePath())
+        jar = agent_artifact("lib/openpnp-corexy-agent.jar")
+        if jar.getCanonicalPath() not in sys.path:
+            sys.path.append(jar.getCanonicalPath())
+        from org.openpnp.corexy.agent import CoreXYScriptBootstrap
+        result = CoreXYScriptBootstrap.loadTransient(stamped.getCanonicalPath())
+        self.cross_enabled.setSelected(True)
+        status_text = (
+            u"候选状态：已加载{}%固定A/B临时补偿；"
+            u"需要重新Home后验证。".format(int(round(gain * 100.0))))
+        self.candidate_status_label.setText(status_text)
+        self.candidate_page_status_label.setText(status_text)
+        set_candidate_runtime_notice(
+            self,
+            u"已选择{}%验证比例。重新Home后，请进行手动空载验证或自动视觉验证。".format(
+                int(round(gain * 100.0))),
+            Color(185, 35, 35))
+        self.append_log(status_text + u"；" + unicode(result))
+        select_candidate_application_tab(self)
+        self.refresh_status()
+        return True
+    except Exception as error:
+        JOptionPane.showMessageDialog(
+            self, error_text(error), u"无法加载外置固定向量试用",
+            JOptionPane.ERROR_MESSAGE)
+        return False
+
+
+def run_fixed_calibration_stage(self):
+    try:
+        status = parse_agent_status(current_agent_status())
+        config_path = status.get("config", "")
+        active = read_agent_properties(File(config_path))
+        home_baseline = (
+            status.get("enabled") == "false" and
+            status.get("dry-run") == "false" and
+            active.getProperty("trial.kind", "") ==
+            "home-reference-baseline")
+        session = read_agent_properties(agent_artifact(
+            "sessions/current-session.properties"))
+        session_dir = session.getProperty("session.directory", "")
+        baseline = (File(session_dir, "uncompensated-primary.properties")
+                    if session_dir else None)
+        candidate_path, candidate = current_fixed_candidate()
+        if candidate is not None:
+            select_candidate_application_tab(self)
+            self.refresh_status()
+            return
+        formal_path = agent_artifact("config/corexy.properties")
+        session_matches_formal = (
+            session.getProperty("formal.path", "").lower() ==
+            formal_path.getCanonicalPath().lower() and
+            session.getProperty("formal.sha256", "").lower() ==
+            backend_sha256(formal_path).lower())
+        pending_session = (
+            session.getProperty("session.state", "") ==
+            "collecting-formal-primary" and
+            session_matches_formal and
+            baseline is not None and not baseline.isFile())
+        if home_baseline:
+            if baseline is None or not baseline.isFile():
+                if not machine.isEnabled() or not machine.isHomed():
+                    raise RuntimeError(
+                        u"未补偿模式已加载。请启用机器并正常Home，然后再次点击本按钮。")
+                self.run_agent_workflow_script(
+                    "CoreXY_Agent_Fresh_Primary_Scan.py")
+            else:
+                if machine.isEnabled() or machine.isHomed():
+                    raise RuntimeError(
+                        u"同期基线已完成。请禁用机器并进入未Home状态，然后再次点击生成候选。")
+                self.run_agent_workflow_script(
+                    "CoreXY_Agent_Fresh_Fixed_Vector_Analyze.py")
+                select_candidate_application_tab(self)
+            return
+        if (status.get("enabled") in ["true", "false"] and
+                status.get("dry-run") == "false" and
+                File(config_path).getCanonicalPath().lower() ==
+                formal_path.getCanonicalPath().lower()):
+            if pending_session:
+                if machine.isEnabled() or machine.isHomed():
+                    raise RuntimeError(
+                        u"本次同期Session已创建，但未补偿模式尚未加载。\n"
+                        u"请先禁用机器并使其处于未Home状态，再点击本按钮；"
+                        u"这次不会重建Session。")
+                self.run_agent_workflow_script(
+                    "CoreXY_Agent_Load_Home_B_Baseline.py")
+                return
+            if machine.isEnabled() or machine.isHomed():
+                raise RuntimeError(u"开始新标定前必须禁用机器并处于未Home状态。")
+            changed = ensure_native_backlash_disabled(self)
+            self.append_log(
+                u"OpenPnP原生X/Y backlash已设置为None。" if changed else
+                u"OpenPnP原生X/Y backlash已经是None，无需修改。")
+            save_fixed_calibration_profile(self)
+            self.run_agent_workflow_script(
+                "CoreXY_Agent_Traditional_Fresh_Baseline_Start.py")
+            return
+        raise RuntimeError(u"当前存在其他Agent临时配置，请先恢复正式配置。")
+    except Exception as error:
+        JOptionPane.showMessageDialog(
+            self, error_text(error), u"固定A+/B+自动标定",
+            JOptionPane.WARNING_MESSAGE)
+
+
+def restore_agent_formal(self):
+    self.run_agent_workflow_script("CoreXY_Agent_Restore_Formal_Config.py")
+
+
+def copy_backend_properties(source):
+    target = Properties()
+    for key in list(source.stringPropertyNames()):
+        target.setProperty(str(key), source.getProperty(str(key)))
+    return target
+
+
+def replace_agent_formal(props, comment):
+    formal = agent_artifact("config/corexy.properties")
+    backups = agent_artifact("backups")
+    if not backups.isDirectory() and not backups.mkdirs():
+        raise IOError(u"无法创建配置审计目录。")
+    stamp = SimpleDateFormat("yyyyMMdd-HHmmss").format(Date())
+    audit = File(backups, "corexy-before-ui-change-" + stamp + ".properties")
+    temp = File(formal.getParentFile(),
+                "corexy.properties.ui-" + stamp + ".tmp")
+    if formal.isFile():
+        Files.copy(formal.toPath(), audit.toPath(),
+                   StandardCopyOption.REPLACE_EXISTING)
+    write_backend_properties(props, temp, comment)
+    try:
+        try:
+            Files.move(temp.toPath(), formal.toPath(),
+                       StandardCopyOption.ATOMIC_MOVE,
+                       StandardCopyOption.REPLACE_EXISTING)
+        except AtomicMoveNotSupportedException:
+            Files.move(temp.toPath(), formal.toPath(),
+                       StandardCopyOption.REPLACE_EXISTING)
+        jar = agent_artifact("lib/openpnp-corexy-agent.jar")
+        if jar.getCanonicalPath() not in sys.path:
+            sys.path.append(jar.getCanonicalPath())
+        from org.openpnp.corexy.agent import CoreXYScriptBootstrap
+        return unicode(CoreXYScriptBootstrap.loadImmediate(
+            formal.getCanonicalPath()))
+    except Exception:
+        if audit.isFile():
+            Files.copy(audit.toPath(), formal.toPath(),
+                       StandardCopyOption.REPLACE_EXISTING)
+            try:
+                CoreXYScriptBootstrap.loadImmediate(formal.getCanonicalPath())
+            except Exception:
+                pass
+        raise
+    finally:
+        if temp.isFile():
+            temp.delete()
+
+
+def apply_agent_formal_values(self):
+    try:
+        candidate_path, candidate = adjustable_fixed_candidate()
+        if candidate is None or candidate_path is None or not candidate_path.isFile():
+            raise RuntimeError(u"请先完成当前同期标定并生成固定A/B候选。")
+        baseline_path = File(candidate.getProperty(
+            "source-uncompensated-baseline", ""))
+        if not baseline_path.isFile():
+            raise IOError(u"候选对应的未补偿基线不存在：" +
+                          baseline_path.getAbsolutePath())
+        expected_baseline_hash = candidate.getProperty(
+            "source-uncompensated-baseline.sha256", "")
+        if (expected_baseline_hash and expected_baseline_hash.lower() !=
+                backend_sha256(baseline_path).lower()):
+            raise RuntimeError(u"候选对应的未补偿基线校验失败。")
+        values = self.validated_cross_values()
+        (x_axis, y_axis, threshold_a, threshold_b,
+         a_x, a_y, b_x, b_y, speed) = values
+        threshold_a, threshold_b = round(threshold_a, 3), round(threshold_b, 3)
+        a_x, a_y = round(a_x, 3), round(a_y, 3)
+        b_x, b_y = round(b_x, 3), round(b_y, 3)
+        policy = read_agent_properties(agent_artifact(
+            "config/calibration-policy.properties"))
+        safety_maximum = agent_float(
+            policy, "target.absolute-maximum.mm", 0.200)
+        applied_maximum = max(
+            math.hypot(a_x, a_y), math.hypot(b_x, b_y),
+            math.hypot(a_x + b_x, a_y + b_y))
+        if applied_maximum > safety_maximum + 0.000000001:
+            raise ValueError(u"最大合成修正{:.6f} mm超过安全上限{:.6f} mm。".format(
+                applied_maximum, safety_maximum))
+        gain_text = unicode(self.fixed_gain_combo.getSelectedItem()).replace(
+            "%", "")
+        gain = float(str(gain_text).strip()) / 100.0
+        language = tuner_language(self)
+        confirm_message = ((
+            u"Write the displayed A/B values directly to the external Agent configuration.\n"
+            u"A: threshold {:.3f} mm, vector ({:+.3f}, {:+.3f}) mm\n"
+            u"B: threshold {:.3f} mm, vector ({:+.3f}, {:+.3f}) mm\n"
+            u"Maximum combined correction: {:.6f} mm; percentage: {:.0f}%\n\n"
+            u"Apply waits for standstill, automatically Disables the machine and clears A/B state "
+            u"without cancellation motion.\nEnsure no production job is running. Enable and Home again after applying.\nContinue?"
+        ) if language == "en" else (
+            u"将把页面当前A/B数值直接写入外置Agent配置。\n"
+            u"A：阈值{:.3f} mm，向量({:+.3f}, {:+.3f}) mm\n"
+            u"B：阈值{:.3f} mm，向量({:+.3f}, {:+.3f}) mm\n"
+            u"最大合成修正：{:.6f} mm；记录增益：{:.0f}%\n\n"
+            u"应用会等待当前运动静止，自动Disable机器并清空A/B状态，不执行抵消运动。\n"
+            u"请确认当前没有正在执行的生产任务；应用后必须重新Enable和Home。\n"
+            u"是否继续？"
+        )).format(threshold_a, a_x, a_y, threshold_b, b_x, b_y,
+                  applied_maximum, gain * 100.0)
+        answer = JOptionPane.showConfirmDialog(
+            self, confirm_message,
+            u"Apply External A/B Compensation" if language == "en" else
+            u"应用外置A/B补偿", JOptionPane.YES_NO_OPTION,
+            JOptionPane.WARNING_MESSAGE)
+        if answer != JOptionPane.YES_OPTION:
+            return False
+        if machine.isEnabled():
+            machine.getDefaultHead().getDefaultCamera().waitForCompletion(
+                CompletionType.WaitForStillstand)
+        machine.setEnabled(False)
+        formal_path = agent_artifact("config/corexy.properties")
+        formal = copy_backend_properties(read_agent_properties(formal_path))
+        stamp = SimpleDateFormat("yyyyMMdd-HHmmss").format(Date())
+        for key, value in [
+                ("axis.x.id", x_axis.getId()),
+                ("axis.y.id", y_axis.getId()),
+                ("threshold.a.mm", "{:.3f}".format(threshold_a)),
+                ("threshold.b.mm", "{:.3f}".format(threshold_b)),
+                ("offset.a.positive.x.mm", "{:.3f}".format(a_x)),
+                ("offset.a.positive.y.mm", "{:.3f}".format(a_y)),
+                ("offset.b.positive.x.mm", "{:.3f}".format(b_x)),
+                ("offset.b.positive.y.mm", "{:.3f}".format(b_y)),
+                ("speed-factor", "{:.3f}".format(speed)),
+                ("model.gain", "{:.9f}".format(gain)),
+                ("safety.max-offset.mm", "{:.9f}".format(safety_maximum))]:
+            formal.setProperty(key, unicode(value))
+        for key in ["offset.a.negative.x.mm", "offset.a.negative.y.mm",
+                    "offset.b.negative.x.mm", "offset.b.negative.y.mm"]:
+            formal.setProperty(key, "0.000000000")
+        for key in list(formal.stringPropertyNames()):
+            if (str(key).startswith("trial.") or
+                    str(key) in ["production.source-review",
+                                 "production.source-physical-validation",
+                                 "production.source-trial",
+                                 "production.source-user-acceptance"]):
+                formal.remove(key)
+        formal.setProperty("schema.version", "1")
+        formal.setProperty("mode", "state-offset")
+        formal.setProperty("enabled", "true")
+        formal.setProperty("dry-run", "false")
+        formal.setProperty("model.kind", "FRESH_FIXED_VECTOR_V1")
+        formal.setProperty("production.persistence", "persistent")
+        formal.setProperty("production.promoted-at", stamp)
+        formal.setProperty("production.acceptance", "direct-candidate-ui")
+        formal.setProperty("production.source", "corexy-tuner-current-fields")
+        formal.setProperty("onboarding.state", "calibrated")
+        formal.setProperty("onboarding.calibrated-at", stamp)
+        formal.setProperty("production.source-candidate",
+                           candidate_path.getCanonicalPath())
+        formal.setProperty("production.source-candidate.sha256",
+                           backend_sha256(candidate_path))
+        formal.setProperty("production.source-baseline",
+                           baseline_path.getCanonicalPath())
+        formal.setProperty("production.source-baseline.sha256",
+                           backend_sha256(baseline_path))
+        formal.remove("production.disabled-at")
+        status_text = replace_agent_formal(
+            formal, "OpenPnP CoreXY fixed-vector production from Tuner")
+        self.append_log(u"当前A/B数值已应用：" + status_text)
+        self.refresh_status()
+        JOptionPane.showMessageDialog(
+            self, (u"CoreXY compensation is applied. The machine was automatically Disabled and A/B state cleared.\n"
+                   u"Percentage and A/B values are locked. Enable and Home again before a health or unloaded check."
+                   if language == "en" else
+                   u"CoreXY补偿已应用，机器已自动Disable，当前A/B状态已清零。\n"
+                   u"补偿比例和A/B参数已锁定。请重新Enable和Home后运行健康检查或空载往返检查。"),
+            u"Compensation Applied" if language == "en" else u"补偿应用完成",
+            JOptionPane.INFORMATION_MESSAGE)
+        return True
+    except Exception as error:
+        JOptionPane.showMessageDialog(
+            self, error_text(error), u"应用补偿失败",
+            JOptionPane.ERROR_MESSAGE)
+        return False
+
+
+def disable_agent_compensation(self):
+    try:
+        language = tuner_language(self)
+        formal_path = agent_artifact("config/corexy.properties")
+        formal = copy_backend_properties(read_agent_properties(formal_path))
+        if formal.getProperty("model.kind", "") != "FRESH_FIXED_VECTOR_V1":
+            raise RuntimeError(u"当前没有可停用的固定A/B正式配置。")
+        answer = JOptionPane.showConfirmDialog(
+            self,
+            (u"Stop external A/B compensation and reload the same-session recommendation.\n"
+             u"The Agent waits for standstill, automatically Disables the machine and clears A/B state without cancellation motion.\n"
+             u"Manual edits on the page will be replaced. Ensure no production job is running. Continue?"
+             if language == "en" else
+             u"将停用外置A/B补偿，并重新载入本次同期推荐值。\n"
+             u"Agent会等待当前运动静止，自动Disable机器并清空A/B状态，不执行抵消运动。\n"
+             u"页面中的人工修改将被推荐值替换。请确认当前没有正在执行的生产任务。是否继续？"),
+            u"Stop External A/B Compensation" if language == "en" else
+            u"停用外置A/B补偿", JOptionPane.YES_NO_OPTION,
+            JOptionPane.WARNING_MESSAGE)
+        if answer != JOptionPane.YES_OPTION:
+            return False
+        if machine.isEnabled():
+            machine.getDefaultHead().getDefaultCamera().waitForCompletion(
+                CompletionType.WaitForStillstand)
+        machine.setEnabled(False)
+        formal.setProperty("enabled", "false")
+        formal.setProperty("production.disabled-at",
+                           SimpleDateFormat("yyyyMMdd-HHmmss").format(Date()))
+        status_text = replace_agent_formal(
+            formal, "OpenPnP CoreXY fixed-vector production disabled from Tuner")
+        self.cross_enabled.setSelected(False)
+        self.append_log(u"外置A/B补偿已停用：" + status_text)
+        self.refresh_status()
+        candidate_path, candidate = adjustable_fixed_candidate()
+        if candidate is not None:
+            populate_agent_fixed_candidate(
+                self, candidate_path, candidate,
+                selected_fixed_gain_percent(self))
+        JOptionPane.showMessageDialog(
+            self, (u"External A/B compensation is stopped. The machine was automatically Disabled and A/B state cleared.\n"
+                   u"The same-session recommendation was reloaded at the selected percentage and controls are editable.\n"
+                   u"Enable and Home again before uncompensated motion or after applying again."
+                   if language == "en" else
+                   u"外置A/B补偿已停用，机器已自动Disable，当前A/B状态已清零。\n"
+                   u"已按当前补偿比例重新载入本次同期推荐值；参数恢复可编辑。\n"
+                   u"进行无补偿运动或再次应用后，都必须重新Enable和Home。"),
+            u"Compensation Stopped" if language == "en" else u"补偿已停用",
+            JOptionPane.INFORMATION_MESSAGE)
+        return True
+    except Exception as error:
+        JOptionPane.showMessageDialog(
+            self, error_text(error), u"停用补偿失败",
+            JOptionPane.ERROR_MESSAGE)
+        return False
+
+
+def set_agent_parameters_editable(self, editable):
+    for field in [self.cross_threshold_field, self.cross_threshold_b_field,
+                  self.cross_a_x_field, self.cross_positive_field,
+                  self.cross_b_x_field, self.cross_b_y_field]:
+        field.setEditable(editable)
+    self.cross_a_enabled_checkbox.setEnabled(editable)
+    self.cross_b_enabled_checkbox.setEnabled(editable)
+
+
+def agent_config_matches_ui(self, config):
+    try:
+        values = self.validated_cross_values()
+        expected = [
+            config.getProperty("axis.x.id", ""),
+            config.getProperty("axis.y.id", ""),
+            agent_float(config, "threshold.a.mm", 0.0),
+            agent_float(config, "threshold.b.mm", 0.0),
+            agent_float(config, "offset.a.positive.x.mm", 0.0),
+            agent_float(config, "offset.a.positive.y.mm", 0.0),
+            agent_float(config, "offset.b.positive.x.mm", 0.0),
+            agent_float(config, "offset.b.positive.y.mm", 0.0),
+            agent_float(config, "speed-factor", 0.25)]
+        actual = [values[0].getId(), values[1].getId()] + list(values[2:])
+        if actual[0] != expected[0] or actual[1] != expected[1]:
+            return False
+        return all([abs(float(actual[index]) - float(expected[index])) <=
+                    0.00000001 for index in range(2, len(expected))])
+    except Exception:
+        return False
+
+
+def refresh_candidate_runtime_notice(self, active, fixed_trial,
+                                     production_fixed, production_running,
+                                     machine_ready, adjustment_ready):
+    if production_running:
+        gain = int(round(agent_float(active, "model.gain", 1.0) * 100.0))
+        set_candidate_runtime_notice(
+            self, u"正式CoreXY补偿生效中，补偿比例{}%，可随时进行健康检查或空载往返检查。".format(
+                gain),
+            Color(20, 125, 60))
+        return
+    if adjustment_ready:
+        set_candidate_runtime_notice(
+            self,
+            u"已选择{}%补偿比例，尚未应用。".format(
+                selected_fixed_gain_percent(self)),
+            Color(185, 35, 35))
+    else:
+        set_candidate_runtime_notice(
+            self, u"尚未生成可用候选。", Color(100, 100, 100))
+
+
+def run_agent_fixed_smoke(self):
+    self.run_agent_workflow_script("CoreXY_Agent_Legacy_Fixed_Smoke.py")
+
+
+def run_agent_fixed_validation(self):
+    self.run_agent_workflow_script("CoreXY_Agent_Legacy_Fixed_Validate.py")
+
+
+def run_agent_fixed_review(self):
+    self.run_agent_workflow_script("CoreXY_Agent_Legacy_Fixed_Review.py")
+
+
+def continue_agent_fixed_validation(self):
+    action = self.external_validation_button.getClientProperty(
+        "corexy.validation.action")
+    if action == "review":
+        run_agent_fixed_review(self)
+    elif action == "health":
+        run_agent_production_health(self)
+    else:
+        run_agent_fixed_validation(self)
+
+
+def external_metrics(props, prefix):
+    return [agent_float(props, prefix + suffix, 0.0) for suffix in
+            [".rms.mm", ".p95.mm", ".maximum.mm"]]
+
+
+def latest_external_file(directory_relative, latest_name, stamped_prefix):
+    latest = agent_artifact(directory_relative + "/" + latest_name)
+    if latest.isFile():
+        return latest
+    directory = agent_artifact(directory_relative)
+    matches = ([path for path in directory.listFiles()
+                if path.isFile() and path.getName().startswith(stamped_prefix)
+                and path.getName().endswith(".properties")]
+               if directory.isDirectory() else [])
+    return (max(matches, key=lambda path: path.lastModified())
+            if matches else latest)
+
+
+def external_residual_graph(props, title_prefix, shared_maximum):
+    graph = SimpleGraph()
+    graph.setRelativePaddingLeft(0.08)
+    graph.setRelativePaddingRight(0.04)
+    scale = SimpleGraph.DataScale(u"方向状态残差 / Residual (mm)")
+    scale.setRelativePaddingTop(0.08)
+    scale.setRelativePaddingBottom(0.08)
+    scale.setColor(SimpleGraph.getDefaultGridColor())
+    scale.setLabelShown(True)
+    graph.addDataScale(scale)
+    colors = {
+        "a": [Color(190, 55, 45), Color(220, 125, 35), Color(145, 80, 35)],
+        "b": [Color(35, 105, 185), Color(35, 150, 125), Color(70, 95, 55)]
+    }
+    stage_count = int(props.getProperty("stage.count", "0"))
+    for stage_index in range(stage_count):
+        stage = "stage.{0}".format(stage_index + 1)
+        speed = agent_float(props, stage + ".speed-factor", 0.0)
+        for direction in ["a", "b"]:
+            row = SimpleGraph.DataRow(
+                u"{} {} {:.0f}%".format(
+                    title_prefix, direction.upper(), speed * 100.0),
+                colors[direction][stage_index % len(colors[direction])])
+            row.setLineShown(True)
+            row.setMarkerShown(True)
+            count = int(props.getProperty(
+                stage + "." + direction + ".distance.count", "0"))
+            for distance_index in range(count):
+                prefix = (stage + "." + direction + ".distance.{0}".format(
+                    distance_index + 1))
+                distance = agent_float(
+                    props, prefix + ".virtual-distance.mm", 0.0)
+                magnitude = agent_float(props, prefix + ".magnitude.mm", 0.0)
+                row.recordDataPoint(distance, magnitude)
+            if count:
+                scale.addDataRow(row)
+    bounds = SimpleGraph.DataRow(u"共同尺度 / Shared scale", Color(0, 0, 0, 0))
+    bounds.setLineShown(False)
+    bounds.setMarkerShown(False)
+    bounds.recordDataPoint(0.0, 0.0)
+    bounds.recordDataPoint(270.0, shared_maximum)
+    scale.addDataRow(bounds)
+    return graph
+
+
+def external_residual_maximum(*sources):
+    maximum = 0.0
+    for props in sources:
+        stage_count = int(props.getProperty("stage.count", "0"))
+        for stage_index in range(stage_count):
+            stage = "stage.{0}".format(stage_index + 1)
+            for direction in ["a", "b"]:
+                count = int(props.getProperty(
+                    stage + "." + direction + ".distance.count", "0"))
+                for distance_index in range(count):
+                    prefix = (stage + "." + direction + ".distance.{0}".format(
+                        distance_index + 1))
+                    maximum = max(maximum, agent_float(
+                        props, prefix + ".magnitude.mm", 0.0))
+    return max(0.010, math.ceil(maximum * 105.0) / 100.0)
+
+
+def external_return_points(props, center_x, center_y):
+    groups = {"A+": [], "A-": [], "B+": [], "B-": []}
+    stage_count = int(props.getProperty("stage.count", "0"))
+    for stage_index in range(stage_count):
+        stage = "stage.{0}".format(stage_index + 1)
+        for direction in ["a", "b"]:
+            distance_count = int(props.getProperty(
+                stage + "." + direction + ".distance.count", "0"))
+            for distance_index in range(distance_count):
+                prefix = (stage + "." + direction + ".distance.{0}".format(
+                    distance_index + 1))
+                sample_count = int(props.getProperty(
+                    prefix + ".sample.count", "0"))
+                for sample_index in range(sample_count):
+                    sample = prefix + ".sample.{0}".format(sample_index + 1)
+                    for polarity, suffix in [("+", "positive"),
+                                             ("-", "negative")]:
+                        x_value = props.getProperty(
+                            sample + "." + suffix + ".x.mm")
+                        y_value = props.getProperty(
+                            sample + "." + suffix + ".y.mm")
+                        if x_value is not None and y_value is not None:
+                            groups[direction.upper() + polarity].append((
+                                float(x_value) - center_x,
+                                float(y_value) - center_y))
+    return groups
+
+
+def add_external_reference_circle(scale, radius, label, color):
+    if radius <= 0.0:
+        return
+    top = SimpleGraph.DataRow(label + u" 上", color)
+    bottom = SimpleGraph.DataRow(label + u" 下", color)
+    top.setMarkerShown(False)
+    bottom.setMarkerShown(False)
+    for index in range(49):
+        angle = math.pi * index / 48.0
+        x = radius * math.cos(angle)
+        y = radius * math.sin(angle)
+        top.recordDataPoint(x, y)
+        bottom.recordDataPoint(x, -y)
+    scale.addDataRow(top)
+    scale.addDataRow(bottom)
+
+
+def external_return_graph(groups, extent):
+    graph = SimpleGraph()
+    graph.setRelativePaddingLeft(0.10)
+    graph.setRelativePaddingRight(0.04)
+    scale = SimpleGraph.DataScale("Primary-relative XY mm")
+    scale.setRelativePaddingTop(0.08)
+    scale.setRelativePaddingBottom(0.08)
+    scale.setSymmetricIfSigned(True)
+    scale.setSquareAspectRatio(True)
+    scale.setColor(Color.GRAY)
+    graph.addDataScale(scale)
+    colors = {
+        "A+": Color(210, 65, 45), "A-": Color(230, 135, 35),
+        "B+": Color(40, 115, 190), "B-": Color(35, 155, 125)
+    }
+    sequence = 1
+    for name in ["A+", "A-", "B+", "B-"]:
+        row = SimpleGraph.DataRow(name, colors[name])
+        row.setLineShown(False)
+        row.setMarkerShown(True)
+        for x, y in groups[name]:
+            row.recordDataPoint(x + sequence * 1e-10, y)
+            sequence += 1
+        if groups[name]:
+            scale.addDataRow(row)
+    axis_color = Color(115, 115, 115)
+    horizontal = SimpleGraph.DataRow(u"X轴 / X axis", axis_color)
+    horizontal.recordDataPoint(-extent, 0.0)
+    horizontal.recordDataPoint(extent, 0.0)
+    vertical = SimpleGraph.DataRow(u"Y轴 / Y axis", axis_color)
+    vertical.recordDataPoint(-1e-12, -extent)
+    vertical.recordDataPoint(1e-12, extent)
+    scale.addDataRow(horizontal)
+    scale.addDataRow(vertical)
+    add_external_reference_circle(
+        scale, 0.050, u"0.05 mm参考圈", Color(150, 150, 150))
+    return graph
+
+
+def external_return_stats(groups):
+    points = []
+    for name in ["A+", "A-", "B+", "B-"]:
+        points.extend(groups[name])
+    if not points:
+        return (0.0, 0.0, 0.0, u"无数据")
+    mean_x = sum([point[0] for point in points]) / len(points)
+    mean_y = sum([point[1] for point in points]) / len(points)
+    maximum = max([math.hypot(point[0], point[1]) for point in points])
+    horizontal = u"右/X+" if mean_x > 0.002 else (
+        u"左/X-" if mean_x < -0.002 else u"X居中")
+    vertical = u"上/Y+" if mean_y > 0.002 else (
+        u"下/Y-" if mean_y < -0.002 else u"Y居中")
+    return (mean_x, mean_y, maximum, horizontal + u"、" + vertical)
+
+
+def external_group_stats(groups):
+    result = {}
+    for name in ["A+", "A-", "B+", "B-"]:
+        points = groups.get(name, [])
+        if not points:
+            result[name] = (0, 0.0, 0.0, 0.0)
+            continue
+        mean_x = sum([point[0] for point in points]) / len(points)
+        mean_y = sum([point[1] for point in points]) / len(points)
+        maximum = max([math.hypot(point[0], point[1]) for point in points])
+        result[name] = (len(points), mean_x, mean_y, maximum)
+    return result
+
+
+def external_group_diagnostic_text(groups, title, language):
+    stats = external_group_stats(groups)
+    rows = []
+    for name in ["A+", "A-", "B+", "B-"]:
+        count, mean_x, mean_y, maximum = stats[name]
+        rows.append(u"{} n={} center=({:+.4f},{:+.4f}) max={:.4f} mm".format(
+            name, count, mean_x, mean_y, maximum))
+    a_separation = math.hypot(
+        stats["A+"][1] - stats["A-"][1],
+        stats["A+"][2] - stats["A-"][2])
+    b_separation = math.hypot(
+        stats["B+"][1] - stats["B-"][1],
+        stats["B+"][2] - stats["B-"][2])
+    if language == "en":
+        return (u"{} group centers: {}\nOpposite-state center separation: "
+                u"A+/A- {:.4f} mm; B+/B- {:.4f} mm.").format(
+                    title, u"; ".join(rows), a_separation, b_separation)
+    return (u"{}分组中心：{}\n相反方向状态中心分离：A+/A- {:.4f} mm；"
+            u"B+/B- {:.4f} mm。").format(
+                title, u"；".join(rows), a_separation, b_separation)
+
+
+def external_artifact_time(path):
+    if path is None or not path.isFile():
+        return u"尚未生成"
+    return SimpleDateFormat("yyyy-MM-dd HH:mm:ss").format(
+        Date(path.lastModified()))
+
+
+def external_worst_cell(props):
+    worst = (0.0, u"?", 0.0, 0.0)
+    stage_count = int(props.getProperty("stage.count", "0"))
+    for stage_index in range(stage_count):
+        stage = "stage.{0}".format(stage_index + 1)
+        speed = agent_float(props, stage + ".speed-factor", 0.0)
+        for direction in ["a", "b"]:
+            count = int(props.getProperty(
+                stage + "." + direction + ".distance.count", "0"))
+            for index in range(count):
+                prefix = stage + "." + direction + ".distance.{0}".format(index + 1)
+                magnitude = agent_float(props, prefix + ".magnitude.mm", 0.0)
+                distance = agent_float(props, prefix + ".virtual-distance.mm", 0.0)
+                if magnitude > worst[0]:
+                    worst = (magnitude, direction.upper(), speed, distance)
+    return worst
+
+
+def external_change_percent(before, after):
+    if before <= 0.000000001:
+        return 0.0
+    return (before - after) * 100.0 / before
+
+
+def external_bias_direction(x_value, y_value, language):
+    if language == "en":
+        horizontal = "X+" if x_value > 0.002 else (
+            "X-" if x_value < -0.002 else "X centered")
+        vertical = "Y+" if y_value > 0.002 else (
+            "Y-" if y_value < -0.002 else "Y centered")
+    else:
+        horizontal = u"X+" if x_value > 0.002 else (
+            u"X-" if x_value < -0.002 else u"X居中")
+        vertical = u"Y+" if y_value > 0.002 else (
+            u"Y-" if y_value < -0.002 else u"Y居中")
+    return horizontal + ", " + vertical
+
+
+def external_residual_conclusions(baseline, validation, raw_stats,
+                                  compensated_stats, health_result,
+                                  language):
+    raw_all = external_metrics(baseline, "current.all")
+    raw_a = external_metrics(baseline, "current.a")
+    raw_b = external_metrics(baseline, "current.b")
+    raw_worst = external_worst_cell(baseline)
+    if raw_b[0] > raw_a[0] * 1.25:
+        dominant = "B"
+    elif raw_a[0] > raw_b[0] * 1.25:
+        dominant = "A"
+    else:
+        dominant = "A/B"
+    distance_class_en = "long travel" if raw_worst[3] >= 60.0 else \
+        "short/transition travel"
+    distance_class_zh = u"长行程" if raw_worst[3] >= 60.0 else u"短行程或阈值附近"
+    if language == "en":
+        lines = [
+            u"Automatic conclusions:",
+            u"1. Main finding: uncompensated direction-state error is dominated by {0}; "
+            u"the worst cell is {1}, {2:.0f}%, {3:.1f} mm ({4}, {5:.6f} mm).".format(
+                dominant, raw_worst[1], raw_worst[2] * 100.0,
+                raw_worst[3], distance_class_en, raw_worst[0])
+        ]
+    else:
+        lines = [
+            u"自动结论：",
+            u"1. 主要检测结论：未补偿方向状态误差主要来自 {0}；最坏单元为 {1}、"
+            u"{2:.0f}%、{3:.1f} mm（{4}，{5:.6f} mm）。".format(
+                dominant, raw_worst[1], raw_worst[2] * 100.0,
+                raw_worst[3], distance_class_zh, raw_worst[0])
+        ]
+    if int(validation.getProperty("stage.count", "0")) <= 0:
+        lines.append(
+            (u"2. Run a Health Check after applying compensation to generate "
+             u"the compensated comparison and final conclusion.") if language == "en" else
+            u"2. 应用补偿并完成健康检查后，才能生成补偿后对比和最终结论。")
+        return u"\n".join(lines)
+
+    current_all = external_metrics(validation, "current.all")
+    current_a = external_metrics(validation, "current.a")
+    current_b = external_metrics(validation, "current.b")
+    overall_change = external_change_percent(raw_all[0], current_all[0])
+    a_change = external_change_percent(raw_a[0], current_a[0])
+    b_change = external_change_percent(raw_b[0], current_b[0])
+    bias = external_bias_direction(
+        compensated_stats[0], compensated_stats[1], language)
+    absolute_inside = compensated_stats[2] <= 0.050
+    if language == "en":
+        lines.append(
+            u"2. Compensation result: overall RMS {0:.6f} -> {1:.6f} mm "
+            u"({2:+.1f}% reduction); A {3:+.1f}%, B {4:+.1f}%.".format(
+                raw_all[0], current_all[0], overall_change, a_change, b_change))
+        lines.append(
+            u"3. Absolute returns: center ({0:+.6f}, {1:+.6f}) mm, bias {2}; "
+            u"farthest point {3:.6f} mm, {4} the 0.05 mm reference circle.".format(
+                compensated_stats[0], compensated_stats[1], bias,
+                compensated_stats[2], "inside" if absolute_inside else "outside"))
+        if health_result == "PASS" and not absolute_inside:
+            conclusion = (u"Direction-state error is controlled, but an independent common "
+                          u"absolute offset remains. Check Primary/reference drift or a "
+                          u"position-dependent error instead of chasing the circle with A/B vectors.")
+        elif health_result == "PASS":
+            conclusion = u"Direction-state health and the 0.05 mm absolute reference are both satisfied."
+        elif health_result == "WARNING":
+            conclusion = (u"A visible direction-state change remains. Inspect the worst cell and "
+                          u"mechanical repeatability, then repeat the Health Check.")
+        else:
+            conclusion = (u"Direction-state error exceeds the warning range. Stop compensation "
+                          u"and inspect mechanics before production use.")
+        lines.append(u"4. Overall ({0}): {1}".format(
+            health_result or "UNCLASSIFIED", conclusion))
+    else:
+        lines.append(
+            u"2. 补偿效果：总体方向状态 RMS {0:.6f} -> {1:.6f} mm，降低 {2:.1f}%；"
+            u"A 降低 {3:.1f}%，B 降低 {4:.1f}%。".format(
+                raw_all[0], current_all[0], overall_change, a_change, b_change))
+        lines.append(
+            u"3. 绝对落点：补偿后点云中心 ({0:+.6f}, {1:+.6f}) mm，整体偏向 {2}；"
+            u"最远点 {3:.6f} mm，{4} 0.05 mm参考圈。".format(
+                compensated_stats[0], compensated_stats[1], bias,
+                compensated_stats[2], u"进入" if absolute_inside else u"未进入"))
+        if health_result == "PASS" and not absolute_inside:
+            conclusion = (u"方向状态误差已经受控，但仍有独立的共同绝对偏移。应检查 Primary "
+                          u"基准漂移或位置相关误差，不应继续用固定 A/B 向量追逐0.05 mm圈。")
+        elif health_result == "PASS":
+            conclusion = u"方向状态健康和0.05 mm绝对落点参考均已满足。"
+        elif health_result == "WARNING":
+            conclusion = (u"仍存在可见方向状态变化。请检查最坏单元和机械重复性，"
+                          u"然后重新进行健康检查。")
+        else:
+            conclusion = (u"方向状态误差超过警告范围。生产使用前应停用补偿并检查机械结构。")
+        lines.append(u"4. 综合结论（{}）：{}".format(
+            health_result or u"尚未分类", conclusion))
+    return u"\n".join(lines)
+
+
+def refresh_external_fixed_artifacts(self):
+    candidate_path, candidate = current_fixed_candidate()
+    formal = read_agent_properties(agent_artifact("config/corexy.properties"))
+    review_path = latest_external_file(
+        "diagnostics", "latest-legacy-fixed-physical-review.properties",
+        "legacy-fixed-physical-review-")
+    validation_path = latest_external_file(
+        "diagnostics", "latest-legacy-fixed-physical-validation.properties",
+        "legacy-fixed-physical-validation-")
+    candidate_label = u"当前同期候选 / Current-session candidate"
+    if candidate is None:
+        source_candidate = formal.getProperty("production.source-candidate", "")
+        archived_path = File(source_candidate) if source_candidate else None
+        archived = (read_agent_properties(archived_path)
+                    if archived_path is not None and archived_path.isFile()
+                    else None)
+        if archived is None:
+            archived_path, archived = latest_fixed_candidate()
+        if (archived is not None and formal.getProperty(
+                "model.kind", "") == "FRESH_FIXED_VECTOR_V1" and
+                formal.getProperty("production.persistence", "") == "persistent"):
+            candidate_path, candidate = archived_path, archived
+            candidate_label = u"已归档并正式应用的候选 / Archived production candidate"
+    expected_baseline = (candidate.getProperty(
+        "source-uncompensated-baseline", "") if candidate is not None else "")
+    # The simplified UI uses production health checks as the only compensated
+    # measurement source. Historical temporary validation remains on disk but
+    # is intentionally not mixed into the current residual view.
+    review_path = agent_artifact(
+        "diagnostics/no-current-production-health-review.properties")
+    validation_path = agent_artifact(
+        "diagnostics/no-current-production-health.properties")
+    health_path = agent_artifact(
+        "diagnostics/latest-production-health.properties")
+    health = read_agent_properties(health_path)
+    health_current = (
+        health_path.isFile() and
+        health.getProperty("state", "") != "running" and
+        health.getProperty("production.promoted-at", "") ==
+        formal.getProperty("production.promoted-at", "") and
+        (not expected_baseline or same_backend_path(
+            health.getProperty("source-production-baseline",
+                               health.getProperty(
+                                   "source-production-reference", "")),
+            expected_baseline)))
+    if health_current:
+        validation_path = health_path
+    if expected_baseline:
+        if validation_path.isFile():
+            source_props = read_agent_properties(validation_path)
+            source_path = source_props.getProperty(
+                "source-production-baseline", source_props.getProperty(
+                    "source-production-reference", source_props.getProperty(
+                        "source-baseline", "")))
+            if not same_backend_path(source_path, expected_baseline):
+                validation_path = agent_artifact(
+                    "diagnostics/no-current-session-fixed-validation.properties")
+        if review_path.isFile() and read_agent_properties(
+                review_path).getProperty("source-baseline", "").lower() != \
+                expected_baseline.lower():
+            review_path = agent_artifact(
+                "diagnostics/no-current-session-fixed-review.properties")
+    lines = [u"外置固定A+/B+诊断 / External fixed-vector diagnosis", u""]
+    if candidate is None:
+        lines.append(u"尚未生成当前同期候选。 / No current-session candidate.")
+    else:
+        lines.extend([
+            candidate_label,
+            u"Session: " + candidate.getProperty("session.id", "unknown"),
+            u"A: {}  threshold={:.3f} mm  vector=({:+.3f}, {:+.3f}) mm".format(
+                u"关闭/disabled" if candidate.getProperty(
+                    "fit.a.disabled", "false") == "true" else u"启用/enabled",
+                agent_float(candidate, "corexy_min_move_a_mm", 0.0),
+                agent_float(candidate, "corexy_a_positive_x_mm", 0.0),
+                agent_float(candidate, "corexy_a_positive_y_mm", 0.0)),
+            u"B: {}  threshold={:.3f} mm  vector=({:+.3f}, {:+.3f}) mm".format(
+                u"关闭/disabled" if candidate.getProperty(
+                    "fit.b.disabled", "false") == "true" else u"启用/enabled",
+                agent_float(candidate, "corexy_min_move_b_mm", 0.0),
+                agent_float(candidate, "corexy_b_positive_x_mm", 0.0),
+                agent_float(candidate, "corexy_b_positive_y_mm", 0.0)),
+            u"视觉噪声/vision floor: {:.6f} mm; 最小可信位移/trusted floor: {:.6f} mm".format(
+                agent_float(candidate, "vision-floor.mm", 0.0),
+                agent_float(candidate, "diagnostic-floor.mm", 0.0)),
+            u"100%预测最大残差 / predicted maximum: {:.6f} mm".format(
+                agent_float(candidate, "prediction.100.maximum.mm", 0.0))
+        ])
+    if health_current:
+        before = external_metrics(health, "reference.all")
+        after = external_metrics(health, "current.all")
+        lines.extend([
+            u"", u"最近健康检查 / Latest health check",
+            u"系统判定 / System result: " + health.getProperty(
+                "health.result", health.getProperty("state", "unknown")),
+            u"补偿比例 / Gain: {:.0f}%".format(
+                agent_float(health, "model.gain", 0.0) * 100.0),
+            u"All RMS/P95/MAX: {:.6f}/{:.6f}/{:.6f} -> {:.6f}/{:.6f}/{:.6f} mm".format(
+                before[0], before[1], before[2], after[0], after[1], after[2])
+        ])
+    elif review_path.isFile():
+        review = read_agent_properties(review_path)
+        before = external_metrics(review, "baseline.all")
+        after = external_metrics(review, "physical.all")
+        lines.extend([
+            u"", u"最近实测复核 / Latest physical review",
+            u"系统判定 / System result: " + review.getProperty("state", "unknown"),
+            u"Gain: {:.0f}%".format(agent_float(review, "model.gain", 0.0) * 100.0),
+            u"All RMS/P95/MAX: {:.6f}/{:.6f}/{:.6f} -> {:.6f}/{:.6f}/{:.6f} mm".format(
+                before[0], before[1], before[2], after[0], after[1], after[2]),
+            u"说明：系统目标失败不等同于补偿无效；用户接受状态将与系统判定分开记录。",
+            u"Note: target failure does not mean no improvement; user acceptance remains separate."
+        ])
+    self.report_area.setText(u"\n".join(lines))
+    self.report_area.setCaretPosition(0)
+    session = read_agent_properties(agent_artifact(
+        "sessions/current-session.properties"))
+    baseline_path = (File(expected_baseline) if expected_baseline else
+                     File(session.getProperty("session.directory", ""),
+                          "uncompensated-primary.properties"))
+    if validation_path.isFile() and baseline_path.isFile():
+        validation_props = read_agent_properties(validation_path)
+        validation_source = validation_props.getProperty(
+            "source-production-baseline", validation_props.getProperty(
+                "source-production-reference", validation_props.getProperty(
+                    "source-baseline", "")))
+        if (not validation_source or
+                File(validation_source).getCanonicalPath().lower() !=
+                baseline_path.getCanonicalPath().lower()):
+            validation_path = agent_artifact(
+                "diagnostics/no-current-session-fixed-validation.properties")
+    if baseline_path.isFile():
+        baseline = read_agent_properties(baseline_path)
+        validation = (read_agent_properties(validation_path)
+                      if validation_path.isFile() else Properties())
+        center_x = float(self.primary_x_field.getText().strip())
+        center_y = float(self.primary_y_field.getText().strip())
+        raw_groups = external_return_points(baseline, center_x, center_y)
+        compensated_groups = external_return_points(
+            validation, center_x, center_y)
+        all_points = []
+        for groups in [raw_groups, compensated_groups]:
+            for values in groups.values():
+                all_points.extend(values)
+        extent = max([0.055] + [max(abs(x), abs(y)) * 1.12
+                               for x, y in all_points])
+        self.raw_scatter_view.setGraph(external_return_graph(raw_groups, extent))
+        self.compensated_scatter_view.setGraph(external_return_graph(
+            compensated_groups, extent))
+        residual_maximum = external_residual_maximum(baseline, validation)
+        self.raw_trend_view.setGraph(external_residual_graph(
+            baseline, u"未补偿/Raw", residual_maximum))
+        self.compensated_trend_view.setGraph(external_residual_graph(
+            validation, u"补偿后/Comp", residual_maximum))
+        raw_stats = external_return_stats(raw_groups)
+        compensated_stats = external_return_stats(compensated_groups)
+        language = tuner_language(self)
+        raw_worst = external_worst_cell(baseline)
+        compensated_worst = external_worst_cell(validation)
+        raw_point_count = sum([len(values) for values in raw_groups.values()])
+        compensated_point_count = sum([
+            len(values) for values in compensated_groups.values()])
+        compensated_time = (external_artifact_time(validation_path)
+                            if validation_path.isFile() else
+                            u"尚未进行健康检查")
+        generated_text = (
+            u"数据生成时间：未补偿 {}；补偿后 {}。".format(
+                external_artifact_time(baseline_path), compensated_time))
+        self.residual_note.setText(
+            u"二维图以主要标定点为原点：右侧=X+、左侧=X-、上方=Y+、下方=Y-。"
+            u"A+/A-/B+/B-表示从相应运动方向返回主要标定点后的实际落点；"
+            u"上方图显示绝对落点，下方图显示相反方向之间的状态残差。"
+            u"灰色0.05 mm圈仅为视觉参考，不是健康检查PASS门限。\n" + generated_text)
+        if language == "en":
+            formula_text = (
+                u"Direction-state residual formula:\n"
+                u"residual = sqrt((X positive-return - X negative-return)^2 + "
+                u"(Y positive-return - Y negative-return)^2)\n"
+                u"It measures the separation between opposite return states at the same "
+                u"speed and distance, not the distance of one point from the origin. "
+                u"Smaller is better. Upper scatter plots show absolute returns; lower "
+                u"curves show A/B residual by speed and travel distance.")
+        else:
+            formula_text = (
+                u"方向状态残差公式：\n"
+                u"残差 = sqrt((正向返回X - 负向返回X)^2 + "
+                u"(正向返回Y - 负向返回Y)^2)\n"
+                u"它表示相同速度、相同距离下相反返回状态之间的二维间距，不是某一个点到原点的距离；"
+                u"数值越小越好。上方散点图观察绝对落点，下方曲线观察A/B在不同速度和行程下的状态残差。")
+        interpretation = formula_text + u"\n\n" + (
+            u"Primary原点：X={:.6f}, Y={:.6f} mm。\n"
+            u"未补偿点云中心：({:+.6f}, {:+.6f}) mm，主要偏向{}，最远回归点{:.6f} mm；"
+            u"最坏往返单元={}、{:.0f}%、{:.1f} mm，径向差{:.6f} mm。".format(
+                center_x, center_y,
+                raw_stats[0], raw_stats[1], raw_stats[3], raw_stats[2],
+                raw_worst[1], raw_worst[2] * 100.0, raw_worst[3], raw_worst[0]))
+        interpretation += u"\n" + external_group_diagnostic_text(
+            raw_groups, u"Uncompensated" if language == "en" else u"未补偿",
+            language)
+        health_result = ""
+        if validation_path.isFile():
+            health_result = validation.getProperty("health.result", "").upper()
+            absolute_goal = (u"达到" if compensated_stats[2] <= 0.050 else
+                             u"未达到")
+            interpretation += (
+                u"\n补偿后点云中心：({:+.6f}, {:+.6f}) mm，主要偏向{}，最远回归点{:.6f} mm；"
+                u"最坏往返单元={}、{:.0f}%、{:.1f} mm，径向差{:.6f} mm。".format(
+                    compensated_stats[0], compensated_stats[1],
+                    compensated_stats[3], compensated_stats[2],
+                    compensated_worst[1], compensated_worst[2] * 100.0,
+                    compensated_worst[3], compensated_worst[0]))
+            if health_result:
+                interpretation += (
+                    u"\n方向状态健康判定：{}；绝对落点参考：{}0.05 mm圈"
+                    u"（最远落点{:.6f} mm）。两项相互独立。".format(
+                        health_result, absolute_goal, compensated_stats[2]))
+            interpretation += u"\n" + external_group_diagnostic_text(
+                compensated_groups,
+                u"Compensated" if language == "en" else u"补偿后",
+                language)
+            self.scatter_status_label.setText(
+                u"已载入：未补偿{}点，补偿后{}点；上方两图与下方两图分别共用尺度；灰圈仅为0.05 mm视觉参考。 {}".format(
+                    raw_point_count, compensated_point_count, generated_text))
+        else:
+            interpretation += u"\n尚未进行健康检查；右侧图将在健康检查完成后显示。"
+            self.scatter_status_label.setText(
+                u"已载入未补偿{}点；尚未进行健康检查；灰圈为0.05 mm视觉参考。 {}".format(
+                    raw_point_count, generated_text))
+        interpretation += u"\n\n" + external_residual_conclusions(
+            baseline, validation, raw_stats, compensated_stats,
+            health_result, language)
+        interpretation += (
+            u"\n阅读方法：上方二维点表示回到Primary后的绝对落点；下方曲线表示相反返回方向之间的状态残差。"
+            u"点云整体平移多见于基准漂移，随距离增大的定向分离更接近CoreXY耦合或拖链方向力。")
+        self.residual_interpretation_area.setText(interpretation)
+        self.residual_interpretation_area.setCaretPosition(0)
+        self.residual_graphs_panel.revalidate()
+        self.residual_graphs_panel.repaint()
+        self.residual_panel.revalidate()
+        self.residual_panel.repaint()
+
+
+def rollback_agent_production(self):
+    self.run_agent_workflow_script("CoreXY_Agent_Rollback_Production.py")
+
+
+def accept_agent_fixed_production(self):
+    self.run_agent_workflow_script(
+        "CoreXY_Agent_Accept_Fixed_Production.py")
+
+
+def run_agent_production_health(self):
+    self.run_agent_workflow_script(
+        "CoreXY_Agent_Production_Health_Check.py")
+    existing = getattr(self, "agent_health_poll_timer", None)
+    if existing is not None:
+        existing.stop()
+    timer = Timer(1000, None)
+
+    def poll_health(event):
+        health = read_agent_properties(agent_artifact(
+            "diagnostics/latest-production-health.properties"))
+        self.refresh_status()
+        if health.getProperty("state", "") != "running":
+            timer.stop()
+
+    timer.addActionListener(poll_health)
+    timer.setInitialDelay(1000)
+    timer.start()
+    self.agent_health_poll_timer = timer
+
+
+def start_agent_machine_state_monitor(self):
+    existing = getattr(self, "agent_machine_state_timer", None)
+    if existing is not None:
+        existing.stop()
+
+    def current_state():
+        try:
+            return (bool(machine.isEnabled()), bool(machine.isHomed()))
+        except Exception:
+            return (False, False)
+
+    self.agent_last_machine_state = current_state()
+    timer = Timer(750, None)
+
+    def poll_machine_state(event):
+        if not self.isDisplayable():
+            timer.stop()
+            return
+        state = current_state()
+        if state != getattr(self, "agent_last_machine_state", None):
+            self.agent_last_machine_state = state
+            self.refresh_status()
+
+    timer.addActionListener(poll_machine_state)
+    timer.setInitialDelay(750)
+    timer.start()
+    self.agent_machine_state_timer = timer
+
+
+def open_latest_agent_report(self):
+    try:
+        reports = agent_artifact("reports")
+        matches = ([path for path in reports.listFiles()
+                    if path.isFile() and path.getName().endswith(".txt")]
+                   if reports.isDirectory() else [])
+        if not matches:
+            raise IOError(u"尚未生成报告。")
+        latest = max(matches, key=lambda path: path.lastModified())
+        if not Desktop.isDesktopSupported():
+            raise RuntimeError(u"当前系统不支持直接打开报告文件。")
+        Desktop.getDesktop().open(latest)
+    except Exception as error:
+        JOptionPane.showMessageDialog(
+            self, error_text(error), u"无法打开报告",
+            JOptionPane.WARNING_MESSAGE)
+
+
+def open_latest_health_report(self):
+    try:
+        health = read_agent_properties(agent_artifact(
+            "diagnostics/latest-production-health.properties"))
+        created = health.getProperty("created", "")
+        report = agent_artifact(
+            "reports/production-health-" + created + ".txt")
+        if not created or not report.isFile():
+            reports = agent_artifact("reports")
+            matches = ([path for path in reports.listFiles()
+                        if path.isFile() and
+                        path.getName().startswith("production-health-") and
+                        "confirmation" not in path.getName() and
+                        path.getName().endswith(".txt")]
+                       if reports.isDirectory() else [])
+            if not matches:
+                raise IOError(u"尚未生成健康检查报告。")
+            report = max(matches, key=lambda path: path.lastModified())
+        if not Desktop.isDesktopSupported():
+            raise RuntimeError(u"当前系统不支持直接打开报告文件。")
+        Desktop.getDesktop().open(report)
+    except Exception as error:
+        JOptionPane.showMessageDialog(
+            self, error_text(error), u"无法打开健康检查报告",
+            JOptionPane.WARNING_MESSAGE)
+
+
+def select_candidate_application_tab(self):
+    for index in range(self.tabs.getTabCount()):
+        if unicode(self.tabs.getTitleAt(index)) == u"候选与应用":
+            self.tabs.setSelectedIndex(index)
+            return
+    raise RuntimeError(u"未找到“候选与应用”页。")
+
+
+def continue_external_fixed_workflow(self):
+    action = (self.external_continue_button.getClientProperty("corexy.action")
+              if hasattr(self, "external_continue_button") else None)
+    if action == "candidate":
+        select_candidate_application_tab(self)
+    elif action == "validation":
+        select_candidate_application_tab(self)
+    elif action == "health":
+        run_agent_production_health(self)
+    else:
+        run_fixed_calibration_stage(self)
+
+
+def refresh_external_primary_actions(self):
+    if not hasattr(self, "external_continue_button"):
+        return
+    try:
+        status = parse_agent_status(current_agent_status())
+        active_path = File(status.get("config", ""))
+        active = read_agent_properties(active_path)
+        formal_path = agent_artifact("config/corexy.properties")
+        formal = read_agent_properties(formal_path)
+        formal_active = (active_path.isFile() and
+                         active_path.getCanonicalPath().lower() ==
+                         formal_path.getCanonicalPath().lower())
+        machine_ready = machine.isEnabled() and machine.isHomed() and \
+            status.get("homing-bypass") == "false" and \
+            status.get("A-state") == "0" and status.get("B-state") == "0"
+        machine_idle = not machine.isEnabled() and not machine.isHomed()
+        session = read_agent_properties(agent_artifact(
+            "sessions/current-session.properties"))
+        session_dir = session.getProperty("session.directory", "")
+        baseline = (File(session_dir, "uncompensated-primary.properties")
+                    if session_dir else None)
+        session_matches_formal = (
+            formal_path.isFile() and
+            session.getProperty("formal.path", "").lower() ==
+            formal_path.getCanonicalPath().lower() and
+            session.getProperty("formal.sha256", "").lower() ==
+            backend_sha256(formal_path).lower())
+        pending = (session.getProperty("session.state", "") ==
+                   "collecting-formal-primary" and session_matches_formal and
+                   baseline is not None and
+                   not baseline.isFile())
+        candidate_path, candidate = current_fixed_candidate()
+        home_baseline = (
+            active.getProperty("trial.kind", "") == "home-reference-baseline" and
+            status.get("enabled") == "false")
+        fixed_trial = (
+            active.getProperty("trial.kind", "") ==
+            "legacy-fixed-vector-physical" and
+            active.getProperty("trial.persistence", "") == "process-only")
+        production_fixed = (
+            formal_active and formal.getProperty(
+                "production.persistence", "") == "persistent" and
+            formal.getProperty("model.kind", "") == "FRESH_FIXED_VECTOR_V1")
+
+        action = "calibrate"
+        label = u"开始新标定"
+        enabled = machine_idle
+        reason = u"开始新标定前需禁用机器并处于未Home状态。"
+        if fixed_trial:
+            action = "validation"
+            label = u"进入验证与应用"
+            enabled = True
+            reason = None
+        elif home_baseline:
+            if candidate is not None:
+                action = "candidate"
+                label = u"查看候选并选择补偿比例"
+                enabled = True
+                reason = None
+            elif baseline is None or not baseline.isFile():
+                label = u"继续：采集未补偿基线" if machine_ready else \
+                    u"等待启用并Home"
+                enabled = machine_ready
+                reason = None if enabled else u"请启用机器并正常Home。"
+            else:
+                label = u"继续：生成固定向量候选" if machine_idle else \
+                    u"等待禁用机器"
+                enabled = machine_idle
+                reason = None if enabled else u"请禁用机器并进入未Home状态。"
+        elif formal_active and pending:
+            label = u"继续：加载未补偿基线模式"
+            enabled = machine_idle
+            reason = None if enabled else u"请禁用机器并进入未Home状态。"
+        elif formal_active and candidate is not None and not production_fixed:
+            action = "candidate"
+            label = u"查看候选并选择补偿比例"
+            enabled = True
+            reason = None
+        elif not formal_active:
+            label = u"请先恢复正式配置"
+            enabled = False
+            reason = u"当前存在其他临时配置。"
+
+        self.external_continue_button.putClientProperty("corexy.action", action)
+        self.external_continue_button.setText(label)
+        self.external_continue_button.setEnabled(enabled)
+        self.external_continue_button.setToolTipText(reason)
+        self.diag_run_button.setText(label)
+        self.diag_run_button.setEnabled(enabled)
+        self.diag_run_button.setToolTipText(reason)
+        self.diag_status_label.setText(
+            u"当前操作：{}".format(label) if enabled else
+            u"等待条件：{}".format(reason or label))
+
+        health = read_agent_properties(agent_artifact(
+            "diagnostics/latest-production-health.properties"))
+        health_current = (health.getProperty("production.promoted-at", "") ==
+                          formal.getProperty("production.promoted-at", ""))
+        health_result = health.getProperty("health.result", "")
+        production_running = (production_fixed and
+                              formal.getProperty("enabled", "true") == "true" and
+                              status.get("enabled") == "true")
+        self.external_restore_button.setEnabled(not formal_active and machine_idle)
+        self.diag_restore_button.setEnabled(not formal_active and machine_idle)
+        restore_reason = (None if not formal_active and machine_idle else
+                          u"仅在临时配置运行且机器禁用、未Home时可恢复。")
+        self.external_restore_button.setToolTipText(restore_reason)
+        self.diag_restore_button.setToolTipText(restore_reason)
+        self.external_rollback_button.setEnabled(
+            agent_artifact("backups/corexy.previous.properties").isFile() and
+            machine_idle)
+        self.cross_disable_button.setEnabled(production_running)
+        self.cross_disable_button.setToolTipText(
+            None if production_running else u"外置A/B补偿当前已经停用。")
+        reports = agent_artifact("reports")
+        health_created = health.getProperty("created", "")
+        named_health_report = agent_artifact(
+            "reports/production-health-" + health_created + ".txt")
+        self.diag_report_button.setEnabled(
+            named_health_report.isFile() or
+            (reports.isDirectory() and any([
+                path.isFile() and
+                path.getName().startswith("production-health-") and
+                "confirmation" not in path.getName() and
+                path.getName().endswith(".txt")
+                for path in reports.listFiles()])))
+
+        pixel_text = u"顶部相机像素门限：尚无当前策略健康报告"
+        if health_current and health.getProperty(
+                "health.policy", "") == "production-top-camera-pixel-v1":
+            pixel = agent_float(health, "health.pixel-size.rounded.mm", 0.0)
+            pixel_text = (u"顶部相机：{:.3f} mm/px；PASS 3 px={:.3f} mm；"
+                          u"WARNING 6 px={:.3f} mm").format(
+                              pixel, pixel * 3.0, pixel * 6.0)
+        self.diag_guard_label.setText(pixel_text)
+        candidate_ready = candidate is not None
+        adjustment_path, adjustment_candidate = adjustable_fixed_candidate()
+        adjustment_ready = adjustment_candidate is not None
+        if candidate_ready and hasattr(self, "fixed_gain_combo"):
+            if (fixed_trial and getattr(
+                    self, "agent_fixed_trial_revision", None) !=
+                    active_path.lastModified()):
+                populate_agent_fixed_trial(
+                    self, candidate_path, candidate, active_path, active)
+            elif (not fixed_trial and getattr(
+                    self, "agent_fixed_candidate_revision", None) !=
+                    candidate_path.lastModified()):
+                populate_agent_fixed_candidate(
+                    self, candidate_path, candidate, 100)
+        elif (production_fixed and not production_running and
+              adjustment_candidate is not None and
+              hasattr(self, "fixed_gain_combo") and
+              getattr(self, "agent_fixed_candidate_revision", None) !=
+              adjustment_path.lastModified()):
+            gain_percent = int(round(
+                agent_float(formal, "model.gain", 1.0) * 100.0))
+            gain_percent = min([25, 50, 75, 100],
+                               key=lambda value: abs(value - gain_percent))
+            populate_agent_fixed_candidate(
+                self, adjustment_path, adjustment_candidate, gain_percent)
+        elif (production_fixed and production_running and
+              hasattr(self, "fixed_gain_combo") and
+              getattr(self, "agent_fixed_production_revision", None) !=
+              formal_path.lastModified()):
+            populate_agent_fixed_production(self, formal_path, formal)
+        for button in [self.candidate_load_button,
+                       self.cross_load_candidate_button]:
+            button.setEnabled(candidate_ready)
+            button.setToolTipText(
+                None if candidate_ready else
+                u"请先在检测与诊断页完成新的同期标定。")
+        parameters_editable = not production_running
+        set_agent_parameters_editable(self, parameters_editable)
+        self.fixed_gain_combo.setEnabled(
+            parameters_editable and adjustment_ready)
+        self.candidate_validation_button.setVisible(False)
+        self.cross_apply_button.setEnabled(False)
+        self.refresh_external_validation_actions(
+            status, active, formal_active, production_fixed,
+            machine_ready, machine_idle)
+        refresh_candidate_runtime_notice(
+            self, active, fixed_trial, production_fixed,
+            production_running, machine_ready, adjustment_ready)
+    except Exception as error:
+        self.external_continue_button.setEnabled(False)
+        self.external_continue_button.setToolTipText(error_text(error))
+
+
+def sync_current_status_guidance(self):
+    text = self.status_area.getText()
+    blocks = text.split(u"\n\n") if text else []
+    if not blocks:
+        return
+    status = parse_agent_status(current_agent_status())
+    active_path = File(status.get("config", ""))
+    active = read_agent_properties(active_path)
+    formal_path = agent_artifact("config/corexy.properties")
+    formal = read_agent_properties(formal_path)
+    fixed_trial = (
+        active.getProperty("trial.kind", "") ==
+        "legacy-fixed-vector-physical" and
+        active.getProperty("trial.persistence", "") == "process-only")
+    formal_active = (active_path.isFile() and formal_path.isFile() and
+                     active_path.getCanonicalPath().lower() ==
+                     formal_path.getCanonicalPath().lower())
+    production_profile = (
+        formal.getProperty("model.kind", "") == "FRESH_FIXED_VECTOR_V1" and
+        formal.getProperty("production.persistence", "") == "persistent")
+    onboarding_ready = (
+        formal.getProperty("onboarding.state", "") ==
+        "ready-for-calibration" and
+        formal.getProperty("production.acceptance", "") ==
+        "bootstrap-new-machine")
+    machine_ready = machine.isEnabled() and machine.isHomed()
+    if fixed_trial:
+        guidance = (u"检测到旧版临时补偿配置。请关闭并重新打开 OpenPnP，"
+                    u"主界面将恢复为应用/停用单一路线。")
+    elif formal_active and onboarding_ready:
+        guidance = (
+            u"下一步操作：新机器CoreXY初始化已完成；请点击“开始新标定”。")
+    elif formal_active and production_profile:
+        gain = int(round(agent_float(formal, "model.gain", 1.0) * 100.0))
+        production_running = (formal.getProperty("enabled", "true") == "true" and
+                              status.get("enabled") == "true")
+        if production_running and machine_ready:
+            guidance = (
+                u"下一步操作：正式CoreXY补偿已生效（{}%）；"
+                u"可运行健康检查或空载往返检查。".format(gain))
+        elif production_running:
+            guidance = (
+                u"等待条件：正式CoreXY补偿已生效（{}%）；"
+                u"请Enable并重新Home，再运行健康检查或空载往返检查。".format(gain))
+        else:
+            guidance = (
+                u"下一步操作：CoreXY补偿已停用；可调整补偿比例和A/B参数，"
+                u"然后点击“应用补偿”。")
+    else:
+        label = unicode(self.external_continue_button.getText())
+        reason = self.external_continue_button.getToolTipText()
+        if self.external_continue_button.isEnabled():
+            guidance = u"下一步操作：{}".format(label)
+        else:
+            guidance = u"等待条件：{}".format(
+                unicode(reason) if reason else label)
+    blocks[-1] = guidance
+    self.status_area.setText(u"\n\n".join(blocks))
+    self.status_area.setCaretPosition(0)
+
+
+def refresh_external_validation_actions(self, status, active, formal_active,
+                                        production_fixed, machine_ready,
+                                        machine_idle):
+    if not hasattr(self, "external_accept_button"):
+        return
+    formal = read_agent_properties(agent_artifact("config/corexy.properties"))
+    production_running = (production_fixed and
+                          formal.getProperty("enabled", "true") == "true" and
+                          status.get("enabled") == "true")
+    adjustment_path, adjustment_candidate = adjustable_fixed_candidate()
+    adjustment_ready = adjustment_candidate is not None
+    can_apply = adjustment_ready and not production_running
+    self.external_accept_button.setVisible(True)
+    self.external_accept_button.setEnabled(can_apply)
+    self.external_accept_button.setToolTipText(
+        None if can_apply else
+        (u"CoreXY补偿已生效；如需调整，请先停用补偿。"
+         if production_running else u"请先完成标定并生成固定A/B候选。"))
+
+    health = read_agent_properties(agent_artifact(
+        "diagnostics/latest-production-health.properties"))
+    health_current = (health.getProperty("production.promoted-at", "") ==
+                      formal.getProperty("production.promoted-at", ""))
+    health_running = health_current and health.getProperty("state", "") == "running"
+    health_result = health.getProperty("health.result", "")
+    health_label = (u"健康检查进行中" if health_running else
+                    (u"健康检查（{}）".format(health_result)
+                     if health_current and health_result else u"健康检查"))
+    health_enabled = production_running and machine_ready and not health_running
+    health_tip = (None if health_enabled else
+                  (u"健康检查正在进行。" if health_running else
+                   u"应用补偿后，请Enable机器并正常Home。"))
+    for button in [self.external_health_button,
+                   self.candidate_health_button]:
+        button.setText(health_label)
+        button.setEnabled(health_enabled)
+        button.setToolTipText(health_tip)
+
+
+CoreXYTuner.load_diagnostic_candidate = load_agent_fixed_candidate
+CoreXYTuner.refresh_candidate_status = refresh_agent_fixed_candidate_status
+CoreXYTuner.apply_cross_settings = apply_agent_formal_values
+CoreXYTuner.disable_cross_settings = disable_agent_compensation
+CoreXYTuner.rollback_cross_settings = rollback_agent_production
+CoreXYTuner.start_cross_test = run_agent_fixed_smoke
+CoreXYTuner.start_cross_calibration = run_fixed_calibration_stage
+CoreXYTuner.start_diagnosis = continue_external_fixed_workflow
+CoreXYTuner.refresh_external_fixed_artifacts = refresh_external_fixed_artifacts
+CoreXYTuner.continue_external_fixed_workflow = continue_external_fixed_workflow
+CoreXYTuner.refresh_external_primary_actions = refresh_external_primary_actions
+CoreXYTuner.refresh_external_validation_actions = refresh_external_validation_actions
+CoreXYTuner.run_agent_production_health = run_agent_production_health
+CoreXYTuner.open_latest_agent_report = open_latest_agent_report
+CoreXYTuner.open_latest_health_report = open_latest_health_report
+
+
+_legacy_refresh_cross_settings = CoreXYTuner.refresh_cross_settings
+
+
+def refresh_cross_settings_from_agent(self):
+    _legacy_refresh_cross_settings(self)
+    if self.cross_supported or not hasattr(self, "fixed_gain_combo"):
+        return
+    candidate_path, candidate = current_fixed_candidate()
+    if candidate is not None:
+        gain_text = unicode(self.fixed_gain_combo.getSelectedItem()).replace(
+            "%", "")
+        gain_percent = int(str(gain_text).strip())
+        populate_agent_fixed_candidate(
+            self, candidate_path, candidate, gain_percent)
+        return
+    status = parse_agent_status(current_agent_status())
+    active_path = File(status.get("config", ""))
+    active = read_agent_properties(active_path)
+    if (active_path.isFile() and
+            active.getProperty("model.kind", "") == "FRESH_FIXED_VECTOR_V1"):
+        populate_agent_fixed_production(self, active_path, active)
+        return
+    formal_path = agent_artifact("config/corexy.properties")
+    formal = read_agent_properties(formal_path)
+    if (formal_path.isFile() and
+            formal.getProperty("model.kind", "") == "FRESH_FIXED_VECTOR_V1"):
+        populate_agent_fixed_production(self, formal_path, formal)
+
+
+CoreXYTuner.refresh_cross_settings = refresh_cross_settings_from_agent
+
+
+_workflow_refresh_status = CoreXYTuner.refresh_status
+
+
+def refresh_status_with_primary_actions(self):
+    _workflow_refresh_status(self)
+    self.refresh_external_primary_actions()
+    self.refresh_external_fixed_artifacts()
+    sync_current_status_guidance(self)
+
+
+CoreXYTuner.refresh_status = refresh_status_with_primary_actions
+
+
+_workflow_build_tabs = CoreXYTuner._build_tabs
+
+
+def build_tabs_with_original_agent_backend(self):
+    _workflow_build_tabs(self)
+    if not self.cross_supported:
+        self.ui_language = read_ui_language()
+        self.ui_language_label = JLabel(
+            u"Language" if self.ui_language == "en" else u"界面语言")
+        self.ui_language_combo = JComboBox([u"中文", u"English"])
+        self.ui_language_updating = True
+        self.ui_language_combo.setSelectedItem(
+            u"English" if self.ui_language == "en" else u"中文")
+        self.ui_language_updating = False
+        self.ui_language_combo.addActionListener(
+            lambda event: change_ui_language(self))
+        self.suppress_axis_status_log = True
+        self.status_root_panel.remove(self.status_top_panel)
+        self.status_root_panel.remove(self.status_legacy_panel)
+        self.status_root_panel.add(self.status_top_panel, BorderLayout.CENTER)
+        self.job_guard_checkbox.setVisible(False)
+
+        self.external_continue_button = JButton(u"开始新标定")
+        self.external_health_button = JButton(u"运行健康检查")
+        self.external_restore_button = JButton(u"恢复原正式补偿")
+        self.external_rollback_button = JButton(u"回滚正式配置")
+        self.external_continue_button.addActionListener(
+            lambda event: self.continue_external_fixed_workflow())
+        self.external_health_button.addActionListener(
+            lambda event: self.run_agent_production_health())
+        self.external_restore_button.addActionListener(
+            lambda event: restore_agent_formal(self))
+        self.external_rollback_button.addActionListener(
+            lambda event: rollback_agent_production(self))
+        for button in [self.external_continue_button,
+                       self.external_health_button,
+                       self.external_restore_button,
+                       self.external_rollback_button]:
+            self.status_buttons_panel.add(button)
+        self.external_restore_button.setVisible(False)
+        self.external_rollback_button.setVisible(False)
+
+        if hasattr(self, "cross_support_label"):
+            self.cross_support_label.setText(
+                u"外置Agent支持A/B二维固定向量；不修改OpenPnP源码")
+        self.cross_apply_button.setText(u"加载外置固定向量临时试用")
+        self.cross_disable_button.setText(u"停用补偿")
+        self.cross_test_button.setText(u"外置固定向量短路径冒烟")
+        self.cross_calibrate_button.setText(u"固定A+/B+自动视觉标定")
+        self.cross_calibrate_button.setEnabled(True)
+        for listener in self.diag_run_button.getActionListeners():
+            self.diag_run_button.removeActionListener(listener)
+        self.diag_run_button.addActionListener(
+            lambda event: self.continue_external_fixed_workflow())
+        self.diag_save_button.setVisible(False)
+        self.diag_restore_button = JButton(u"恢复原正式补偿")
+        self.diag_report_button = JButton(u"打开最新健康检查报告")
+        self.diag_restore_button.addActionListener(
+            lambda event: restore_agent_formal(self))
+        self.diag_report_button.addActionListener(
+            lambda event: self.open_latest_health_report())
+        self.diag_buttons_panel.add(self.diag_restore_button)
+        self.diag_restore_button.setVisible(False)
+        self.status_buttons_panel.add(self.diag_report_button)
+        self.status_buttons_panel.add(Box.createHorizontalStrut(18))
+        self.status_buttons_panel.add(self.ui_language_label)
+        self.status_buttons_panel.add(self.ui_language_combo)
+        self.diag_guard_label = JLabel(u"顶部相机像素门限：等待健康检查")
+        self.diag_controls_panel.add(
+            self.diag_guard_label,
+            self._constraints(0, 9, 2, 1.0,
+                              GridBagConstraints.HORIZONTAL))
+        self.disable_single_axis_on_apply.setVisible(False)
+        self.diag_distance_field.setText("15, 28, 34, 60, 180, 270")
+        self.diag_speed_field.setText("0.40, 0.70, 0.90")
+        self.diag_target_field.setText("0.050")
+        self.diag_floor_field.setText("0.015")
+        self.diag_repeats_spinner.setValue(3)
+        for label, component in self.diag_parameter_rows:
+            label.setVisible(False)
+            component.setVisible(False)
+        self.diag_fixed_parameters_note = JTextArea(
+            u"固定检测参数：距离 15、28、34、60、180、270 mm；速度 40%、70%、90%；"
+            u"每档重复 3 次；用户目标 0.050 mm；最小可信位移 0.015 mm。")
+        self.diag_fixed_parameters_note.setEditable(False)
+        self.diag_fixed_parameters_note.setOpaque(False)
+        self.diag_fixed_parameters_note.setLineWrap(True)
+        self.diag_fixed_parameters_note.setWrapStyleWord(True)
+        self.diag_controls_panel.add(
+            self.diag_fixed_parameters_note,
+            self._constraints(0, 0, 2, 1.0, GridBagConstraints.HORIZONTAL))
+        self.fixed_gain_combo = JComboBox([u"25%", u"50%", u"75%", u"100%"])
+        self.fixed_gain_combo.setSelectedItem(u"100%")
+        self.fixed_gain_combo.addActionListener(
+            lambda event: reload_agent_fixed_gain(self))
+        self.candidate_validation_button.setText(u"旧版临时补偿入口")
+        self.candidate_validation_button.setEnabled(False)
+        self.candidate_validation_button.setVisible(False)
+        for listener in self.candidate_validation_button.getActionListeners():
+            self.candidate_validation_button.removeActionListener(listener)
+        self.cross_load_candidate_button.setVisible(False)
+        self.cross_apply_button.setVisible(False)
+        self.candidate_load_button.setVisible(False)
+        self.candidate_buttons_panel.setVisible(False)
+        self.cross_axes_panel.setVisible(False)
+        self.cross_speed_label.setVisible(False)
+        self.cross_speed_field.setVisible(False)
+        self.rollback_button.setVisible(False)
+        self.refresh_external_fixed_artifacts()
+        for listener in self.cross_apply_button.getActionListeners():
+            self.cross_apply_button.removeActionListener(listener)
+        self.cross_apply_button.addActionListener(
+            lambda event: self.apply_cross_settings())
+        self.external_accept_button = JButton(u"应用补偿")
+        self.candidate_health_button = JButton(u"健康检查")
+        self.external_accept_button.addActionListener(
+            lambda event: apply_agent_formal_values(self))
+        self.candidate_health_button.addActionListener(
+            lambda event: run_agent_production_health(self))
+        self.external_accept_button.setVisible(True)
+        candidate_actions = JPanel(FlowLayout(FlowLayout.LEFT, 6, 0))
+        candidate_actions.add(self.external_accept_button)
+        candidate_actions.add(self.cross_disable_button)
+        candidate_actions.add(Box.createHorizontalStrut(18))
+        candidate_actions.add(self.candidate_health_button)
+        self.layout_external_candidate_header(
+            self.fixed_gain_combo, self.candidate_validation_button,
+            candidate_actions)
+        self.tabs.setTitleAt(3, u"CoreXY示意")
+        self.tabs.setTitleAt(4, u"候选与应用")
+        usage_view = self.explanation_panel.getViewport().getView()
+        usage_view.setFont(Font("Dialog", Font.PLAIN, 14))
+        usage_view.setText(external_fixed_usage_text())
+        usage_view.setCaretPosition(0)
+        self.refresh_status()
+        self.status_root_panel.revalidate()
+        self.status_root_panel.repaint()
+        start_agent_machine_state_monitor(self)
+        apply_ui_language(self)
+    self.tabs.setSelectedIndex(0)
+
+
+CoreXYTuner._build_tabs = build_tabs_with_original_agent_backend
+
+
+_unlocalized_refresh_status = CoreXYTuner.refresh_status
+
+
+def refresh_status_with_ui_language(self):
+    _unlocalized_refresh_status(self)
+    if hasattr(self, "ui_language"):
+        apply_ui_language(self)
+
+
+CoreXYTuner.refresh_status = refresh_status_with_ui_language

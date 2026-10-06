@@ -135,7 +135,7 @@ public class BoardsPanel extends JPanel {
         boardsTable.getTableHeader().setDefaultRenderer(new MultisortTableHeaderCellRenderer());
         boardsTable.setDefaultRenderer(LengthCellValue.class, new MonospacedFontTableCellRenderer());
         boardsTable.setSelectionMode(ListSelectionModel.MULTIPLE_INTERVAL_SELECTION);
-        boardsTable.setAutoResizeMode(JTable.AUTO_RESIZE_NEXT_COLUMN);
+        boardsTable.setAutoResizeMode(JTable.AUTO_RESIZE_OFF);
         
         TableUtils.setColumnAlignment(boardsTableModel, boardsTable);
         

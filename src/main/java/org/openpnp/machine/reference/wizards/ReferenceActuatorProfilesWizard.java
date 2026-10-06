@@ -46,6 +46,7 @@ import javax.swing.table.TableRowSorter;
 
 import org.openpnp.gui.MainFrame;
 import org.openpnp.gui.components.AutoSelectTextTable;
+import org.openpnp.gui.support.RowReorderSupport;
 import org.openpnp.gui.support.AbstractConfigurationWizard;
 import org.openpnp.gui.support.ActuatorsComboBoxModel;
 import org.openpnp.gui.support.Icons;
@@ -237,10 +238,22 @@ public class ReferenceActuatorProfilesWizard extends AbstractConfigurationWizard
                 return super.getToolTipText();
             }
         };
+        table.setRowReorderHandler((rows, targetRow) -> {
+            ArrayList<Profile> ordered = new ArrayList<>(actuatorProfiles.getProfiles());
+            List<Profile> reordered = RowReorderSupport.reorder(ordered, rows, targetRow);
+            if (reordered == null) {
+                return false;
+            }
+            actuatorProfiles.getProfiles().clear();
+            actuatorProfiles.getProfiles().addAll(reordered);
+            actuatorProfiles.fireTableDataChanged();
+            actuator.fireProfilesChanged();
+            return true;
+        });
         tableSorter = new TableRowSorter<>(actuatorProfiles);
         table.setRowSorter(tableSorter);
         table.getTableHeader().setDefaultRenderer(new MultisortTableHeaderCellRenderer());
-        table.setSelectionMode(ListSelectionModel.SINGLE_SELECTION);
+        table.setSelectionMode(ListSelectionModel.MULTIPLE_INTERVAL_SELECTION);
         table.getSelectionModel().addListSelectionListener(new ListSelectionListener() {
             @Override
             public void valueChanged(ListSelectionEvent e) {

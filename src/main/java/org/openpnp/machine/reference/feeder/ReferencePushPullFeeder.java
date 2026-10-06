@@ -1820,13 +1820,13 @@ public class ReferencePushPullFeeder extends ReferenceFeeder {
             Logger.trace("OCR detected part in feeder "+getId()+", OCR part "+ocrPart.getId());
             setOcrDetectedPart(ocrPart, true);
         }
-        else if (ocrPart != null && ocrPart != currentPart) {
+        else if (ocrPart != null && !currentPart.isInterchangeableWith(ocrPart)) {
             // Wrong part selected in feeder
             Logger.trace("OCR detected wrong part in slot of feeder "+getName()
             +", current part "+currentPart.getId()+" != OCR part "+ocrPart.getId());
             ReferencePushPullFeeder otherFeeder = null;
             for (ReferencePushPullFeeder feeder : getAllPushPullFeeders()) {
-                if (feeder.getPart() == ocrPart) {
+                if (ocrPart.isInterchangeableWith(feeder.getPart())) {
                     otherFeeder = feeder;
                     Logger.trace("other feeder "+feeder.getName()
                     +" has OCR detected part "+ocrPart.getId());

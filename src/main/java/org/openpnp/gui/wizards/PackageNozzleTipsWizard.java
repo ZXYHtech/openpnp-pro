@@ -25,6 +25,7 @@ import java.util.List;
 import javax.swing.JPanel;
 import javax.swing.JScrollPane;
 import javax.swing.JTable;
+import org.openpnp.gui.components.AutoSelectTextTable;
 import javax.swing.table.AbstractTableModel;
 
 import org.openpnp.Translations;
@@ -44,7 +45,7 @@ public class PackageNozzleTipsWizard extends AbstractConfigurationWizard /*JPane
         createUi();
     }
     private void createUi() {
-        table = new JTable(new NozzleTipsTableModel());
+        table = new AutoSelectTextTable(new NozzleTipsTableModel());
         contentPanel.add(table);
     }
 

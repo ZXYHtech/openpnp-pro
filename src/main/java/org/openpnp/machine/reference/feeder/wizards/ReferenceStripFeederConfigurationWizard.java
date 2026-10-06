@@ -52,6 +52,7 @@ import org.openpnp.gui.components.CameraViewActionListener;
 import org.openpnp.gui.components.CameraViewFilter;
 import org.openpnp.gui.components.ComponentDecorators;
 import org.openpnp.gui.components.LocationButtonsPanel;
+import org.openpnp.gui.components.RotationDialButton;
 import org.openpnp.gui.support.AbstractConfigurationWizard;
 import org.openpnp.gui.support.DoubleConverter;
 import org.openpnp.gui.support.Helpers;
@@ -199,7 +200,7 @@ public class ReferenceStripFeederConfigurationWizard extends AbstractConfigurati
         panelPart.add(lblRotationInTape, "2, 4, left, default");
 
         textFieldLocationRotation = new JTextField();
-        panelPart.add(textFieldLocationRotation, "4, 4, fill, default");
+        panelPart.add(RotationDialButton.wrap(textFieldLocationRotation), "4, 4, fill, default");
         textFieldLocationRotation.setColumns(10);
 
         lblRetryCount = new JLabel(Translations.getString(
@@ -515,7 +516,7 @@ public class ReferenceStripFeederConfigurationWizard extends AbstractConfigurati
         for (Board board: Configuration.get().getBoards())    {
             for (Placement p : board.getPlacements())
             {
-                if (p.getPart() == feeder_part)
+                if (feeder_part != null && feeder_part.isInterchangeableWith(p.getPart()))
                 {
                     count++;
                 }

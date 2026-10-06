@@ -33,10 +33,12 @@ import org.openpnp.model.FiducialVisionSettings;
 import org.openpnp.model.Length;
 import org.openpnp.model.Package;
 import org.openpnp.model.Part;
-import org.openpnp.util.Collect;
+import org.openpnp.gui.components.RowReorderableTableModel;
+import org.openpnp.gui.support.RowReorderSupport;
 
 @SuppressWarnings("serial")
-public class PartsTableModel extends AbstractObjectTableModel implements PropertyChangeListener {
+public class PartsTableModel extends AbstractObjectTableModel
+        implements PropertyChangeListener, RowReorderableTableModel {
     private String[] columnNames =
             new String[] {Translations.getString("PartsTableModel.ColumnName.ID"), //$NON-NLS-1$
                     Translations.getString("PartsTableModel.ColumnName.Description"), //$NON-NLS-1$
@@ -47,10 +49,14 @@ public class PartsTableModel extends AbstractObjectTableModel implements Propert
                     Translations.getString("PartsTableModel.ColumnName.BottomVision"), //$NON-NLS-1$
                     Translations.getString("PartsTableModel.ColumnName.FiducialVision"), //$NON-NLS-1$
                     Translations.getString("PartsTableModel.ColumnName.Placements"), //$NON-NLS-1$
-                    Translations.getString("PartsTableModel.ColumnName.Feeders") //$NON-NLS-1$
+                    Translations.getString("PartsTableModel.ColumnName.Feeders"), //$NON-NLS-1$
+                    "通用归类名（相同即可共用飞达）",
+                    "规格/变体（仅说明）",
+                    "调配别名（逗号或分号分隔）"
     };
     private Class[] columnTypes = new Class[] {String.class, String.class, LengthCellValue.class, LengthCellValue.class,
-            Package.class, String.class, BottomVisionSettings.class, FiducialVisionSettings.class, Integer.class, Integer.class};
+            Package.class, String.class, BottomVisionSettings.class, FiducialVisionSettings.class, Integer.class, Integer.class,
+            String.class, String.class, String.class};
     private List<Part> parts;
     private PercentConverter percentConverter = new PercentConverter();
 
@@ -79,7 +85,7 @@ public class PartsTableModel extends AbstractObjectTableModel implements Propert
 
     @Override
     public boolean isCellEditable(int rowIndex, int columnIndex) {
-        return columnIndex >= 1 && columnIndex <= 7;
+        return (columnIndex >= 1 && columnIndex <= 7) || (columnIndex >= 10 && columnIndex <= 12);
     }
 
     @Override
@@ -133,6 +139,15 @@ public class PartsTableModel extends AbstractObjectTableModel implements Propert
             else if (columnIndex == 7) {
                 part.setFiducialVisionSettings((FiducialVisionSettings) aValue);
             }
+            else if (columnIndex == 10) {
+                part.setDisplayId((String) aValue);
+            }
+            else if (columnIndex == 11) {
+                part.setVariant((String) aValue);
+            }
+            else if (columnIndex == 12) {
+                part.setAliases((String) aValue);
+            }
         }
         catch (Exception e) {
             // TODO: dialog, bad input
@@ -162,6 +177,12 @@ public class PartsTableModel extends AbstractObjectTableModel implements Propert
                 return part.getPlacementCount();
             case 9:
                 return part.getAssignedFeeders();
+            case 10:
+                return part.getDisplayId();
+            case 11:
+                return part.getVariant();
+            case 12:
+                return part.getAliases();
             default:
                 return null;
         }
@@ -203,39 +224,36 @@ public class PartsTableModel extends AbstractObjectTableModel implements Propert
                 case "assignedFeeders":
                     fireTableCellUpdated(rowIdx, 9);
                     break;
+                case "displayId":
+                    fireTableRowsUpdated(0, Math.max(0, getRowCount() - 1));
+                    break;
+                case "variant":
+                    fireTableCellUpdated(rowIdx, 11);
+                    break;
+                case "aliases":
+                    fireTableRowsUpdated(0, Math.max(0, getRowCount() - 1));
+                    break;
                 default:
                     //ok - property is not visible in the table so no need to update the table
             }
         }
-        else  {
-            // Parts list itself changed
-            List<Part> newParts = new ArrayList<>(Configuration.get().getParts());
-            
-            //Compute the indices of those parts to remove and those to add
-            List<int[]> indicesToRemove = new ArrayList<>();
-            List<int[]> indicesToAdd = new ArrayList<>();
-            Collect.computeInPlaceUpdateIndices(parts, newParts, indicesToRemove, indicesToAdd);
-
-            //Remove the unneeded parts in reverse order so as to not disturb indices of those 
-            //parts that are yet to be removed
-            for (int[] idxRange : indicesToRemove) {
-                for (int idx=idxRange[0]; idx>=idxRange[1]; idx--) {
-                    Part part = this.getRowObjectAt(idx);
-                    part.removePropertyChangeListener(this);
-                    parts.remove(idx);
-                }
-                fireTableRowsDeleted(idxRange[1], idxRange[0]);
+        else {
+            // A configuration event can represent add/remove or a pure order change. Rebuild the
+            // local view so a right-drag reorder is never discarded as "the same elements".
+            for (Part part : parts) {
+                part.removePropertyChangeListener(this);
             }
-            
-            //Insert any needed parts into the table
-            for (int[] idxRange : indicesToAdd) {
-                for (int idx=idxRange[0]; idx<=idxRange[1]; idx++) {
-                    Part part = newParts.get(idx);
-                    part.addPropertyChangeListener(this);
-                    parts.add(idx, part);
-                }
-                this.fireTableRowsInserted(idxRange[0], idxRange[1]);
+            parts = new ArrayList<>(Configuration.get().getParts());
+            for (Part part : parts) {
+                part.addPropertyChangeListener(this);
             }
+            fireTableDataChanged();
         }
     }
+    @Override
+    public boolean reorderRows(List<Integer> rows, int targetRow) {
+        List<Part> ordered = RowReorderSupport.reorder(parts, rows, targetRow);
+        return ordered != null && Configuration.get().reorderParts(ordered);
+    }
+
 }

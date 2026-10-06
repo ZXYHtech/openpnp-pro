@@ -44,6 +44,7 @@ import javax.swing.Action;
 import javax.swing.DefaultCellEditor;
 import javax.swing.JButton;
 import javax.swing.JComboBox;
+import javax.swing.JComponent;
 import javax.swing.JLabel;
 import javax.swing.JOptionPane;
 import javax.swing.JPanel;
@@ -55,6 +56,7 @@ import javax.swing.JTextField;
 import javax.swing.JToolBar;
 import javax.swing.ListSelectionModel;
 import javax.swing.RowFilter;
+import javax.swing.SwingUtilities;
 import javax.swing.event.DocumentEvent;
 import javax.swing.event.DocumentListener;
 import javax.swing.event.ListSelectionEvent;
@@ -62,6 +64,7 @@ import javax.swing.event.ListSelectionListener;
 import javax.swing.table.TableRowSorter;
 
 import org.openpnp.Translations;
+import org.openpnp.events.JobLoadedEvent;
 import org.openpnp.gui.components.AutoSelectTextTable;
 import org.openpnp.gui.support.AbstractConfigurationWizard;
 import org.openpnp.gui.support.ActionGroup;
@@ -69,10 +72,13 @@ import org.openpnp.gui.support.Helpers;
 import org.openpnp.gui.support.Icons;
 import org.openpnp.gui.support.IdentifiableListCellRenderer;
 import org.openpnp.gui.support.IdentifiableTableCellRenderer;
+import org.openpnp.gui.support.JobUsageFilter;
+import org.openpnp.gui.support.JobUsageSnapshot;
 import org.openpnp.gui.support.MessageBoxes;
 import org.openpnp.gui.support.MultisortTableHeaderCellRenderer;
 import org.openpnp.gui.support.NamedListCellRenderer;
 import org.openpnp.gui.support.NamedTableCellRenderer;
+import org.openpnp.gui.support.ModernTheme;
 import org.openpnp.gui.support.PackagesComboBoxModel;
 import org.openpnp.gui.support.VisionSettingsComboBoxModel;
 import org.openpnp.gui.support.Wizard;
@@ -84,6 +90,7 @@ import org.openpnp.model.BottomVisionSettings;
 import org.openpnp.model.Configuration;
 import org.openpnp.model.Configuration.TablesLinked;
 import org.openpnp.model.FiducialVisionSettings;
+import org.openpnp.model.Job;
 import org.openpnp.model.Part;
 import org.openpnp.spi.Feeder;
 import org.openpnp.spi.FiducialLocator;
@@ -92,6 +99,8 @@ import org.openpnp.util.UiUtils;
 import org.openpnp.util.FeederUtils;
 import org.pmw.tinylog.Logger;
 import org.simpleframework.xml.Serializer;
+
+import com.google.common.eventbus.Subscribe;
 
 @SuppressWarnings("serial")
 public class PartsPanel extends JPanel implements WizardContainer {
@@ -107,6 +116,8 @@ public class PartsPanel extends JPanel implements WizardContainer {
     private PartsTableModel tableModel;
     private TableRowSorter<PartsTableModel> tableSorter;
     private JTextField searchTextField;
+    private JComboBox<JobUsageFilter> usageFilter;
+    private JobUsageSnapshot usageSnapshot;
     private JTable table;
     private ActionGroup singleSelectionActionGroup;
     private ActionGroup multiSelectionActionGroup;
@@ -138,6 +149,11 @@ public class PartsPanel extends JPanel implements WizardContainer {
 
         JPanel panel_1 = new JPanel();
         toolbarAndSearch.add(panel_1, BorderLayout.EAST);
+
+        panel_1.add(new JLabel("显示"));
+        usageFilter = new JComboBox<>(JobUsageFilter.values());
+        usageFilter.addActionListener(event -> refreshUsageDisplay());
+        panel_1.add(usageFilter);
 
         JLabel lblSearch = new JLabel(Translations.getString("PartsPanel.SearchLabel.text")); //$NON-NLS-1$
         panel_1.add(lblSearch);
@@ -183,12 +199,47 @@ public class PartsPanel extends JPanel implements WizardContainer {
 
         table = new AutoSelectTextTable(tableModel) {
             @Override
-            public String getToolTipText(MouseEvent evt) {
-                int column = convertColumnIndexToModel(columnAtPoint(evt.getPoint()));
-                if(column==2) { return Translations.getString("PartsTableModel.Column.Height.toolTip"); } //$NON-NLS-1$
-                if(column==3) { return Translations.getString("PartsTableModel.Column.ThroughBoardDepth.toolTip"); } //$NON-NLS-1$
-                return null;
+            public Component prepareRenderer(javax.swing.table.TableCellRenderer renderer, int row,
+                    int column) {
+                Component component = super.prepareRenderer(renderer, row, column);
+                Part part = tableModel.getRowObjectAt(convertRowIndexToModel(row));
+                boolean used = usageSnapshot != null && usageSnapshot.isUsed(part);
+                if (!isRowSelected(row)) {
+                    component.setBackground(used
+                            ? new java.awt.Color(ModernTheme.isDark() ? 0x234A3D : 0xE2F5EC)
+                            : getBackground());
+                }
+                if (component instanceof JComponent) {
+                    ((JComponent) component).setToolTipText(
+                            used ? "当前任务使用" : "当前任务未使用");
+                }
+                return component;
             }
+
+            @Override
+            public String getToolTipText(MouseEvent evt) {
+                String fullValue = super.getToolTipText(evt);
+                if (fullValue != null) {
+                    return fullValue;
+                }
+                int viewColumn = columnAtPoint(evt.getPoint());
+                if (viewColumn < 0) {
+                    return null;
+                }
+                  int column = convertColumnIndexToModel(viewColumn);
+                  if(column==2) { return Translations.getString("PartsTableModel.Column.Height.toolTip"); } //$NON-NLS-1$
+                  if(column==3) { return Translations.getString("PartsTableModel.Column.ThroughBoardDepth.toolTip"); } //$NON-NLS-1$
+                  if(column==10) {
+                      return "通用归类名相同的任务元件与飞达元件可互相调配。建议填写统一物料组编码。";
+                  }
+                  if(column==11) {
+                      return "规格/变体仅用于说明、显示和搜索，不会自动允许不同物料共用飞达。";
+                  }
+                  if(column==12) {
+                      return "调配别名可填写其他任务或飞达元件名，以逗号或分号分隔；任一名称匹配即可共用飞达。";
+                  }
+                  return null;
+              }
         };
         table.setSelectionMode(ListSelectionModel.MULTIPLE_INTERVAL_SELECTION);
         table.setDefaultEditor(org.openpnp.model.Package.class,
@@ -214,6 +265,7 @@ public class PartsPanel extends JPanel implements WizardContainer {
                 new NamedTableCellRenderer<AbstractVisionSettings>());
 
         table.setRowSorter(tableSorter);
+        ((AutoSelectTextTable) table).setRowReorderHandler(this::reorderRows);
         table.getTableHeader().setDefaultRenderer(new MultisortTableHeaderCellRenderer());
         splitPane.setLeftComponent(new JScrollPane(table));
         splitPane.setRightComponent(tabbedPane);
@@ -260,6 +312,8 @@ public class PartsPanel extends JPanel implements WizardContainer {
                 Helpers.selectObjectTableRow(table, selectedPart);
             }
         });
+        configuration.getBus().register(this);
+        refreshUsageSnapshot();
     }
 
     public Part getSelectedPart() {
@@ -286,17 +340,58 @@ public class PartsPanel extends JPanel implements WizardContainer {
         return selections;
     }
 
+    private boolean reorderRows(List<Integer> rows, int targetRow) {
+        List<Part> selected = new ArrayList<>();
+        for (Integer row : rows) {
+            if (row != null && row >= 0 && row < tableModel.getRowCount()) {
+                selected.add(tableModel.getRowObjectAt(row));
+            }
+        }
+        boolean changed = tableModel.reorderRows(rows, targetRow);
+        if (changed) {
+            tableSorter.setSortKeys(null);
+            Helpers.selectObjectTableRows(table, selected);
+
+        }
+        return changed;
+    }
+
     private void search() {
-        RowFilter<PartsTableModel, Object> rf = null;
-        // If current expression doesn't parse, don't update.
+        RowFilter<PartsTableModel, Object> textFilter = null;
         try {
-            rf = RowFilter.regexFilter("(?i)" + searchTextField.getText().trim());
+            textFilter = RowFilter.regexFilter("(?i)" + searchTextField.getText().trim());
         }
         catch (PatternSyntaxException e) {
             Logger.warn(e, "Search failed");
             return;
         }
-        tableSorter.setRowFilter(rf);
+        final JobUsageFilter selectedFilter = (JobUsageFilter) usageFilter.getSelectedItem();
+        RowFilter<PartsTableModel, Object> usageRowFilter = new RowFilter<PartsTableModel, Object>() {
+            @Override
+            public boolean include(Entry<? extends PartsTableModel, ? extends Object> entry) {
+                Part part = tableModel.getRowObjectAt((Integer) entry.getIdentifier());
+                return selectedFilter == null || selectedFilter.includes(
+                        usageSnapshot != null && usageSnapshot.isUsed(part));
+            }
+        };
+        tableSorter.setRowFilter(textFilter == null ? usageRowFilter
+                : RowFilter.andFilter(java.util.Arrays.asList(textFilter, usageRowFilter)));
+    }
+
+    private void refreshUsageDisplay() {
+        refreshUsageSnapshot();
+        search();
+        table.repaint();
+    }
+
+    private void refreshUsageSnapshot() {
+        Job job = frame instanceof MainFrame ? ((MainFrame) frame).getJobTab().getJob() : null;
+        usageSnapshot = JobUsageSnapshot.capture(job, configuration.getMachine());
+    }
+
+    @Subscribe
+    public void jobLoaded(JobLoadedEvent event) {
+        SwingUtilities.invokeLater(this::refreshUsageDisplay);
     }
 
     public final Action newPartAction = new AbstractAction() {

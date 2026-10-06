@@ -26,6 +26,13 @@ import org.simpleframework.xml.core.Commit;
         description="Capture an image from the pipeline camera.")
 
 public class ImageCapture extends CvStage {
+    /**
+     * A pre-captured image supplied by the experimental flying-vision path.
+     * Normal pipelines never set this property and retain their original
+     * light, settle and capture behavior.
+     */
+    public static final String EXPERIMENTAL_CAPTURE_PROPERTY =
+            "openpnp.pro.experimentalCaptureImage";
     @Attribute(required=false)
     @Property(description="Use the default camera lighting.")
     private boolean defaultLight = true;
@@ -91,6 +98,12 @@ public class ImageCapture extends CvStage {
     }
     @Override
     public Result process(CvPipeline pipeline) throws Exception {
+        Object experimentalImage = pipeline.getProperty(EXPERIMENTAL_CAPTURE_PROPERTY);
+        if (experimentalImage instanceof BufferedImage) {
+            BufferedImage bufferedImage = (BufferedImage) experimentalImage;
+            pipeline.setLastCapturedImage(bufferedImage);
+            return new Result(OpenCvUtils.toMat(bufferedImage), ColorSpace.Bgr);
+        }
         Camera camera = (Camera) pipeline.getProperty("camera");
         if (camera == null) {
             throw new Exception("No Camera set on pipeline.");

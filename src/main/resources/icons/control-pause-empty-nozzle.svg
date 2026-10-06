@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg width="24" height="24" viewBox="0 0 24 24"
+     xmlns="http://www.w3.org/2000/svg">
+  <title>Pause when all nozzles are empty</title>
+  <path d="M3 3h10v3l-2 3v4l-3 3-3-3V9L3 6V3z"
+        fill="none" stroke="#168AAD" stroke-width="1.8"
+        stroke-linejoin="round"/>
+  <path d="M5.5 5h5M6.5 9h3M8 16v2"
+        fill="none" stroke="#168AAD" stroke-width="1.8"
+        stroke-linecap="round"/>
+  <rect x="15" y="7" width="2.8" height="11" rx="0.8"
+        fill="#E4BC00"/>
+  <rect x="19.2" y="7" width="2.8" height="11" rx="0.8"
+        fill="#E4BC00"/>
+</svg>

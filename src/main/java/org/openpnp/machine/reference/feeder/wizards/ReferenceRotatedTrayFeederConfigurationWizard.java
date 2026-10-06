@@ -39,6 +39,7 @@ import org.jdesktop.beansbinding.AutoBinding.UpdateStrategy;
 import org.openpnp.Translations;
 import org.openpnp.gui.components.ComponentDecorators;
 import org.openpnp.gui.components.LocationButtonsPanel;
+import org.openpnp.gui.components.RotationDialButton;
 import org.openpnp.gui.support.AbstractConfigurationWizard;
 import org.openpnp.gui.support.DoubleConverter;
 import org.openpnp.gui.support.IdentifiableListCellRenderer;
@@ -293,7 +294,7 @@ public class ReferenceRotatedTrayFeederConfigurationWizard extends AbstractConfi
             panelParameters.add(lblComponentRotation, "2, 6"); //$NON-NLS-1$
 
             textFieldComponentRotation = new JTextField();
-            panelParameters.add(textFieldComponentRotation, "4, 6"); //$NON-NLS-1$
+            panelParameters.add(RotationDialButton.wrap(textFieldComponentRotation), "4, 6"); //$NON-NLS-1$
             textFieldComponentRotation.setColumns(10);
             textFieldComponentRotation.setToolTipText(Translations.getString("ReferenceRotatedTrayFeederConfigurationWizard.ComponentRotation.ToolTip")); //$NON-NLS-1$
 
@@ -343,7 +344,7 @@ public class ReferenceRotatedTrayFeederConfigurationWizard extends AbstractConfi
 
             textFieldTrayRotation = new JTextField();
             textFieldTrayRotation.setToolTipText(Translations.getString("ReferenceRotatedTrayFeederConfigurationWizard.TrayRotation.ToolTip")); //$NON-NLS-1$
-            panelParameters.add(textFieldTrayRotation, "4, 16"); //$NON-NLS-1$
+            panelParameters.add(RotationDialButton.wrap(textFieldTrayRotation), "4, 16"); //$NON-NLS-1$
             textFieldTrayRotation.setColumns(10);
 
             //This need to come after textFieldLocationX, textFieldLocationY and 

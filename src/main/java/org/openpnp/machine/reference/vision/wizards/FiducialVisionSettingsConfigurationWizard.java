@@ -232,6 +232,17 @@ public class FiducialVisionSettingsConfigurationWizard extends AbstractConfigura
             public Camera getCamera() throws Exception { return fiducialLocator.getVisionCamera(); }
 
             @Override
+            public void openSmartVision() throws Exception {
+                applyAction.actionPerformed(null);
+                CvPipeline pipeline = getPipeline();
+                pipelineConfiguration(pipeline, getPipelineParameterAssignments(), false);
+                Camera camera = fiducialLocator.getVisionCamera();
+                openSmartVisionStudio("Top Vision · 智能视觉辅助", pipeline,
+                        org.openpnp.gui.SmartVisionStudioDialog.VisionContext.TOP,
+                        camera, () -> testFiducialLocation());
+            }
+
+            @Override
             public void resetPipeline() throws Exception {
                 int result = JOptionPane.showConfirmDialog(getTopLevelAncestor(),
                         "This will replace the Pipeline with the default. Are you sure??", null,
@@ -253,6 +264,7 @@ public class FiducialVisionSettingsConfigurationWizard extends AbstractConfigura
         };
         pipelinePanel.setResetable(true);
         pipelinePanel.setEditable(true);
+        pipelinePanel.setSmartVisionEnabled(true);
         panel.add(pipelinePanel, "1, 12, 14, 1, fill, fill");
 
         JPanel panelAlign = new JPanel();

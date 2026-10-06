@@ -1,5 +1,7 @@
 package org.openpnp.vision.pipeline.ui;
 
+import org.openpnp.gui.components.AutoSelectTextTable;
+
 import java.awt.BorderLayout;
 import java.awt.Dimension;
 import java.awt.Toolkit;
@@ -31,11 +33,14 @@ import javax.swing.event.ListSelectionEvent;
 import javax.swing.event.ListSelectionListener;
 import javax.swing.event.TableModelEvent;
 import javax.swing.event.TableModelListener;
+import javax.swing.filechooser.FileNameExtensionFilter;
 
 import org.openpnp.gui.components.ClassSelectionDialog;
 import org.openpnp.gui.support.Helpers;
 import org.openpnp.gui.support.Icons;
 import org.openpnp.gui.support.MessageBoxes;
+import org.openpnp.gui.support.PathSelectionDialog;
+import org.openpnp.gui.support.PathSelectionDialog.Mode;
 import org.openpnp.spi.Camera;
 import org.openpnp.util.MovableUtils;
 import org.openpnp.util.UiUtils;
@@ -103,10 +108,18 @@ public class PipelinePanel extends JPanel {
         pasteButton.setHideActionText(true);
         toolbar.add(pasteButton);
 
+        toolbar.addSeparator();
+
+        JButton importButton = new JButton(importFileAction);
+        toolbar.add(importButton);
+
+        JButton exportButton = new JButton(exportFileAction);
+        toolbar.add(exportButton);
+
         JSplitPane splitPaneStages = new JSplitPane();
         splitPaneStages.setOrientation(JSplitPane.VERTICAL_SPLIT);
 
-        stagesTable = new JTable(stagesTableModel = new StagesTableModel(editor.getPipeline()));
+        stagesTable = new AutoSelectTextTable(stagesTableModel = new StagesTableModel(editor.getPipeline()));
         stagesTable.setSelectionMode(ListSelectionModel.SINGLE_SELECTION);
         stagesTable.setDragEnabled(true);
         stagesTable.setDropMode(DropMode.INSERT_ROWS);
@@ -350,6 +363,81 @@ public class PipelinePanel extends JPanel {
             }
         }
     };
+
+    public final Action importFileAction = new AbstractAction("Import XML...") {
+        {
+            putValue(SMALL_ICON, Icons.importt);
+            putValue(SHORT_DESCRIPTION, "从 UTF-8 XML 文件导入管线并替换当前内容。");
+        }
+
+        @Override
+        public void actionPerformed(ActionEvent event) {
+            java.io.File[] selected = PathSelectionDialog.chooseOpen(getTopLevelAncestor(),
+                    "pipeline-editor-import", "导入视觉管线 XML", Mode.FILES, false,
+                    org.openpnp.model.Configuration.get().getConfigurationDirectory(),
+                    pipelineFileFilter());
+            if (selected == null) {
+                return;
+            }
+            java.io.File file = selected[0];
+            int result = JOptionPane.showConfirmDialog(getTopLevelAncestor(),
+                    "将用文件中的管线替换当前编辑内容。是否继续？\n" + file,
+                    "导入视觉管线", JOptionPane.YES_NO_OPTION, JOptionPane.WARNING_MESSAGE);
+            if (result != JOptionPane.YES_OPTION) {
+                return;
+            }
+            try {
+                CvPipelineFileIo.replace(editor.getPipeline(), file);
+                stagesTableModel.refresh();
+                Helpers.selectLastTableRow(stagesTable);
+                editor.process();
+            }
+            catch (Exception error) {
+                MessageBoxes.errorBox(getTopLevelAncestor(), "导入视觉管线失败", error);
+            }
+        }
+    };
+
+    public final Action exportFileAction = new AbstractAction("Export XML...") {
+        {
+            putValue(SMALL_ICON, Icons.export);
+            putValue(SHORT_DESCRIPTION, "把当前管线保存为 UTF-8 XML 文件。");
+        }
+
+        @Override
+        public void actionPerformed(ActionEvent event) {
+            java.io.File selected = PathSelectionDialog.chooseSave(getTopLevelAncestor(),
+                    "pipeline-editor-export", "导出视觉管线 XML",
+                    new java.io.File("vision-pipeline.xml"),
+                    org.openpnp.model.Configuration.get().getConfigurationDirectory(),
+                    pipelineFileFilter());
+            if (selected == null) {
+                return;
+            }
+            java.io.File file = CvPipelineFileIo.normalizeExportFile(selected);
+            if (file.exists()) {
+                int result = JOptionPane.showConfirmDialog(getTopLevelAncestor(),
+                        "文件已存在，是否覆盖？\n" + file,
+                        "导出视觉管线", JOptionPane.YES_NO_OPTION, JOptionPane.WARNING_MESSAGE);
+                if (result != JOptionPane.YES_OPTION) {
+                    return;
+                }
+            }
+            try {
+                CvPipelineFileIo.write(editor.getPipeline(), file);
+                JOptionPane.showMessageDialog(getTopLevelAncestor(),
+                        "视觉管线已导出：\n" + file,
+                        "导出完成", JOptionPane.INFORMATION_MESSAGE);
+            }
+            catch (Exception error) {
+                MessageBoxes.errorBox(getTopLevelAncestor(), "导出视觉管线失败", error);
+            }
+        }
+    };
+
+    private FileNameExtensionFilter pipelineFileFilter() {
+        return new FileNameExtensionFilter("OpenPnP vision pipeline (*.xml)", "xml");
+    }
 
     public final Action refreshAction = new AbstractAction() {
         {

@@ -1,0 +1,93 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Wix xmlns="http://schemas.microsoft.com/wix/2006/wi"
+     xmlns:util="http://schemas.microsoft.com/wix/UtilExtension">
+
+  <Fragment>
+    <UI>
+      <Dialog Id="ShortcutPromptDlg" Width="370" Height="270"
+              Title="[ProductName] 安装向导" NoMinimize="yes">
+        <Control Id="Title" Type="Text" X="15" Y="6" Width="260" Height="15"
+                 Transparent="yes" NoPrefix="yes" Text="{\WixUI_Font_Title}版本介绍与安装方式" />
+        <Control Id="Description" Type="Text" X="25" Y="23" Width="320" Height="15"
+                 Transparent="yes" NoPrefix="yes" Text="安装前请确认版本和替换方式" />
+        <Control Id="BannerBitmap" Type="Bitmap" X="0" Y="0" Width="370" Height="44"
+                 TabSkip="no" Text="WixUI_Bmp_Banner" />
+        <Control Id="BannerLine" Type="Line" X="0" Y="44" Width="370" Height="0" />
+        <Control Id="BottomLine" Type="Line" X="0" Y="234" Width="370" Height="0" />
+
+        <Control Id="VersionLabel" Type="Text" X="20" Y="55" Width="330" Height="12"
+                 Text="{\WixUI_Font_Bold}准备安装：[ProductName] [ProductVersion]" />
+        <Control Id="ReleaseNotes" Type="Text" X="20" Y="72" Width="330" Height="32"
+                 Text="@@JP_RELEASE_NOTES@@" />
+        <Control Id="DataSafety" Type="Text" X="20" Y="107" Width="330" Height="24"
+                 Text="用户数据保护：安装和升级不会删除 .openpnp2 中的机器、飞达、吸嘴、物料、任务或视觉配置。" />
+
+        <Control Id="NewInstallState" Type="Text" X="20" Y="136" Width="330" Height="18"
+                 Text="未检测到可替换的旧版本，将执行全新安装。">
+          <Condition Action="show">NOT JP_UPGRADABLE_FOUND AND NOT JP_DOWNGRADABLE_FOUND</Condition>
+          <Condition Action="hide">JP_UPGRADABLE_FOUND OR JP_DOWNGRADABLE_FOUND</Condition>
+        </Control>
+        <Control Id="UpgradeState" Type="Text" X="20" Y="134" Width="330" Height="28"
+                 Text="检测到已安装的旧版本。继续后将先替换旧程序文件，再保留原配置完成升级。">
+          <Condition Action="show">JP_UPGRADABLE_FOUND</Condition>
+          <Condition Action="hide">NOT JP_UPGRADABLE_FOUND</Condition>
+        </Control>
+        <Control Id="DowngradeState" Type="Text" X="20" Y="134" Width="330" Height="28"
+                 Text="检测到更高版本。为避免配置兼容风险，本安装包禁止降级覆盖。">
+          <Condition Action="show">JP_DOWNGRADABLE_FOUND</Condition>
+          <Condition Action="hide">NOT JP_DOWNGRADABLE_FOUND</Condition>
+        </Control>
+        <Control Id="ConfirmReplace" Type="CheckBox" X="20" Y="164" Width="330" Height="18"
+                 CheckBoxValue="1" Property="JP_CONFIRM_REPLACE"
+                 Text="我已了解：继续安装将替换已安装的旧版程序（不会删除用户配置）">
+          <Condition Action="show">JP_UPGRADABLE_FOUND</Condition>
+          <Condition Action="hide">NOT JP_UPGRADABLE_FOUND</Condition>
+        </Control>
+
+        <?ifdef JpDesktopShortcutPrompt ?>
+        <Control Id="InstallDesktopShortcut" Type="CheckBox" X="20" Y="190" Width="220" Height="16"
+                 CheckBoxValue="1" Property="JP_INSTALL_DESKTOP_SHORTCUT" Text="创建桌面快捷方式" />
+        <?endif?>
+        <?ifdef JpStartMenuShortcutPrompt ?>
+        <Control Id="InstallStartMenuShortcut" Type="CheckBox" X="20" Y="210" Width="220" Height="16"
+                 CheckBoxValue="1" Property="JP_INSTALL_STARTMENU_SHORTCUT" Text="创建开始菜单快捷方式" />
+        <?endif?>
+
+        <!-- jpackage injects an unconditional event for a control named Next. Keep a hidden,
+             disabled placeholder so that event cannot bypass our replacement confirmation. -->
+        <Control Id="Next" Type="PushButton" X="0" Y="0" Width="1" Height="1"
+                 Hidden="yes" Disabled="yes" Text="下一步" />
+        <Control Id="Continue" Type="PushButton" X="236" Y="243" Width="56" Height="17"
+                 Default="yes" Text="下一步(&amp;N) &gt;">
+          <Publish Event="SpawnDialog" Value="ReplaceRequiredDlg" Order="1">JP_UPGRADABLE_FOUND AND NOT JP_CONFIRM_REPLACE</Publish>
+          <Publish Event="SpawnDialog" Value="DowngradeBlockedDlg" Order="1">JP_DOWNGRADABLE_FOUND</Publish>
+          <Publish Event="NewDialog" Value="VerifyReadyDlg" Order="2">NOT JP_DOWNGRADABLE_FOUND AND (NOT JP_UPGRADABLE_FOUND OR JP_CONFIRM_REPLACE)</Publish>
+        </Control>
+        <Control Id="Back" Type="PushButton" X="180" Y="243" Width="56" Height="17"
+                 Text="&lt; 上一步(&amp;B)" />
+        <Control Id="Cancel" Type="PushButton" X="304" Y="243" Width="56" Height="17"
+                 Cancel="yes" Text="取消">
+          <Publish Event="SpawnDialog" Value="CancelDlg">1</Publish>
+        </Control>
+      </Dialog>
+
+      <Dialog Id="ReplaceRequiredDlg" Width="330" Height="105" Title="[ProductName] 升级确认">
+        <Control Id="Message" Type="Text" X="20" Y="16" Width="290" Height="45"
+                 Text="检测到旧版本。请勾选“我已了解”后再继续，安装器将替换旧程序并保留用户配置。" />
+        <Control Id="Ok" Type="PushButton" X="140" Y="72" Width="50" Height="17"
+                 Default="yes" Cancel="yes" Text="确定">
+          <Publish Event="EndDialog" Value="Return">1</Publish>
+        </Control>
+      </Dialog>
+
+      <Dialog Id="DowngradeBlockedDlg" Width="330" Height="105" Title="[ProductName] 已安装更高版本">
+        <Control Id="Message" Type="Text" X="20" Y="16" Width="290" Height="45"
+                 Text="当前电脑已安装更高版本。请使用相同或更新版本的安装包；如确需降级，请先从 Windows 应用管理中卸载现有程序。用户配置不会随程序卸载删除。" />
+        <Control Id="Ok" Type="PushButton" X="140" Y="72" Width="50" Height="17"
+                 Default="yes" Cancel="yes" Text="确定">
+          <Publish Event="EndDialog" Value="Return">1</Publish>
+        </Control>
+      </Dialog>
+    </UI>
+  </Fragment>
+</Wix>

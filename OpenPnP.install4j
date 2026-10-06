@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <install4j version="10.0.5" transformSequenceNumber="10">
   <directoryPresets config="./.github/OpenPnP-Developer-ID-Application.p12" />
-  <application name="OpenPnP" applicationId="9204-4030-0867-1434" mediaDir="./installers" mediaFilePattern="${compiler:sys.fullName}-${compiler:sys.platform}-${compiler:mediaFileVersion}" shortName="openpnp" publisher="OpenPnP" publisherWeb="http://openpnp.org" version="develop" allPathsRelative="true" macVolumeId="2f75d25b539292d5" javaMinVersion="11">
+  <application name="OpenPnP Pro" applicationId="7361-2056-4119-2601" mediaDir="./installers" mediaFilePattern="${compiler:sys.fullName}-${compiler:sys.platform}-${compiler:mediaFileVersion}" shortName="openpnp-pro" publisher="OpenPnP Pro" publisherWeb="http://openpnp.org" version="2.6P3-beta49" allPathsRelative="true" macVolumeId="2f75d25b539292d5" javaMinVersion="11">
     <variables>
       <variable name="native_path" />
       <variable name="mediaFileVersion" value="${compiler:sys.version}" />
@@ -47,6 +47,7 @@
         </exclude>
       </dirEntry>
       <fileEntry mountPoint="22" file="CHANGES.md" />
+      <fileEntry mountPoint="22" file="OPENPNP_PRO_CHANGELOG_CN.md" />
       <fileEntry mountPoint="22" file="SPONSORS.md" />
       <fileEntry mountPoint="22" file="LICENSE.txt" />
       <fileEntry mountPoint="22" file="OPENPNP_2_0.md" />
@@ -70,12 +71,12 @@
     </entries>
   </files>
   <launchers>
-    <launcher name="OpenPnP" id="23" icnsFile="./src/main/resources/icons/OpenPnP-logo.icns">
-      <executable name="OpenPnP" iconSet="true" executableMode="gui" singleInstance="true" dpiAware="false" />
+    <launcher name="OpenPnP Pro" id="23" icnsFile="./src/main/resources/icons/OpenPnP-logo.icns">
+      <executable name="OpenPnP Pro" iconSet="true" executableMode="gui" singleInstance="false" dpiAware="false" />
       <splashScreen bitmapFile="./logo/OpenPnP-logo.iconset/icon_128x128.png" />
-      <java mainClass="org.openpnp.Main" vmParameters="--add-opens=java.base/java.lang=ALL-UNNAMED --add-opens=java.desktop/java.awt=ALL-UNNAMED --add-opens=java.desktop/java.awt.color=ALL-UNNAMED">
+      <java mainClass="org.openpnp.Main" vmParameters="-Xms64m -Xmx1536m -XX:+UseG1GC -XX:MaxGCPauseMillis=100 --add-opens=java.base/java.lang=ALL-UNNAMED --add-opens=java.desktop/java.awt=ALL-UNNAMED --add-opens=java.desktop/java.awt.color=ALL-UNNAMED">
         <classPath>
-          <archive location="openpnp-gui-0.0.1-alpha-SNAPSHOT.jar" failOnError="false" />
+          <archive location="openpnp-gui-2.6P3-beta49.jar" failOnError="false" />
           <scanDirectory location="lib" failOnError="false" />
         </classPath>
         <nativeLibraryDirectories>
@@ -978,28 +979,28 @@ if (context.isUnattended()) {
     </styles>
   </installerGui>
   <mediaSets>
-    <windows name="Windows_32" id="24" installDir="openpnp" architecture="32">
+    <windows name="Windows_32" id="24" installDir="openpnp-pro" architecture="32">
       <variables>
         <variable name="native_path" value="windows/x86" />
       </variables>
       <jreBundle jreBundleSource="none" manualJreEntry="true" />
     </windows>
-    <windows name="Windows_64" id="28" installDir="openpnp" architecture="64">
+    <windows name="Windows_64" id="28" installDir="openpnp-pro" architecture="64">
       <variables>
         <variable name="native_path" value="windows/x64" />
       </variables>
     </windows>
     <macosArchive name="macOS Single Bundle Archive" id="337" architecture="universal" launcherId="23" />
-    <unixInstaller name="Unix Installer" id="121" installDir="openpnp">
+    <unixInstaller name="Unix Installer" id="121" installDir="openpnp-pro">
       <jreBundle jreBundleSource="none" />
     </unixInstaller>
-    <unixArchive name="Unix Archive" id="122" installDir="openpnp">
+    <unixArchive name="Unix Archive" id="122" installDir="openpnp-pro">
       <jreBundle jreBundleSource="none" />
     </unixArchive>
-    <linuxRPM name="Linux RPM" id="123" installDir="/opt/openpnp">
+    <linuxRPM name="Linux RPM" id="123" installDir="/opt/openpnp-pro">
       <jreBundle jreBundleSource="none" />
     </linuxRPM>
-    <linuxDeb name="Linux Deb Archive" id="124" installDir="/opt/openpnp" bzip="true" description="Open Source SMT Pick and Place Software" maintainerEmail="jason@vonnieda.org">
+    <linuxDeb name="Linux Deb Archive" id="124" installDir="/opt/openpnp-pro" bzip="true" description="Open Source SMT Pick and Place Software" maintainerEmail="jason@vonnieda.org">
       <jreBundle jreBundleSource="none" />
     </linuxDeb>
   </mediaSets>

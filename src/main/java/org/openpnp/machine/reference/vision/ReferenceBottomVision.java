@@ -114,18 +114,36 @@ public class ReferenceBottomVision extends AbstractPartAlignment {
         if (part == null || nozzle.getPart() == null) {
             throw new Exception("No part on nozzle.");
         }
-        if (part != nozzle.getPart()) {
+        if (!part.isInterchangeableWith(nozzle.getPart())) {
             throw new Exception("Part mismatch with part on nozzle.");
         }
 
         Camera camera = VisionUtils.getBottomVisionCamera();
-        PartAlignmentOffset offsets;
-        if ((bottomVisionSettings.getPreRotateUsage() == PreRotateUsage.Default && preRotate)
-                || (bottomVisionSettings.getPreRotateUsage() == PreRotateUsage.AlwaysOn)) {
-            offsets = findOffsetsPreRotate(part, boardLocation, placement, nozzle, camera, bottomVisionSettings);
+        PartAlignmentOffset offsets = null;
+        if (FlyingBottomVisionService.shouldAttempt(part)) {
+            try {
+                offsets = FlyingBottomVisionService.execute(
+                        this, part, boardLocation, placement, nozzle).getOffsets();
+            }
+            catch (Exception exception) {
+                Logger.warn(exception,
+                        "Flying bottom vision failed for part {}; falling back={}",
+                        part.getId(), FlyingVisionSettings.isFallbackEnabled());
+                if (!FlyingVisionSettings.isFallbackEnabled()) {
+                    throw exception;
+                }
+            }
         }
-        else {
-            offsets = findOffsetsPostRotate(part, boardLocation, placement, nozzle, camera, bottomVisionSettings);
+        if (offsets == null) {
+            if ((bottomVisionSettings.getPreRotateUsage() == PreRotateUsage.Default && preRotate)
+                    || (bottomVisionSettings.getPreRotateUsage() == PreRotateUsage.AlwaysOn)) {
+                offsets = findOffsetsPreRotate(part, boardLocation, placement, nozzle, camera,
+                        bottomVisionSettings);
+            }
+            else {
+                offsets = findOffsetsPostRotate(part, boardLocation, placement, nozzle, camera,
+                        bottomVisionSettings);
+            }
         }
         if (nozzle.isAligningRotationMode()) {
             // Add the rotation offset to the rotation mode rather than adjusting for it in placement. This has the advantage of
@@ -355,6 +373,67 @@ public class ReferenceBottomVision extends AbstractPartAlignment {
         }
     }
 
+    /**
+     * Runs the configured bottom-vision pipeline against an already captured
+     * frame. This is used only by the guarded flying-vision experiment; normal
+     * bottom vision continues to let ImageCapture control lighting and settling.
+     */
+    public PartAlignmentOffset analyzeExperimentalFrame(Part part, Nozzle nozzle,
+            Camera camera, BufferedImage image) throws Exception {
+        return analyzeExperimentalFrame(part, nozzle, camera, image, 0.0, false);
+    }
+
+    /**
+     * Runs a captured flying-vision frame with the same rotation semantics as
+     * normal bottom vision. In pre-rotate mode the part is already held at the
+     * requested placement angle, so the result reports only the residual angle
+     * and is marked pre-rotated.
+     */
+    public PartAlignmentOffset analyzeExperimentalFrame(Part part, Nozzle nozzle,
+            Camera camera, BufferedImage image, double wantedAngle,
+            boolean preRotated) throws Exception {
+        BottomVisionSettings settings = getInheritedVisionSettings(part);
+        Location wantedLocation = getCameraLocationAtPartHeight(
+                part, camera, nozzle, preRotated ? wantedAngle : 0.0);
+        try (CvPipeline pipeline = settings.getPipeline()) {
+            preparePipeline(pipeline, settings.getPipelineParameterAssignments(), camera,
+                    part.getPackage(), nozzle, nozzle.getNozzleTip(), wantedLocation,
+                    wantedLocation, settings);
+            pipeline.setProperty(
+                    org.openpnp.vision.pipeline.stages.ImageCapture.EXPERIMENTAL_CAPTURE_PROPERTY,
+                    image);
+            RotatedRect rect = processPipelineAndGetResult(pipeline, camera, part, nozzle,
+                    wantedLocation, wantedLocation, settings);
+            Location offsets = VisionUtils.getPixelCenterOffsets(
+                    camera, rect.center.x, rect.center.y);
+            double angleOffset = VisionUtils.getPixelAngle(camera, rect.angle)
+                    - (preRotated ? wantedAngle : 0.0);
+            if (settings.getMaxRotation() == MaxRotation.Adjust) {
+                angleOffset = Utils2D.angleNorm(angleOffset);
+            }
+            else {
+                angleOffset = Utils2D.angleNorm(angleOffset, 180);
+            }
+            partSizeCheck(part, settings, rect, camera);
+            offsets = normalizeExperimentalOffsets(offsets, angleOffset,
+                    settings.getVisionOffset(), wantedAngle, preRotated);
+            offsetsCheck(part, nozzle, offsets);
+            return new PartAlignmentOffset(offsets, preRotated);
+        }
+    }
+
+    static Location normalizeExperimentalOffsets(Location offsets, double angleOffset,
+            Location visionOffset, double wantedAngle, boolean preRotated) {
+        if (preRotated) {
+            // Rotating out the residual error also rotates an off-center part
+            // around the nozzle axis. Match findOffsetsPreRotate().
+            return offsets.rotateXy(-angleOffset)
+                    .derive(null, null, null, angleOffset)
+                    .subtract(visionOffset.rotateXy(wantedAngle));
+        }
+        return offsets.derive(null, null, null, angleOffset)
+                .subtract(visionOffset.rotateXy(angleOffset));
+    }
     protected void offsetsCheck(Part part, Nozzle nozzle, Location offsets) throws Exception {
         if (nozzle.getNozzleTip() != null) {
             NozzleTip nt = nozzle.getNozzleTip();

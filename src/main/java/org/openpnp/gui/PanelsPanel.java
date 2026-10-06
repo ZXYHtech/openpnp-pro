@@ -136,7 +136,7 @@ public class PanelsPanel extends JPanel {
         panelsTable.getTableHeader().setDefaultRenderer(new MultisortTableHeaderCellRenderer());
         panelsTable.setDefaultRenderer(LengthCellValue.class, new MonospacedFontTableCellRenderer());
         panelsTable.setSelectionMode(ListSelectionModel.MULTIPLE_INTERVAL_SELECTION);
-        panelsTable.setAutoResizeMode(JTable.AUTO_RESIZE_NEXT_COLUMN);
+        panelsTable.setAutoResizeMode(JTable.AUTO_RESIZE_OFF);
         
         TableUtils.setColumnAlignment(panelsTableModel, panelsTable);
         

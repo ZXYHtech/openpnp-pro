@@ -1,0 +1,2052 @@
+import sys
+import math
+from java.io import FileOutputStream
+from java.text import SimpleDateFormat
+from java.util import Date
+from java.lang import String
+from java.nio.file import Files
+
+
+AGENT_RUNTIME_RELATIVE_PATH = "TornadoSMT/OpenPnP-CoreXY"
+AGENT_WORKFLOW_STEPS = (
+    ("traditional_fresh_start", u"T0-1 新建同期未补偿Primary会话",
+     "CoreXY_Agent_Traditional_Fresh_Baseline_Start.py",
+     "sessions/current-session.properties",
+     "fresh-session", u"新建并加载"),
+    ("traditional_fresh_scan", u"T0-2 采集同期未补偿Primary基线",
+     "CoreXY_Agent_Fresh_Primary_Scan.py",
+     "sessions/current-session.properties",
+     "fresh-session", u"采集基线"),
+    ("fresh_fixed_analyze", u"F0 固定A+/B+：生成同期候选",
+     "CoreXY_Agent_Fresh_Fixed_Vector_Analyze.py",
+     "candidates/latest-fresh-fixed-vector.properties",
+     "surface", u"拟合固定向量"),
+    ("traditional_segmented_analyze", u"T1 传统A/B：生成本机分段候选",
+     "CoreXY_Agent_Traditional_Segmented_Analyze.py",
+     "candidates/latest-traditional-segmented.properties",
+     "surface", u"生成候选"),
+    ("traditional_segmented_load", u"T2 传统A/B：加载分段临时实补偿",
+     "CoreXY_Agent_Load_Traditional_Segmented_Trial.py",
+     "trials/latest-traditional-segmented-physical.properties",
+     "trial", u"加载25%"),
+    ("traditional_segmented_validate", u"T3 传统A/B：分段视觉验收",
+     "CoreXY_Agent_Traditional_Segmented_Validate.py",
+     "diagnostics/latest-traditional-segmented-physical-validation.properties",
+     "physical", u"完整验收"),
+    ("traditional_segmented_review", u"T4 传统A/B：分段结果复核",
+     "CoreXY_Agent_Traditional_Segmented_Review.py",
+     "diagnostics/latest-traditional-segmented-physical-review.properties",
+     "review", u"复核结果"),
+    ("legacy_fixed_load", u"F1 传统A/B：加载固定向量",
+     "CoreXY_Agent_Load_Legacy_Fixed_Trial.py",
+     "trials/latest-legacy-fixed-physical.properties",
+     "legacy-fixed-trial", u"选择增益并加载"),
+    ("legacy_fixed_smoke", u"F2 传统A/B：短路径冒烟",
+     "CoreXY_Agent_Legacy_Fixed_Smoke.py",
+     None, "manual", u"冒烟测试"),
+    ("legacy_fixed_validate", u"F3 传统A/B：视觉验收",
+     "CoreXY_Agent_Legacy_Fixed_Validate.py",
+     "diagnostics/latest-legacy-fixed-physical-validation.properties",
+     "physical", u"完整验收"),
+    ("legacy_fixed_review", u"F4 传统A/B：结果复核",
+     "CoreXY_Agent_Legacy_Fixed_Review.py",
+     "diagnostics/latest-legacy-fixed-physical-review.properties",
+     "review", u"复核结果"),
+    ("profile_compare", u"F5 传统A/B与曲面对比",
+     "CoreXY_Agent_Profile_Compare.py",
+     "diagnostics/latest-profile-comparison.properties",
+     "profile-compare", u"生成对比报告"),
+    ("legacy_fixed_restore", u"F6 结束试用并恢复曲面",
+     "CoreXY_Agent_Restore_Formal_Config.py",
+     "config/corexy.properties", "restore-formal", u"恢复正式"),
+    ("policy", u"0 补偿目标与参考点", "CoreXY_Agent_Compensation_Policy.py",
+     "config/calibration-policy.properties", "policy", u"目标设置"),
+    ("plan", u"1 规划安全范围", "CoreXY_Auto_Calibration_Plan.py",
+     "diagnostics/latest-auto-calibration-plan.properties", "plan",
+     u"生成规划"),
+    ("pilot", u"2 自动试测", "CoreXY_Auto_Calibration_Pilot.py",
+     "diagnostics/latest-auto-calibration-pilot.properties", "pilot",
+     u"运行试测"),
+    ("analyze", u"3 模型分析", "CoreXY_Auto_Calibration_Analyze.py",
+     "diagnostics/latest-auto-calibration-analysis.properties", "analysis",
+     u"分析数据"),
+    ("refine", u"4 自适应细化", "CoreXY_Auto_Calibration_Refine.py",
+     "diagnostics/latest-auto-calibration-refinement.properties", "refine",
+     u"运行细化"),
+    ("surface", u"5 拟合补偿曲面", "CoreXY_Auto_Calibration_Model.py",
+     "candidates/latest-auto-calibration-surface.properties", "surface",
+     u"拟合曲面"),
+    ("heldout", u"6 未补偿留出验证", "CoreXY_Auto_Calibration_Validate.py",
+     "diagnostics/latest-auto-calibration-validation.properties", "heldout",
+     u"留出验证"),
+    ("load25", u"7 加载最小必要临时实补偿",
+     "CoreXY_Agent_Load_Surface_Physical_Trial.py",
+     "trials/latest-surface-physical.properties", "trial",
+     u"加载候选"),
+    ("smoke", u"8 短路径物理冒烟", "CoreXY_Agent_Surface_Physical_Smoke.py",
+     None, "manual", u"冒烟测试"),
+    ("physical", u"9 实补偿视觉验收",
+     "CoreXY_Agent_Surface_Physical_Validate.py",
+     "diagnostics/latest-auto-calibration-physical-validation.properties",
+     "physical", u"实测验收"),
+    ("review", u"10 视觉感知复核",
+     "CoreXY_Agent_Surface_Physical_Review.py",
+     "diagnostics/latest-auto-calibration-physical-review.properties",
+     "review", u"复核结果"),
+    ("promote", u"11 提升为正式配置",
+     "CoreXY_Agent_Promote_Surface_Production.py",
+     "config/corexy.properties", "production", u"正式启用"),
+    ("health", u"12 正式补偿健康检查",
+     "CoreXY_Agent_Production_Health_Check.py",
+     "diagnostics/latest-production-health.properties", "health",
+     u"健康检查"),
+    ("primary_home_regression", u"P1 Primary配置后Home回归",
+     "CoreXY_Agent_Primary_Home_Regression.py",
+     "diagnostics/latest-primary-post-home-regression.properties",
+     "home-retest", u"Home并回归"),
+    ("home_baseline_load", u"13 加载Home未补偿模式",
+     "CoreXY_Agent_Load_Home_B_Baseline.py",
+     "trials/latest-home-reference-baseline-mode.properties",
+     "home-baseline-mode", u"关闭补偿"),
+    ("home_baseline", u"14 Home点未补偿基线",
+     "CoreXY_Agent_Home_B_Retest.py",
+     "diagnostics/latest-home-reference-baseline.properties",
+     "home-baseline", u"测量基线"),
+    ("home_restore", u"15 恢复正式CoreXY配置",
+     "CoreXY_Agent_Restore_Formal_Config.py",
+     "config/corexy.properties", "restore-formal", u"恢复正式"),
+    ("home_retest", u"16 Home点正式补偿复测",
+     "CoreXY_Agent_Home_B_Retest.py",
+     "diagnostics/latest-home-reference-retest.properties",
+     "home-retest", u"Home复测"),
+    ("home_probe_load", u"17 加载Home二维响应探针",
+     "CoreXY_Agent_Load_Home_B_Response_Probe.py",
+     "trials/latest-home-response-probe.properties",
+     "home-response-probe-mode", u"加载探针"),
+    ("home_probe_x_plus", u"18 Home B-X+响应测量",
+     "CoreXY_Agent_Home_B_Retest.py",
+     "diagnostics/latest-home-response-probe-x-plus.properties",
+     "home-response-probe", u"测量X+探针"),
+    ("home_probe_x_minus", u"19 Home B-X-响应测量",
+     "CoreXY_Agent_Home_B_Retest.py",
+     "diagnostics/latest-home-response-probe-x-minus.properties",
+     "home-response-probe", u"测量X-探针"),
+    ("home_probe_y_plus", u"20 Home B-Y+响应测量",
+     "CoreXY_Agent_Home_B_Retest.py",
+     "diagnostics/latest-home-response-probe-y-plus.properties",
+     "home-response-probe", u"测量Y+探针"),
+    ("home_probe_y_minus", u"21 Home B-Y-响应测量",
+     "CoreXY_Agent_Home_B_Retest.py",
+     "diagnostics/latest-home-response-probe-y-minus.properties",
+     "home-response-probe", u"测量Y-探针"),
+    ("home_probe_analyze", u"22 四向中心差分分析",
+     "CoreXY_Agent_Home_B_Response_Analyze.py",
+     "diagnostics/latest-home-response-analysis.properties",
+     "home-response-analysis", u"分析响应"),
+    ("home_candidate_load", u"23 加载Home响应候选",
+     "CoreXY_Agent_Load_Home_B_Response_Candidate.py",
+     "trials/latest-home-response-candidate.properties",
+     "home-response-candidate-mode", u"加载候选"),
+    ("home_candidate_measure", u"24 Home响应候选实测",
+     "CoreXY_Agent_Home_B_Retest.py",
+     "diagnostics/latest-home-response-candidate.properties",
+     "home-response-candidate", u"实测候选"),
+    ("home_candidate_review", u"25 Home候选实测复核",
+     "CoreXY_Agent_Home_B_Response_Candidate_Review.py",
+     "diagnostics/latest-home-response-candidate-review.properties",
+     "home-response-candidate-review", u"复核候选"),
+    ("home_probe_restore", u"26 恢复正式CoreXY配置",
+     "CoreXY_Agent_Restore_Formal_Config.py",
+     "config/corexy.properties", "restore-formal", u"恢复正式"),
+    ("home_surface_load", u"27 加载Home曲面未补偿模式",
+     "CoreXY_Agent_Load_Home_B_Baseline.py",
+     "trials/latest-home-reference-baseline-mode.properties",
+     "home-baseline-mode", u"关闭补偿"),
+    ("home_surface_scan", u"28 Home B距离速度扫描",
+     "CoreXY_Agent_Home_B_Surface_Scan.py",
+     "diagnostics/latest-home-b-surface-scan.properties",
+     "home-b-surface-scan", u"扫描Home曲面"),
+    ("home_surface_analyze", u"29 双参考点B曲面分析",
+     "CoreXY_Agent_Home_B_Surface_Analyze.py",
+     "candidates/latest-dual-reference-home-b.properties",
+     "dual-reference-home-b", u"分析空间差异"),
+    ("home_surface_restore", u"30 恢复正式CoreXY配置",
+     "CoreXY_Agent_Restore_Formal_Config.py",
+     "config/corexy.properties", "restore-formal", u"恢复正式"),
+    ("dual_dry_load", u"31 加载双参考点干运行",
+     "CoreXY_Agent_Load_Dual_Reference_Dry_Run.py",
+     "trials/latest-dual-reference-dry-run.properties",
+     "dual-reference-trial", u"加载干运行"),
+    ("dual_dry_path", u"32 双参考点三位置路径检查",
+     "CoreXY_Agent_Dual_Reference_Dry_Run_Path.py",
+     None, "manual", u"路径检查"),
+    ("dual_physical_load", u"33 加载双参考点临时实补偿",
+     "CoreXY_Agent_Load_Dual_Reference_Physical_Trial.py",
+     "trials/latest-dual-reference-physical.properties",
+     "dual-reference-trial", u"加载实补偿"),
+    ("dual_physical_smoke", u"34 双参考点三位置物理冒烟",
+     "CoreXY_Agent_Dual_Reference_Physical_Smoke.py",
+     None, "manual", u"物理冒烟"),
+    ("dual_home_validate", u"35 Home双参考点视觉验收",
+     "CoreXY_Agent_Home_B_Surface_Scan.py",
+     "diagnostics/latest-dual-reference-home-validation.properties",
+     "dual-home-validation", u"Home视觉验收"),
+    ("dual_primary_validate", u"36 主要标定点回归验收",
+     "CoreXY_Agent_Surface_Physical_Validate.py",
+     "diagnostics/latest-dual-reference-primary-validation.properties",
+     "dual-primary-validation", u"Primary回归"),
+    ("dual_review", u"37 双参考点视觉综合复核",
+     "CoreXY_Agent_Dual_Reference_Review.py",
+     "diagnostics/latest-dual-reference-review.properties",
+     "dual-reference-review", u"综合复核"),
+    ("dual_restore", u"38 恢复正式CoreXY配置",
+     "CoreXY_Agent_Restore_Formal_Config.py",
+     "config/corexy.properties", "restore-formal", u"恢复正式"),
+    ("health_confirm", u"39 异常点定向复测",
+     "CoreXY_Agent_Production_Health_Confirm.py",
+     "diagnostics/latest-production-health-confirmation.properties",
+     "health-confirm", u"定向复测"),
+    ("warning_analysis", u"40 警告驱动候选分析",
+     "CoreXY_Agent_Health_Warning_Candidate_Analyze.py",
+     "diagnostics/latest-health-warning-candidate-analysis.properties",
+     "warning-analysis", u"候选分析"),
+    ("warning_trial_load", u"41 加载推荐临时补偿",
+     "CoreXY_Agent_Load_Health_Warning_Trial.py",
+     "trials/latest-health-warning-gain.properties",
+     "warning-trial", u"加载候选"),
+    ("warning_trial_smoke", u"42 推荐候选短路径冒烟",
+     "CoreXY_Agent_Health_Warning_Trial_Smoke.py",
+     None, "manual", u"候选冒烟"),
+    ("warning_trial_validate", u"43 警告点候选实测复验",
+     "CoreXY_Agent_Health_Warning_Trial_Validate.py",
+     "diagnostics/latest-health-warning-trial-validation.properties",
+     "warning-trial-validation", u"实测候选"),
+    ("restore_formal", u"44 恢复本次正式CoreXY配置",
+     "CoreXY_Agent_Restore_Formal_Config.py",
+     "config/corexy.properties", "restore-formal", u"恢复正式"),
+    ("fresh_start", u"45 建立同期双锚点会话",
+     "CoreXY_Agent_Fresh_Session_Start.py",
+     "sessions/current-session.properties", "fresh-session", u"新建会话"),
+    ("fresh_formal_primary", u"46 同期正式Primary全网格",
+     "CoreXY_Agent_Fresh_Primary_Scan.py",
+     "sessions/current-session.properties", "fresh-session", u"正式Primary"),
+    ("fresh_formal_home", u"47 同期正式Home B全网格",
+     "CoreXY_Agent_Fresh_Home_B_Scan.py",
+     "sessions/current-session.properties", "fresh-session", u"正式Home"),
+    ("fresh_uncomp_load", u"48 加载同期未补偿模式",
+     "CoreXY_Agent_Load_Home_B_Baseline.py",
+     "trials/latest-home-reference-baseline-mode.properties",
+     "home-baseline-mode", u"关闭补偿"),
+    ("fresh_uncomp_primary", u"49 同期未补偿Primary全网格",
+     "CoreXY_Agent_Fresh_Primary_Scan.py",
+     "sessions/current-session.properties", "fresh-session", u"未补Primary"),
+    ("fresh_uncomp_home", u"50 同期未补偿Home B全网格",
+     "CoreXY_Agent_Fresh_Home_B_Scan.py",
+     "sessions/current-session.properties", "fresh-session", u"未补Home"),
+    ("fresh_analyze", u"51 同期双锚点基线分析",
+     "CoreXY_Agent_Fresh_Session_Analyze.py",
+     "sessions/current-session.properties", "fresh-session", u"同期分析"),
+    ("fresh_fit", u"52 拟合最小Home残差候选",
+     "CoreXY_Agent_Fresh_Residual_Fit.py",
+     "candidates/latest-dual-reference-home-b.properties",
+     "dual-reference-home-b", u"拟合候选"),
+    ("fresh_restore", u"53 恢复正式CoreXY配置",
+     "CoreXY_Agent_Restore_Formal_Config.py",
+     "config/corexy.properties", "restore-formal", u"恢复正式"),
+    ("rollback", u"回滚到上一次CoreXY配置",
+     "CoreXY_Agent_Rollback_Production.py",
+     "backups/corexy.previous.properties", "rollback", u"回滚"),
+)
+
+
+def agent_runtime_directory():
+    return File(scripting.getScriptsDirectory(), AGENT_RUNTIME_RELATIVE_PATH)
+
+
+def agent_artifact(relative_path):
+    return File(agent_runtime_directory(), relative_path)
+
+
+def workflow_artifact_path(key, relative_path):
+    path = agent_artifact(relative_path) if relative_path else None
+    if path is not None and path.isFile():
+        return path
+    legacy = {
+        "home_probe_x_plus":
+            "diagnostics/latest-home-response-probe-x.properties",
+        "home_probe_y_minus":
+            "diagnostics/latest-home-response-probe-y.properties",
+    }.get(key)
+    return agent_artifact(legacy) if legacy else path
+
+
+def agent_script(script_name):
+    hidden_name = (script_name[:-3] + ".pytxt"
+                   if script_name.endswith(".py") else script_name)
+    return File(
+        scripting.getScriptsDirectory(), "TornadoSMT/" + hidden_name)
+
+
+def read_agent_properties(path):
+    props = Properties()
+    if path is not None and path.isFile():
+        stream = FileInputStream(path)
+        try:
+            props.load(stream)
+        finally:
+            stream.close()
+    return props
+
+
+def agent_float(props, key, fallback=None):
+    try:
+        value = props.getProperty(key)
+        return float(value) if value is not None else fallback
+    except Exception:
+        return fallback
+
+
+def agent_state_label(state):
+    labels = {
+        "planned-not-measured": u"已规划",
+        "completed": u"已完成",
+        "analyzed-not-measured": u"已分析",
+        "fitted-not-applied": u"已拟合",
+        "passed": u"已通过",
+        "promoted": u"已正式启用",
+        "running": u"进行中",
+        "failed-acceptance": u"等待复核",
+        "failed-validation": u"验证未通过",
+        "warning": u"警告",
+        "failed-health": u"健康检查失败",
+        "failed": u"失败",
+        "cancelled": u"已取消",
+    }
+    return labels.get(state, state if state else u"状态未知")
+
+
+def parse_agent_status(text):
+    values = {}
+    for line in unicode(text).splitlines():
+        if "=" in line:
+            key, value = line.split("=", 1)
+            values[key.strip()] = value.strip()
+    return values
+
+
+def current_agent_status():
+    runtime = agent_runtime_directory()
+    jar = File(runtime, "lib/openpnp-corexy-agent.jar")
+    path = jar.getCanonicalPath()
+    if path not in sys.path:
+        sys.path.append(path)
+    from org.openpnp.corexy.agent import CoreXYScriptBootstrap
+    return unicode(CoreXYScriptBootstrap.status())
+
+
+def workflow_artifact_text(kind, path):
+    if kind == "manual":
+        return u"按需执行；结果以测试窗口为准"
+    if path is None or not path.isFile():
+        return u"未开始"
+    props = read_agent_properties(path)
+    state = props.getProperty("state", "")
+    base = agent_state_label(state)
+    if kind == "policy":
+        target = agent_float(props, "target.radial-tolerance.mm")
+        home_x = agent_float(props, "home-reference.x.mm")
+        home_y = agent_float(props, "home-reference.y.mm")
+        if target is not None:
+            if home_x is not None and home_y is not None:
+                return u"二维目标 {:.3f} mm；Home ({:.3f}, {:.3f})；仅复测".format(
+                    target, home_x, home_y)
+            return u"二维目标 {:.3f} mm".format(target)
+    elif kind == "plan":
+        maximum = agent_float(props, "recommended-virtual-distance.mm")
+        if maximum is not None:
+            return u"{}；建议范围 {:.1f} mm".format(base, maximum)
+    elif kind == "pilot":
+        count = props.getProperty("completed-speed-count", "0")
+        return u"{}；速度阶段 {}".format(base, count)
+    elif kind == "analysis":
+        model = props.getProperty("recommended-model", "")
+        return u"{}；{}".format(base, model or u"未推荐模型")
+    elif kind == "refine":
+        count = props.getProperty("completed-stage-count", "0")
+        return u"{}；细化阶段 {}".format(base, count)
+    elif kind == "surface":
+        index = props.getProperty("recommended-candidate.index", "0")
+        gain = agent_float(props, "candidate.{}.gain".format(index))
+        if gain is not None:
+            return u"{}；推荐增益 {:.0f}%".format(base, gain * 100.0)
+    elif kind == "heldout":
+        gain = agent_float(props, "candidate-gain")
+        passed = props.getProperty("validation.passed", "false") == "true"
+        return u"{}；{}；增益 {:.0f}%".format(
+            base, u"通过" if passed else u"未通过",
+            (gain or 0.0) * 100.0)
+    elif kind == "trial":
+        gain = agent_float(props, "model.gain")
+        return u"已生成临时配置；增益 {:.0f}%".format(
+            (gain or 0.0) * 100.0)
+    elif kind == "physical":
+        before = agent_float(props, "baseline.all.rms.mm")
+        after = agent_float(props, "physical.all.rms.mm")
+        if before and after is not None:
+            improvement = (before - after) * 100.0 / before
+            return u"{}；总体RMS改善 {:.1f}%".format(base, improvement)
+        error_message = props.getProperty("error.message", "").strip()
+        if error_message:
+            return u"{}；{}".format(base, error_message)
+    elif kind == "legacy-fixed-trial":
+        gain = agent_float(props, "model.gain")
+        return u"固定向量临时配置；增益 {:.0f}%".format(
+            (gain or 0.0) * 100.0)
+    elif kind == "review":
+        passed = props.getProperty("validation.passed", "false") == "true"
+        gain = agent_float(props, "model.gain")
+        return u"{}；{}；增益 {:.0f}%".format(
+            base, u"可提升" if passed else u"不可提升",
+            (gain or 0.0) * 100.0)
+    elif kind == "production":
+        enabled = props.getProperty("enabled", "false") == "true"
+        persistent = props.getProperty("production.persistence", "") == "persistent"
+        gain = agent_float(props, "model.gain")
+        if enabled and persistent and gain is not None:
+            return u"正式启用；持久；增益 {:.0f}%".format(gain * 100.0)
+        return u"尚未启用已验证曲面"
+    elif kind == "health":
+        result = props.getProperty("health.result", "")
+        reference_rms = agent_float(props, "reference.all.rms.mm")
+        current_rms = agent_float(props, "current.all.rms.mm")
+        if reference_rms is not None and current_rms is not None:
+            change = (0.0 if reference_rms <= 0.0 else
+                      (current_rms - reference_rms) * 100.0 / reference_rms)
+            labels = {
+                "PASS": u"通过",
+                "WARNING": u"警告",
+                "FAIL": u"失败",
+            }
+            return u"{}；RMS {:.6f} -> {:.6f} mm（{:+.1f}%）".format(
+                labels.get(result, result or base), reference_rms,
+                current_rms, change)
+    elif kind == "profile-compare":
+        recommendation = props.getProperty("recommendation", "")
+        same_baseline = props.getProperty(
+            "comparison.same-baseline", "false") == "true"
+        labels = {"SURFACE": u"Agent曲面", "LEGACY_FIXED": u"固定向量"}
+        return u"{}；建议 {}；基线{}".format(
+            base, labels.get(recommendation, recommendation or u"未知"),
+            u"一致" if same_baseline else u"不一致")
+        return base
+    elif kind == "home-baseline-mode":
+        if (props.getProperty("trial.kind", "") ==
+                "home-reference-baseline"):
+            return u"已生成进程内未补偿模式；等待Home后测量"
+    elif kind == "home-baseline":
+        residual = agent_float(props, "result.radial-residual.mm")
+        if residual is not None:
+            comparison = agent_float(props, "comparison.compensated-residual.mm")
+            if comparison is not None:
+                return u"已测；未补偿 {:.6f}，正式补偿 {:.6f} mm".format(
+                    residual, comparison)
+            return u"已测；B二维未补偿基线 {:.6f} mm".format(residual)
+    elif kind == "home-response-probe-mode":
+        label = props.getProperty("trial.probe-label", "")
+        label = label.replace("-plus", "+").replace("-minus", "-").upper()
+        offset_x = agent_float(props, "trial.probe-offset.x.mm")
+        offset_y = agent_float(props, "trial.probe-offset.y.mm")
+        if label and offset_x is not None and offset_y is not None:
+            return u"进程内B-{}探针；偏置 ({:+.3f}, {:+.3f}) mm".format(
+                label, offset_x, offset_y)
+    elif kind == "home-response-probe":
+        label = props.getProperty("probe.label", "")
+        if not label:
+            axis = props.getProperty("probe.axis", "").lower()
+            component = agent_float(props, "probe.offset." + axis + ".mm")
+            if axis and component is not None:
+                label = axis + ("-plus" if component > 0.0 else "-minus")
+        label = label.replace("-plus", "+").replace("-minus", "-").upper()
+        response_x = agent_float(props, "probe.response.x-per-mm")
+        response_y = agent_float(props, "probe.response.y-per-mm")
+        if label and response_x is not None and response_y is not None:
+            return u"已测B-{}；响应列 ({:+.3f}, {:+.3f}) mm/mm".format(
+                label, response_x, response_y)
+    elif kind == "home-response-analysis":
+        quality = props.getProperty("identification.quality", "")
+        feasible = props.getProperty("solution.target-feasible", "false")
+        predicted = agent_float(props, "solution.predicted-residual.mm")
+        if predicted is not None:
+            return u"已分析；质量{}；目标{}；预测残差 {:.6f} mm".format(
+                quality or u"未知",
+                u"可达" if feasible == "true" else u"不可达",
+                predicted)
+    elif kind == "home-response-candidate-mode":
+        percent = props.getProperty("trial.candidate-percent", "")
+        offset_x = agent_float(props, "trial.candidate-offset.x.mm")
+        offset_y = agent_float(props, "trial.candidate-offset.y.mm")
+        if percent and offset_x is not None and offset_y is not None:
+            return u"进程内{}%候选；B+偏置 ({:+.4f}, {:+.4f}) mm".format(
+                percent, offset_x, offset_y)
+    elif kind == "home-response-candidate":
+        percent = props.getProperty("candidate.percent", "")
+        residual = agent_float(props, "result.radial-residual.mm")
+        improvement = agent_float(props, "comparison.improvement.percent")
+        if percent and residual is not None:
+            return u"已测{}%；残差 {:.6f} mm；改善 {:+.1f}%".format(
+                percent, residual, improvement or 0.0)
+    elif kind == "home-response-candidate-review":
+        percent = props.getProperty("review.recommended-percent", "")
+        residual = agent_float(props, "review.recommended-residual.mm")
+        if percent and residual is not None:
+            return u"已复核；实测较优{}%；残差 {:.6f} mm；未应用".format(
+                percent, residual)
+    elif kind == "home-b-surface-scan":
+        cells = props.getProperty("cell.count", "")
+        speeds = props.getProperty("grid.speed.count", "")
+        distances = props.getProperty("grid.distance.count", "")
+        if cells:
+            return u"已扫描；{}速度 x {}距离，共{}单元；未补偿".format(
+                speeds or u"?", distances or u"?", cells)
+    elif kind == "dual-reference-home-b":
+        raw = agent_float(props, "summary.raw.rms.mm")
+        formal_predicted = agent_float(
+            props, "summary.formal-predicted.rms.mm")
+        local = agent_float(
+            props, "summary.home-candidate-predicted.rms.mm")
+        if raw is not None and formal_predicted is not None and local is not None:
+            return u"诊断候选；RMS 原始 {:.4f} / 正式预测 {:.4f} / Home局部 {:.4f} mm".format(
+                raw, formal_predicted, local)
+    elif kind == "dual-reference-trial":
+        trial_kind = props.getProperty("trial.kind", "")
+        if trial_kind == "dual-reference-home-b-dry-run":
+            return u"已生成进程内双参考点干运行配置；未实补偿"
+        if trial_kind == "dual-reference-home-b-physical":
+            return u"已生成进程内双参考点实补偿配置；未写入正式配置"
+    elif kind == "dual-home-validation":
+        before = agent_float(props, "baseline.rms.mm")
+        after = agent_float(props, "physical.rms.mm")
+        passed = props.getProperty("validation.passed", "false") == "true"
+        if before and after is not None:
+            improvement = 100.0 * (before - after) / before
+            return u"{}；Home RMS {:.6f} -> {:.6f} mm（改善 {:+.1f}%）".format(
+                u"通过" if passed else u"未通过", before, after, improvement)
+    elif kind == "dual-primary-validation":
+        before = agent_float(props, "baseline.all.rms.mm")
+        after = agent_float(props, "physical.all.rms.mm")
+        passed = props.getProperty("validation.passed", "false") == "true"
+        if before and after is not None:
+            change = 100.0 * (after - before) / before
+            return u"{}；Primary RMS {:.6f} -> {:.6f} mm（变化 {:+.1f}%）".format(
+                u"通过" if passed else u"未通过", before, after, change)
+    elif kind == "dual-reference-review":
+        passed = props.getProperty("review.passed", "false") == "true"
+        return (u"双锚点均通过；等待受控提升设计" if passed else
+                u"双锚点未全部通过；禁止提升")
+    elif kind == "home-retest":
+        result = props.getProperty("result.classification", "")
+        residual = agent_float(props, "result.radial-residual.mm")
+        target = agent_float(props, "target.radial-tolerance.mm")
+        labels = {
+            "PASS_ROBUST": u"稳健通过",
+            "PASS_MARGINAL": u"临界通过",
+            "FAIL_TARGET": u"超过目标",
+            "FAIL_INTEGRITY": u"配置完整性失败",
+        }
+        if residual is not None and target is not None:
+            baseline = agent_float(props, "comparison.baseline-residual.mm")
+            if baseline is not None:
+                improvement = agent_float(props, "comparison.improvement.percent", 0.0)
+                return u"{}；未补偿 {:.6f} -> 补偿 {:.6f} mm（{:+.1f}%）".format(
+                    labels.get(result, result or base), baseline, residual,
+                    improvement)
+            return u"{}；B二维残差 {:.6f} / 目标 {:.3f} mm".format(
+                labels.get(result, result or base), residual, target)
+        return labels.get(result, base)
+    elif kind == "health-confirm":
+        result = props.getProperty("confirmation.result", "")
+        labels = {
+            "PASS_CLEARED": u"复测通过，警告已解除",
+            "WARNING_CONFIRMED": u"警告已复现",
+            "WARNING_UNCONFIRMED": u"警告未稳定复现",
+            "FAIL": u"复测失败",
+        }
+        current = agent_float(props, "target.magnitude.mm")
+        reference = agent_float(props, "warning.reference.magnitude.mm")
+        if current is not None and reference is not None:
+            return u"{}；{:.6f} -> {:.6f} mm".format(
+                labels.get(result, result or base), reference, current)
+        return labels.get(result, base)
+    elif kind == "warning-analysis":
+        gain = agent_float(props, "recommended-gain")
+        unchanged = props.getProperty("integrity.config-unchanged", "false")
+        if gain is not None:
+            return u"已分析；推荐临时验证 {:.0f}%；配置未变 {}".format(
+                gain * 100.0, unchanged)
+        return u"已分析；无候选通过全部保护条件"
+    elif kind == "warning-trial":
+        gain = agent_float(props, "trial.target-gain")
+        return u"已生成进程内临时配置；增益 {:.0f}%".format(
+            (gain or 0.0) * 100.0)
+    elif kind == "warning-trial-validation":
+        result = props.getProperty("validation.result", "")
+        measured = agent_float(props, "target.magnitude.mm")
+        labels = {
+            "PASS_ROBUST": u"稳健通过",
+            "PASS": u"通过",
+            "INCONCLUSIVE": u"结果不明确",
+            "FAIL": u"未通过",
+        }
+        if measured is not None:
+            return u"{}；目标残差 {:.6f} mm".format(
+                labels.get(result, result or base), measured)
+        return labels.get(result, base)
+    elif kind == "restore-formal":
+        gain = agent_float(props, "model.gain")
+        return u"可恢复当前正式配置；增益 {:.0f}%".format(
+            (gain or 0.0) * 100.0)
+    elif kind == "rollback":
+        return u"回滚点可用"
+    return base
+
+
+def agent_summary_text(status, formal, review):
+    values = parse_agent_status(status)
+    if values.get("installed") != "true" or values.get("configured") != "true":
+        return u"Agent未正确安装或配置"
+    active = read_agent_properties(File(values.get("config", "")))
+    if (values.get("enabled") == "true" and
+            values.get("dry-run") == "false" and
+            values.get("mode") == "state-offset" and
+            active.getProperty("model.kind", "") ==
+            "FRESH_FIXED_VECTOR_V1" and
+            active.getProperty("production.persistence", "") ==
+            "persistent"):
+        gain = agent_float(active, "model.gain", 0.0)
+        return u"正式CoreXY固定A/B补偿运行中，增益 {:.0f}%".format(
+            gain * 100.0)
+    if (values.get("enabled") == "false" and
+            values.get("dry-run") == "false" and
+            active.getProperty("trial.kind", "") ==
+            "home-reference-baseline" and
+            active.getProperty("trial.persistence", "") == "process-only"):
+        return u"Home未补偿基线模式运行中；禁止生产，测量后恢复正式配置"
+    if (values.get("enabled") == "true" and
+            values.get("mode") ==
+            "distance-speed-position-state-offset"):
+        kind = active.getProperty("trial.kind", "")
+        if values.get("dry-run") == "true" and kind == \
+                "dual-reference-home-b-dry-run":
+            return u"双参考点B曲面干运行中；无物理补偿，禁止生产"
+        if values.get("dry-run") == "false" and kind == \
+                "dual-reference-home-b-physical":
+            return u"双参考点B曲面临时实补偿运行中；禁止生产，重启即恢复正式配置"
+    if (values.get("enabled") == "true" and
+            values.get("dry-run") == "false" and
+            values.get("mode") == "state-offset" and
+            active.getProperty("trial.kind", "") ==
+            "legacy-fixed-vector-physical" and
+            active.getProperty("trial.persistence", "") == "process-only"):
+        gain = agent_float(active, "model.gain", 0.0)
+        return u"旧固定向量 {:.0f}% 临时实补偿运行中；禁止生产，完成验收后恢复正式曲面".format(
+            gain * 100.0)
+    if (values.get("enabled") == "true" and
+            values.get("dry-run") == "false" and
+            values.get("mode") == "state-offset" and
+            active.getProperty("trial.kind", "") == "home-response-probe" and
+            active.getProperty("trial.persistence", "") == "process-only"):
+        label = active.getProperty("trial.probe-label", "")
+        label = label.replace("-plus", "+").replace("-minus", "-").upper()
+        return u"Home B-{}二维响应探针运行中；禁止生产，测量后恢复正式配置".format(
+            label or u"?")
+    if (values.get("enabled") == "true" and
+            values.get("dry-run") == "false" and
+            values.get("mode") == "state-offset" and
+            active.getProperty("trial.kind", "") ==
+            "home-response-candidate" and
+            active.getProperty("trial.persistence", "") == "process-only"):
+        percent = active.getProperty("trial.candidate-percent", "?")
+        return u"Home二维响应{}%候选运行中；禁止生产，实测后恢复正式配置".format(
+            percent)
+    if (values.get("enabled") == "true" and
+            values.get("dry-run") == "false" and
+            values.get("mode") == "distance-speed-state-offset"):
+        gain = agent_float(active, "model.gain")
+        if (active.getProperty("trial.kind", "") == "health-warning-gain" and
+                active.getProperty("trial.persistence", "") == "process-only"):
+            formal_gain = agent_float(formal, "model.gain", 0.0)
+            return u"警告候选临时实补偿运行中，增益 {:.0f}%；重启或恢复正式配置即回到{:.0f}%".format(
+                (gain or 0.0) * 100.0, formal_gain * 100.0)
+        if formal.getProperty("production.persistence", "") == "persistent":
+            return u"正式CoreXY曲面补偿运行中，增益 {:.0f}%".format(
+                (gain or 0.0) * 100.0)
+        return u"临时CoreXY实补偿运行中，增益 {:.0f}%".format(
+            (gain or 0.0) * 100.0)
+    if review.getProperty("validation.passed", "false") == "true":
+        return u"物理验收已通过，等待正式启用"
+    return u"CoreXY自动校准尚未完成"
+
+
+def agent_same_path(left, right):
+    try:
+        return File(unicode(left)).getCanonicalPath().lower() == \
+            File(unicode(right)).getCanonicalPath().lower()
+    except Exception:
+        return False
+
+
+def agent_grid_constraints(x, y, width=1, weightx=0.0,
+                           fill=GridBagConstraints.NONE):
+    constraints = GridBagConstraints()
+    constraints.gridx = x
+    constraints.gridy = y
+    constraints.gridwidth = width
+    constraints.weightx = weightx
+    constraints.fill = fill
+    constraints.anchor = GridBagConstraints.WEST
+    constraints.insets = Insets(2, 5, 2, 5)
+    return constraints
+
+
+def _build_agent_workflow_panel(self):
+    root = JPanel(BorderLayout(8, 8))
+    root.setBorder(BorderFactory.createEmptyBorder(8, 8, 8, 8))
+
+    header = JPanel(BorderLayout(6, 6))
+    self.agent_summary_label = JLabel(u"正在读取Agent状态...")
+    self.agent_summary_label.setFont(
+        self.agent_summary_label.getFont().deriveFont(Font.BOLD, 14.0))
+    self.agent_status_area = JTextArea(6, 72)
+    self.agent_status_area.setEditable(False)
+    self.agent_status_area.setFont(Font("Monospaced", Font.PLAIN, 12))
+    refresh = JButton(u"刷新工作流状态")
+    refresh.addActionListener(lambda event: self.refresh_agent_workflow())
+    header.add(self.agent_summary_label, BorderLayout.NORTH)
+    header.add(JScrollPane(self.agent_status_area), BorderLayout.CENTER)
+    header.add(refresh, BorderLayout.SOUTH)
+    root.add(header, BorderLayout.NORTH)
+
+    grid = JPanel(GridBagLayout())
+    grid.setBorder(BorderFactory.createTitledBorder(
+        u"CoreXY外置补偿（F1-F6：传统固定A/B；0-12：曲面校准）"))
+    grid.add(JLabel(u"阶段"), agent_grid_constraints(0, 0))
+    grid.add(JLabel(u"当前结果"), agent_grid_constraints(
+        1, 0, 1, 1.0, GridBagConstraints.HORIZONTAL))
+    grid.add(JLabel(u"操作"), agent_grid_constraints(2, 0))
+    self.agent_step_status = {}
+    self.agent_step_buttons = {}
+    for row, step in enumerate(AGENT_WORKFLOW_STEPS, 1):
+        key, title, script_name, relative_path, kind, button_text = step
+        title_label = JLabel(title)
+        status_label = JLabel(u"未读取")
+        button = JButton(button_text)
+        button.setPreferredSize(Dimension(118, 24))
+        button.addActionListener(
+            lambda event, name=script_name: self.run_agent_workflow_script(name))
+        grid.add(title_label, agent_grid_constraints(0, row))
+        grid.add(status_label, agent_grid_constraints(
+            1, row, 1, 1.0, GridBagConstraints.HORIZONTAL))
+        grid.add(button, agent_grid_constraints(2, row))
+        self.agent_step_status[key] = status_label
+        self.agent_step_buttons[key] = button
+
+    scroll = JScrollPane(grid)
+    scroll.getVerticalScrollBar().setUnitIncrement(18)
+    root.add(scroll, BorderLayout.CENTER)
+    safety = JLabel(
+        u"带运动的步骤仍会独立确认、检查Home和XY软限位；正式提升与回滚只允许在机器禁用且未Home时执行。")
+    root.add(safety, BorderLayout.SOUTH)
+    self.agent_workflow_panel = root
+    self.refresh_agent_workflow()
+
+
+def refresh_agent_workflow(self):
+    try:
+        status = current_agent_status()
+    except Exception as error:
+        status = u"installed=false\nerror={}".format(error_text(error))
+    formal_path = agent_artifact("config/corexy.properties")
+    review_path = agent_artifact(
+        "diagnostics/latest-auto-calibration-physical-review.properties")
+    health_path = agent_artifact(
+        "diagnostics/latest-production-health.properties")
+    confirmation_path = agent_artifact(
+        "diagnostics/latest-production-health-confirmation.properties")
+    warning_analysis_path = agent_artifact(
+        "diagnostics/latest-health-warning-candidate-analysis.properties")
+    policy_path = agent_artifact("config/calibration-policy.properties")
+    home_baseline_path = agent_artifact(
+        "diagnostics/latest-home-reference-baseline.properties")
+    home_retest_path = agent_artifact(
+        "diagnostics/latest-home-reference-retest.properties")
+    formal = read_agent_properties(formal_path)
+    review = read_agent_properties(review_path)
+    health = read_agent_properties(health_path)
+    confirmation = read_agent_properties(confirmation_path)
+    warning_analysis = read_agent_properties(warning_analysis_path)
+    policy = read_agent_properties(policy_path)
+    home_baseline = read_agent_properties(home_baseline_path)
+    home_retest = read_agent_properties(home_retest_path)
+    summary = agent_summary_text(status, formal, review)
+    health_result = health.getProperty("health.result", "")
+    if (health_result and
+            health.getProperty("production.promoted-at", "") ==
+            formal.getProperty("production.promoted-at", "")):
+        health_labels = {
+            "PASS": u"通过", "WARNING": u"警告", "FAIL": u"失败"}
+        summary += u"；最近健康检查：{}".format(
+            health_labels.get(health_result, health_result))
+    confirmation_result = confirmation.getProperty("confirmation.result", "")
+    if (confirmation_result and
+            confirmation.getProperty("production.promoted-at", "") ==
+            formal.getProperty("production.promoted-at", "")):
+        confirmation_labels = {
+            "PASS_CLEARED": u"警告已解除",
+            "WARNING_CONFIRMED": u"警告已复现",
+            "WARNING_UNCONFIRMED": u"警告未稳定复现",
+            "FAIL": u"复测失败",
+        }
+        summary += u"；定向复测：{}".format(
+            confirmation_labels.get(confirmation_result, confirmation_result))
+    self.agent_summary_label.setText(summary)
+
+    values = parse_agent_status(status)
+    active_offset = values.get("active-offset", "unknown")
+    if active_offset == "()":
+        active_offset = "(X=0.000000, Y=0.000000)"
+    lines = [
+        u"Agent安装/配置：{}/{}".format(
+            values.get("installed", "false"),
+            values.get("configured", "false")),
+        u"补偿模式：{}；启用/干运行：{}/{}".format(
+            values.get("mode", "unknown"),
+            values.get("enabled", "unknown"),
+            values.get("dry-run", "unknown")),
+        u"正式配置：{}".format(values.get("config", "unknown")),
+        u"机器已启用/已Home：{}/{}".format(
+            u"是" if machine.isEnabled() else u"否",
+            u"是" if machine.isHomed() else u"否"),
+        u"A/B状态：{}/{}；当前位置偏置：{}".format(
+            values.get("A-state", "unknown"),
+            values.get("B-state", "unknown"), active_offset),
+    ]
+    before = agent_float(review, "baseline.all.rms.mm")
+    after = agent_float(review, "physical.all.rms.mm")
+    if before and after is not None:
+        lines.append(u"已验证RMS：{:.6f} -> {:.6f} mm（改善 {:.1f}%）".format(
+            before, after, (before - after) * 100.0 / before))
+    target = agent_float(policy, "target.radial-tolerance.mm")
+    if target is not None:
+        lines.append(u"用户二维径向目标：{:.3f} mm；策略：满足目标的最小必要补偿".format(
+            target))
+    home_residual = agent_float(home_retest, "result.radial-residual.mm")
+    home_baseline_residual = agent_float(
+        home_baseline, "result.radial-residual.mm")
+    comparison_source = None
+    if home_retest.getProperty("comparison.available", "false") == "true":
+        comparison_source = home_retest
+    elif home_baseline.getProperty(
+            "comparison.available", "false") == "true":
+        comparison_source = home_baseline
+    if comparison_source is not None:
+        compared_baseline = agent_float(
+            comparison_source, "comparison.baseline-residual.mm")
+        compared_formal = agent_float(
+            comparison_source, "comparison.compensated-residual.mm")
+        compared_change = agent_float(
+            comparison_source, "comparison.improvement.percent", 0.0)
+        lines.append(u"Home同条件对比：未补偿 {:.6f} -> 正式补偿 {:.6f} mm（{:+.1f}%）".format(
+            compared_baseline, compared_formal, compared_change))
+    else:
+        if home_baseline_residual is not None:
+            lines.append(u"最近Home未补偿基线：B状态二维差 {:.6f} mm".format(
+                home_baseline_residual))
+        if home_residual is not None:
+            lines.append(u"最近Home复测：B状态二维残差 {:.6f} mm（尚无同条件基线）".format(
+                home_residual))
+    self.agent_status_area.setText(u"\n".join(lines))
+    self.agent_status_area.setCaretPosition(0)
+
+    for step in AGENT_WORKFLOW_STEPS:
+        key, title, script_name, relative_path, kind, button_text = step
+        path = workflow_artifact_path(key, relative_path)
+        self.agent_step_status[key].setText(
+            workflow_artifact_text(kind, path))
+        script_path = agent_script(script_name)
+        self.agent_step_buttons[key].setEnabled(script_path.isFile())
+        if not script_path.isFile():
+            self.agent_step_status[key].setText(u"脚本缺失")
+
+    physical = read_agent_properties(agent_artifact(
+        "diagnostics/latest-auto-calibration-physical-validation.properties"))
+    if (physical.getProperty("state", "") == "failed-acceptance" and
+            review.getProperty("validation.passed", "false") == "true"):
+        physical_before = agent_float(physical, "baseline.all.rms.mm")
+        physical_after = agent_float(physical, "physical.all.rms.mm")
+        if physical_before and physical_after is not None:
+            improvement = ((physical_before - physical_after) * 100.0 /
+                           physical_before)
+            self.agent_step_status["physical"].setText(
+                u"严格门限未通过；视觉复核已通过；RMS改善 {:.1f}%".format(
+                    improvement))
+
+    formal_mode = values.get("mode", "")
+    fixed_production = (
+        formal_mode == "state-offset" and
+        formal.getProperty("model.kind", "") == "FRESH_FIXED_VECTOR_V1" and
+        formal.getProperty("production.acceptance", "") ==
+        "user-accepted-with-deviation")
+    surface_production = formal_mode == "distance-speed-state-offset"
+    production_active = (
+        values.get("enabled") == "true" and
+        values.get("dry-run") == "false" and
+        (surface_production or fixed_production) and
+        formal.getProperty("production.persistence", "") == "persistent" and
+        agent_same_path(values.get("config", ""), formal_path))
+    active_config = read_agent_properties(File(values.get("config", "")))
+    warning_trial_active = (
+        values.get("enabled") == "true" and
+        values.get("dry-run") == "false" and
+        values.get("mode") == "distance-speed-state-offset" and
+        active_config.getProperty("trial.kind", "") == "health-warning-gain" and
+        active_config.getProperty("trial.persistence", "") == "process-only")
+    home_baseline_active = (
+        values.get("enabled") == "false" and
+        values.get("dry-run") == "false" and
+        active_config.getProperty("trial.kind", "") ==
+        "home-reference-baseline" and
+        active_config.getProperty("trial.persistence", "") == "process-only")
+    home_probe_axis = active_config.getProperty("trial.probe-axis", "").lower()
+    home_probe_label = active_config.getProperty("trial.probe-label", "").lower()
+    home_probe_active = (
+        values.get("enabled") == "true" and
+        values.get("dry-run") == "false" and
+        values.get("mode") == "state-offset" and
+        active_config.getProperty("trial.kind", "") == "home-response-probe" and
+        active_config.getProperty("trial.persistence", "") == "process-only" and
+        home_probe_axis in ["x", "y"] and
+        home_probe_label in ["x-plus", "x-minus", "y-plus", "y-minus"])
+    home_candidate_percent = active_config.getProperty(
+        "trial.candidate-percent", "")
+    home_candidate_active = (
+        values.get("enabled") == "true" and
+        values.get("dry-run") == "false" and
+        values.get("mode") == "state-offset" and
+        active_config.getProperty("trial.kind", "") ==
+        "home-response-candidate" and
+        active_config.getProperty("trial.persistence", "") == "process-only" and
+        home_candidate_percent in ["50", "75", "100"])
+    legacy_fixed_active = (
+        values.get("enabled") == "true" and
+        values.get("dry-run") == "false" and
+        values.get("mode") == "state-offset" and
+        active_config.getProperty("trial.kind", "") ==
+        "legacy-fixed-vector-physical" and
+        active_config.getProperty("trial.persistence", "") == "process-only")
+    traditional_segmented_active = (
+        values.get("enabled") == "true" and
+        values.get("dry-run") == "false" and
+        values.get("mode") == "distance-speed-state-offset" and
+        active_config.getProperty("trial.kind", "") ==
+        "traditional-segmented-physical" and
+        active_config.getProperty("trial.persistence", "") == "process-only")
+    dual_dry_active = (
+        values.get("enabled") == "true" and
+        values.get("dry-run") == "true" and
+        values.get("mode") == "distance-speed-position-state-offset" and
+        active_config.getProperty("trial.kind", "") ==
+        "dual-reference-home-b-dry-run" and
+        active_config.getProperty("trial.persistence", "") == "process-only")
+    dual_physical_active = (
+        values.get("enabled") == "true" and
+        values.get("dry-run") == "false" and
+        values.get("mode") == "distance-speed-position-state-offset" and
+        active_config.getProperty("trial.kind", "") ==
+        "dual-reference-home-b-physical" and
+        active_config.getProperty("trial.persistence", "") == "process-only")
+    machine_enabled = machine.isEnabled()
+    machine_homed = machine.isHomed()
+    if not traditional_segmented_active and not machine_enabled:
+        self.agent_summary_label.setText(
+            u"传统分段A/B路线就绪：下一步点击T1生成本机候选")
+    elif traditional_segmented_active and (not machine_enabled or not machine_homed):
+        self.agent_summary_label.setText(
+            u"传统分段A/B已加载：下一步启用机器并执行正常Home")
+    elif traditional_segmented_active:
+        self.agent_summary_label.setText(
+            u"传统分段A/B验收就绪：下一步点击T3")
+    elif legacy_fixed_active and (not machine_enabled or not machine_homed):
+        self.agent_summary_label.setText(
+            u"传统A/B固定向量已加载：下一步启用机器并执行正常Home")
+    elif legacy_fixed_active:
+        self.agent_summary_label.setText(
+            u"传统A/B验收就绪：下一步点击F3（F2已通过可不重复）")
+
+    segmented_candidate = agent_artifact(
+        "candidates/latest-traditional-segmented.properties")
+    segmented_physical = agent_artifact(
+        "diagnostics/latest-traditional-segmented-physical-validation.properties")
+    segmented_reasons = {}
+    traditional_start_reason = None
+    if not production_active:
+        traditional_start_reason = u"请先重启OpenPnP以恢复持久正式配置。"
+    elif machine_enabled or machine_homed:
+        traditional_start_reason = u"新建同期基线前必须禁用机器并处于未Home状态。"
+    if traditional_start_reason is not None:
+        self.agent_step_buttons["traditional_fresh_start"].setEnabled(False)
+        self.agent_step_buttons["traditional_fresh_start"].setToolTipText(
+            traditional_start_reason)
+
+    traditional_scan_reason = None
+    if not home_baseline_active:
+        traditional_scan_reason = u"请先执行T0-1加载同期未补偿模式。"
+    elif not machine_enabled or not machine_homed:
+        traditional_scan_reason = u"请启用机器并完成正常Home。"
+    elif values.get("homing-bypass") != "false":
+        traditional_scan_reason = u"Home过程尚未完全结束。"
+    if traditional_scan_reason is not None:
+        self.agent_step_buttons["traditional_fresh_scan"].setEnabled(False)
+        self.agent_step_buttons["traditional_fresh_scan"].setToolTipText(
+            traditional_scan_reason)
+
+    fresh_fixed_baseline = None
+    fresh_fixed_session = agent_artifact(
+        "sessions/current-session.properties")
+    if fresh_fixed_session.isFile():
+        current_session_props = read_agent_properties(fresh_fixed_session)
+        session_directory = current_session_props.getProperty(
+            "session.directory", "")
+        if session_directory:
+            fresh_fixed_baseline = File(
+                session_directory, "uncompensated-primary.properties")
+    if (fresh_fixed_baseline is None or
+            not fresh_fixed_baseline.isFile()):
+        self.agent_step_buttons["fresh_fixed_analyze"].setEnabled(False)
+        self.agent_step_buttons["fresh_fixed_analyze"].setToolTipText(
+            u"请先完成T0-1和T0-2，采集本次同期未补偿Primary基线。")
+
+    if machine_enabled or machine_homed:
+        segmented_reasons["traditional_segmented_load"] = \
+            u"加载临时实补偿前必须禁用机器并处于未Home状态。"
+    if not segmented_candidate.isFile():
+        segmented_reasons["traditional_segmented_load"] = \
+            u"请先点击T1生成本机分段候选。"
+    if not traditional_segmented_active:
+        segmented_reasons["traditional_segmented_validate"] = \
+            u"请先点击T2加载传统分段临时实补偿。"
+    elif not machine_enabled or not machine_homed:
+        segmented_reasons["traditional_segmented_validate"] = \
+            u"请先启用机器并完成正常Home。"
+    if not segmented_physical.isFile():
+        segmented_reasons["traditional_segmented_review"] = \
+            u"请先完成T3传统分段视觉验收。"
+    for key in ["traditional_segmented_analyze",
+                "traditional_segmented_load",
+                "traditional_segmented_validate",
+                "traditional_segmented_review"]:
+        if key in segmented_reasons:
+            self.agent_step_buttons[key].setEnabled(False)
+            self.agent_step_buttons[key].setToolTipText(segmented_reasons[key])
+
+    calibration_keys = [
+        "plan", "pilot", "analyze", "refine", "surface", "heldout",
+        "load25", "smoke", "physical", "review", "promote"]
+    for key in calibration_keys:
+        button = self.agent_step_buttons[key]
+        if production_active and button.isEnabled():
+            button.setEnabled(False)
+            button.setToolTipText(
+                u"正式补偿正在运行；该阶段属于新一轮未补偿校准。")
+
+    if warning_trial_active:
+        for key in self.agent_step_buttons:
+            if key not in ["warning_trial_smoke", "warning_trial_validate",
+                           "restore_formal"]:
+                self.agent_step_buttons[key].setEnabled(False)
+                self.agent_step_buttons[key].setToolTipText(
+                    u"推荐候选临时实补偿正在运行；只能冒烟、实测候选或恢复正式配置。")
+
+    if home_baseline_active:
+        for key in self.agent_step_buttons:
+            if key not in ["home_baseline", "home_restore",
+                           "home_surface_scan", "home_surface_analyze",
+                           "home_surface_restore", "fresh_uncomp_primary",
+                           "fresh_uncomp_home", "fresh_analyze",
+                           "fresh_fit", "fresh_restore",
+                           "traditional_fresh_scan",
+                           "traditional_segmented_analyze",
+                           "fresh_fixed_analyze",
+                           "legacy_fixed_load"]:
+                self.agent_step_buttons[key].setEnabled(False)
+                self.agent_step_buttons[key].setToolTipText(
+                    u"Home未补偿基线模式正在运行；只能测量基线或恢复正式配置。")
+
+    if home_probe_active:
+        for key in self.agent_step_buttons:
+            if key not in ["home_probe_load", "home_probe_x_plus",
+                           "home_probe_x_minus", "home_probe_y_plus",
+                           "home_probe_y_minus",
+                           "home_probe_analyze", "home_candidate_load",
+                           "home_probe_restore"]:
+                self.agent_step_buttons[key].setEnabled(False)
+                self.agent_step_buttons[key].setToolTipText(
+                    u"Home二维响应探针正在运行；只能测量、切换探针、分析或恢复正式配置。")
+
+    if home_candidate_active:
+        for key in self.agent_step_buttons:
+            if key not in ["home_candidate_load", "home_candidate_measure",
+                           "home_candidate_review", "home_probe_restore"]:
+                self.agent_step_buttons[key].setEnabled(False)
+                self.agent_step_buttons[key].setToolTipText(
+                    u"Home响应候选正在运行；只能实测、切换候选、复核或恢复正式配置。")
+
+    if traditional_segmented_active:
+        for key in self.agent_step_buttons:
+            if key not in ["traditional_segmented_validate",
+                           "traditional_segmented_review",
+                           "legacy_fixed_restore"]:
+                self.agent_step_buttons[key].setEnabled(False)
+                self.agent_step_buttons[key].setToolTipText(
+                    u"传统分段A/B临时实补偿正在运行；只能验收、复核或恢复正式配置。")
+
+    if dual_dry_active:
+        for key in self.agent_step_buttons:
+            if key not in ["dual_dry_path", "dual_physical_load",
+                           "dual_restore"]:
+                self.agent_step_buttons[key].setEnabled(False)
+                self.agent_step_buttons[key].setToolTipText(
+                    u"双参考点干运行配置正在运行；只能检查路径、加载临时实补偿或恢复正式配置。")
+
+    if dual_physical_active:
+        for key in self.agent_step_buttons:
+            if key not in ["dual_physical_smoke", "dual_home_validate",
+                           "dual_primary_validate", "dual_review",
+                           "dual_restore"]:
+                self.agent_step_buttons[key].setEnabled(False)
+                self.agent_step_buttons[key].setToolTipText(
+                    u"双参考点临时实补偿正在运行；只能执行冒烟、视觉验收、综合复核或恢复正式配置。")
+
+    if legacy_fixed_active:
+        for key in self.agent_step_buttons:
+            if key not in ["legacy_fixed_smoke", "legacy_fixed_validate",
+                           "legacy_fixed_review", "profile_compare",
+                           "legacy_fixed_restore"]:
+                self.agent_step_buttons[key].setEnabled(False)
+                self.agent_step_buttons[key].setToolTipText(
+                    u"固定向量临时实补偿正在运行；只能冒烟、验收、复核、对比或恢复正式曲面。")
+
+    legacy_load_button = self.agent_step_buttons["legacy_fixed_load"]
+    legacy_load_reason = None
+    fresh_fixed_candidate = agent_artifact(
+        "candidates/latest-fresh-fixed-vector.properties")
+    fresh_fixed_ready = (home_baseline_active and
+                         fresh_fixed_candidate.isFile())
+    if not production_active and not fresh_fixed_ready:
+        legacy_load_reason = u"请先恢复持久正式Agent曲面。"
+    elif machine_enabled or machine_homed:
+        legacy_load_reason = u"加载固定向量前必须禁用机器并处于未Home状态。"
+    if legacy_load_reason is not None:
+        legacy_load_button.setEnabled(False)
+        legacy_load_button.setToolTipText(legacy_load_reason)
+
+    for key in ["legacy_fixed_smoke", "legacy_fixed_validate"]:
+        button = self.agent_step_buttons[key]
+        reason = None
+        if not legacy_fixed_active:
+            reason = u"请先加载固定向量临时方案。"
+        elif not machine_enabled or not machine_homed:
+            reason = u"请启用机器并完成Home。"
+        elif values.get("homing-bypass") != "false":
+            reason = u"Home过程尚未结束。"
+        elif values.get("A-state") != "0" or values.get("B-state") != "0":
+            reason = u"请重新Home，使A/B初始状态为0。"
+        if reason is not None:
+            button.setEnabled(False)
+            button.setToolTipText(reason)
+
+    fixed_validation = read_agent_properties(agent_artifact(
+        "diagnostics/latest-legacy-fixed-physical-validation.properties"))
+    fixed_review = read_agent_properties(agent_artifact(
+        "diagnostics/latest-legacy-fixed-physical-review.properties"))
+    review_button = self.agent_step_buttons["legacy_fixed_review"]
+    if fixed_validation.getProperty("state", "") not in \
+            ["passed", "failed-acceptance"]:
+        review_button.setEnabled(False)
+        review_button.setToolTipText(u"请先完成固定向量视觉验收。")
+    compare_button = self.agent_step_buttons["profile_compare"]
+    if fixed_review.getProperty("state", "") not in ["passed", "failed"]:
+        compare_button.setEnabled(False)
+        compare_button.setToolTipText(u"请先完成固定向量结果复核。")
+    restore_button = self.agent_step_buttons["legacy_fixed_restore"]
+    if not legacy_fixed_active:
+        restore_button.setEnabled(False)
+        restore_button.setToolTipText(u"当前未运行固定向量临时方案。")
+    elif machine_enabled or machine_homed:
+        restore_button.setEnabled(False)
+        restore_button.setToolTipText(u"恢复正式曲面前必须禁用机器并处于未Home状态。")
+
+    health_button = self.agent_step_buttons["health"]
+    health_reason = None
+    if not production_active:
+        health_reason = u"当前不是已验证的持久正式补偿。"
+    elif not machine_enabled or not machine_homed:
+        health_reason = u"健康检查需要机器已启用并完成Home。"
+    elif values.get("homing-bypass") != "false":
+        health_reason = u"Home过程尚未完全结束。"
+    elif values.get("A-state") != "0" or values.get("B-state") != "0":
+        health_reason = u"请重新Home，使A/B初始状态都为0。"
+    if health_reason is not None:
+        health_button.setEnabled(False)
+        health_button.setToolTipText(health_reason)
+    elif health_button.isEnabled():
+        health_button.setToolTipText(
+            u"使用正式验收网格执行只读式视觉健康检查。")
+
+    confirmation_button = self.agent_step_buttons["health_confirm"]
+    confirmation_reason = None
+    if not production_active:
+        confirmation_reason = u"当前不是已验证的持久正式补偿。"
+    elif health.getProperty("automatic-confirmation.performed", "") == "true":
+        confirmation_reason = u"最新健康检查已自动完成定向七次复测，无需单独复测。"
+    elif health.getProperty("health.result", "") not in ["WARNING", "FAIL"]:
+        confirmation_reason = u"只有最近的完整健康检查为WARNING或FAIL时需要复测。"
+    elif (health.getProperty("production.promoted-at", "") !=
+          formal.getProperty("production.promoted-at", "")):
+        confirmation_reason = u"该健康检查不属于当前正式配置版本。"
+    elif not machine_enabled or not machine_homed:
+        confirmation_reason = u"定向复测需要机器已启用并完成Home。"
+    elif values.get("homing-bypass") != "false":
+        confirmation_reason = u"Home过程尚未完全结束。"
+    elif values.get("A-state") != "0" or values.get("B-state") != "0":
+        confirmation_reason = u"请重新Home，使A/B初始状态都为0。"
+    if confirmation_reason is not None:
+        confirmation_button.setEnabled(False)
+        confirmation_button.setToolTipText(confirmation_reason)
+    elif confirmation_button.isEnabled():
+        confirmation_button.setToolTipText(
+            u"对最近WARNING或FAIL的最差速度/距离单元执行7次定向复测。")
+
+    home_load_button = self.agent_step_buttons["home_baseline_load"]
+    home_load_reason = None
+    if not production_active:
+        home_load_reason = u"必须先恢复正在运行的持久正式CoreXY补偿。"
+    elif policy.getProperty("home-reference.enabled", "false") != "true":
+        home_load_reason = u"请先在目标设置中启用Home复测基准。"
+    elif machine_enabled or machine_homed:
+        home_load_reason = u"加载未补偿模式前必须禁用机器并处于未Home状态。"
+    if home_load_reason is not None:
+        home_load_button.setEnabled(False)
+        home_load_button.setToolTipText(home_load_reason)
+    elif home_load_button.isEnabled():
+        home_load_button.setToolTipText(
+            u"仅在当前OpenPnP进程关闭CoreXY补偿；正式配置文件保持不变。")
+
+    home_baseline_button = self.agent_step_buttons["home_baseline"]
+    home_baseline_reason = None
+    if not home_baseline_active:
+        home_baseline_reason = u"请先加载Home未补偿基线模式。"
+    elif not machine_enabled or not machine_homed:
+        home_baseline_reason = u"未补偿基线测量需要机器已启用并完成Home。"
+    elif values.get("homing-bypass") != "false":
+        home_baseline_reason = u"Home过程尚未完全结束。"
+    if home_baseline_reason is not None:
+        home_baseline_button.setEnabled(False)
+        home_baseline_button.setToolTipText(home_baseline_reason)
+    elif home_baseline_button.isEnabled():
+        home_baseline_button.setToolTipText(
+            u"在CoreXY补偿关闭时测量Home点B+/B-二维差；不写入模型。")
+
+    home_restore_button = self.agent_step_buttons["home_restore"]
+    home_restore_reason = None
+    if not home_baseline_active:
+        home_restore_reason = u"当前没有Home未补偿临时模式需要恢复。"
+    elif machine_enabled or machine_homed:
+        home_restore_reason = u"恢复正式配置前必须禁用机器并处于未Home状态。"
+    if home_restore_reason is not None:
+        home_restore_button.setEnabled(False)
+        home_restore_button.setToolTipText(home_restore_reason)
+    elif home_restore_button.isEnabled():
+        home_restore_button.setToolTipText(
+            u"结束未补偿诊断模式，重新加载未改动的持久正式配置。")
+
+    home_retest_button = self.agent_step_buttons["home_retest"]
+    home_retest_reason = None
+    if not production_active:
+        home_retest_reason = u"Home复测要求当前运行持久正式CoreXY补偿。"
+    elif policy.getProperty("home-reference.enabled", "false") != "true":
+        home_retest_reason = u"请先在目标设置中启用Home复测基准。"
+    elif not machine_enabled or not machine_homed:
+        home_retest_reason = u"Home复测需要机器已启用并完成Home。"
+    elif values.get("homing-bypass") != "false":
+        home_retest_reason = u"Home过程尚未完全结束。"
+    if home_retest_reason is not None:
+        home_retest_button.setEnabled(False)
+        home_retest_button.setToolTipText(home_retest_reason)
+    elif home_retest_button.isEnabled():
+        home_retest_button.setToolTipText(
+            u"从Home点向工作区内部退让后返回；只隔离B+/B-，不改模型。")
+
+    probe_load_button = self.agent_step_buttons["home_probe_load"]
+    probe_load_reason = None
+    if not production_active and not home_probe_active:
+        probe_load_reason = u"必须先运行正式CoreXY补偿或已加载的Home响应探针。"
+    elif not home_baseline_path.isFile():
+        probe_load_reason = u"请先完成同一正式版本的Home未补偿基线。"
+    elif machine_enabled or machine_homed:
+        probe_load_reason = u"加载或切换探针前必须禁用机器并处于未Home状态。"
+    if probe_load_reason is not None:
+        probe_load_button.setEnabled(False)
+        probe_load_button.setToolTipText(probe_load_reason)
+    elif probe_load_button.isEnabled():
+        probe_load_button.setToolTipText(
+            u"选择B-X+、X-、Y+或Y-探针；仅当前进程生效，不改正式配置。")
+
+    for key, label in [
+            ("home_probe_x_plus", "x-plus"),
+            ("home_probe_x_minus", "x-minus"),
+            ("home_probe_y_plus", "y-plus"),
+            ("home_probe_y_minus", "y-minus")]:
+        button = self.agent_step_buttons[key]
+        reason = None
+        display = label.replace("-plus", "+").replace("-minus", "-").upper()
+        if not home_probe_active or home_probe_label != label:
+            reason = u"请先加载B-{}响应探针。".format(display)
+        elif not machine_enabled or not machine_homed:
+            reason = u"探针测量需要机器已启用并完成Home。"
+        elif values.get("homing-bypass") != "false":
+            reason = u"Home过程尚未完全结束。"
+        if reason is not None:
+            button.setEnabled(False)
+            button.setToolTipText(reason)
+        elif button.isEnabled():
+            button.setToolTipText(
+                u"执行11次Home B-{}独立响应测量；结束后自动禁用机器。".format(
+                    display))
+
+    probe_analysis_button = self.agent_step_buttons["home_probe_analyze"]
+    probe_analysis_reason = None
+    probe_results = [
+        workflow_artifact_path(
+            "home_probe_x_plus",
+            "diagnostics/latest-home-response-probe-x-plus.properties"),
+        workflow_artifact_path(
+            "home_probe_x_minus",
+            "diagnostics/latest-home-response-probe-x-minus.properties"),
+        workflow_artifact_path(
+            "home_probe_y_plus",
+            "diagnostics/latest-home-response-probe-y-plus.properties"),
+        workflow_artifact_path(
+            "home_probe_y_minus",
+            "diagnostics/latest-home-response-probe-y-minus.properties"),
+    ]
+    if any([not path.isFile() for path in probe_results]):
+        probe_analysis_reason = u"需要先完成B-X+、X-、Y+、Y-四向探针测量。"
+    if probe_analysis_reason is not None:
+        probe_analysis_button.setEnabled(False)
+        probe_analysis_button.setToolTipText(probe_analysis_reason)
+    elif probe_analysis_button.isEnabled():
+        probe_analysis_button.setToolTipText(
+            u"以四向中心差分计算响应矩阵、方向不对称和受安全上限约束的候选。")
+
+    candidate_load_button = self.agent_step_buttons["home_candidate_load"]
+    candidate_load_reason = None
+    response_analysis_path = agent_artifact(
+        "diagnostics/latest-home-response-analysis.properties")
+    response_analysis = read_agent_properties(response_analysis_path)
+    if (not production_active and not home_probe_active and
+            not home_candidate_active):
+        candidate_load_reason = u"必须处于正式补偿、Home探针或Home候选运行状态。"
+    elif not response_analysis_path.isFile():
+        candidate_load_reason = u"请先完成Home二维响应分析。"
+    elif response_analysis.getProperty("analysis.method", "") != \
+            "centered-four-probe-v1":
+        candidate_load_reason = u"现有分析来自旧单向模型；请先完成四向中心差分分析。"
+    elif machine_enabled or machine_homed:
+        candidate_load_reason = u"加载或切换候选前必须禁用机器并处于未Home状态。"
+    if candidate_load_reason is not None:
+        candidate_load_button.setEnabled(False)
+        candidate_load_button.setToolTipText(candidate_load_reason)
+    elif candidate_load_button.isEnabled():
+        candidate_load_button.setToolTipText(
+            u"建议先加载50%，再加载100%；均为进程内Home专用候选。")
+
+    candidate_measure_button = self.agent_step_buttons["home_candidate_measure"]
+    candidate_measure_reason = None
+    if not home_candidate_active:
+        candidate_measure_reason = u"请先加载Home响应候选。"
+    elif not machine_enabled or not machine_homed:
+        candidate_measure_reason = u"候选实测需要机器已启用并完成Home。"
+    elif values.get("homing-bypass") != "false":
+        candidate_measure_reason = u"Home过程尚未完全结束。"
+    if candidate_measure_reason is not None:
+        candidate_measure_button.setEnabled(False)
+        candidate_measure_button.setToolTipText(candidate_measure_reason)
+    elif candidate_measure_button.isEnabled():
+        candidate_measure_button.setToolTipText(
+            u"实测当前{}%候选；11次往返后自动禁用机器。".format(
+                home_candidate_percent))
+
+    candidate_review_button = self.agent_step_buttons["home_candidate_review"]
+    candidate_review_reason = None
+    candidate_50_path = agent_artifact(
+        "diagnostics/latest-home-response-candidate-50.properties")
+    candidate_100_path = agent_artifact(
+        "diagnostics/latest-home-response-candidate-100.properties")
+    if not candidate_50_path.isFile() or not candidate_100_path.isFile():
+        candidate_review_reason = u"至少需要完成50%和100%两个候选实测。"
+    else:
+        analysis_id = response_analysis.getProperty("analysis.id", "")
+        candidate_50 = read_agent_properties(candidate_50_path)
+        candidate_100 = read_agent_properties(candidate_100_path)
+        if not analysis_id or \
+                candidate_50.getProperty("candidate.analysis-id", "") != \
+                analysis_id or \
+                candidate_100.getProperty("candidate.analysis-id", "") != \
+                analysis_id:
+            candidate_review_reason = u"旧候选已失效；请用本次四向分析重新实测50%和100%。"
+    if candidate_review_reason is not None:
+        candidate_review_button.setEnabled(False)
+        candidate_review_button.setToolTipText(candidate_review_reason)
+    elif candidate_review_button.isEnabled():
+        candidate_review_button.setToolTipText(
+            u"按用户目标或残差加离散的稳健得分选择较优实测候选；不应用。")
+
+    probe_restore_button = self.agent_step_buttons["home_probe_restore"]
+    probe_restore_reason = None
+    if not home_probe_active and not home_candidate_active:
+        probe_restore_reason = u"当前没有Home响应探针或候选需要恢复。"
+    elif machine_enabled or machine_homed:
+        probe_restore_reason = u"恢复正式配置前必须禁用机器并处于未Home状态。"
+    if probe_restore_reason is not None:
+        probe_restore_button.setEnabled(False)
+        probe_restore_button.setToolTipText(probe_restore_reason)
+    elif probe_restore_button.isEnabled():
+        probe_restore_button.setToolTipText(
+            u"结束探针模式并重新加载未改动的持久正式配置。")
+
+    home_surface_load_button = self.agent_step_buttons["home_surface_load"]
+    home_surface_load_reason = None
+    centered_response_path = agent_artifact(
+        "diagnostics/latest-home-response-analysis.properties")
+    centered_response = read_agent_properties(centered_response_path)
+    if not production_active:
+        home_surface_load_reason = u"必须先恢复正在运行的持久正式CoreXY补偿。"
+    elif centered_response.getProperty("analysis.method", "") != \
+            "centered-four-probe-v1":
+        home_surface_load_reason = u"请先完成Home四向中心差分响应分析。"
+    elif machine_enabled or machine_homed:
+        home_surface_load_reason = u"加载Home曲面未补偿模式前必须禁用机器并处于未Home状态。"
+    if home_surface_load_reason is not None:
+        home_surface_load_button.setEnabled(False)
+        home_surface_load_button.setToolTipText(home_surface_load_reason)
+    elif home_surface_load_button.isEnabled():
+        home_surface_load_button.setToolTipText(
+            u"仅在当前进程关闭补偿，为Home B距离/速度扫描准备未补偿基线。")
+
+    home_surface_scan_button = self.agent_step_buttons["home_surface_scan"]
+    home_surface_scan_reason = None
+    if not home_baseline_active:
+        home_surface_scan_reason = u"请先加载Home曲面未补偿模式。"
+    elif not machine_enabled or not machine_homed:
+        home_surface_scan_reason = u"Home B曲面扫描需要机器已启用并完成Home。"
+    elif values.get("homing-bypass") != "false":
+        home_surface_scan_reason = u"Home过程尚未完全结束。"
+    if home_surface_scan_reason is not None:
+        home_surface_scan_button.setEnabled(False)
+        home_surface_scan_button.setToolTipText(home_surface_scan_reason)
+    elif home_surface_scan_button.isEnabled():
+        home_surface_scan_button.setToolTipText(
+            u"以3档速度、6档inward距离测量未补偿B状态曲面；逐点检查可达性。")
+
+    home_surface_analyze_button = self.agent_step_buttons["home_surface_analyze"]
+    home_surface_analyze_reason = None
+    home_surface_scan_path = agent_artifact(
+        "diagnostics/latest-home-b-surface-scan.properties")
+    if not home_surface_scan_path.isFile():
+        home_surface_analyze_reason = u"请先完成Home B距离/速度扫描。"
+    elif centered_response.getProperty("analysis.method", "") != \
+            "centered-four-probe-v1":
+        home_surface_analyze_reason = u"缺少同一正式版本的四向中心差分响应。"
+    if home_surface_analyze_reason is not None:
+        home_surface_analyze_button.setEnabled(False)
+        home_surface_analyze_button.setToolTipText(home_surface_analyze_reason)
+    elif home_surface_analyze_button.isEnabled():
+        home_surface_analyze_button.setToolTipText(
+            u"只读比较主要标定点正式曲面与Home B曲面，生成不可执行的空间候选。")
+
+    home_surface_restore_button = self.agent_step_buttons["home_surface_restore"]
+    home_surface_restore_reason = None
+    if not home_baseline_active:
+        home_surface_restore_reason = u"当前没有Home曲面未补偿模式需要恢复。"
+    elif machine_enabled or machine_homed:
+        home_surface_restore_reason = u"恢复正式配置前必须禁用机器并处于未Home状态。"
+    if home_surface_restore_reason is not None:
+        home_surface_restore_button.setEnabled(False)
+        home_surface_restore_button.setToolTipText(home_surface_restore_reason)
+    elif home_surface_restore_button.isEnabled():
+        home_surface_restore_button.setToolTipText(
+            u"结束Home曲面扫描模式并恢复未改动的持久正式配置。")
+
+    dual_candidate_path = agent_artifact(
+        "candidates/latest-dual-reference-home-b.properties")
+    dual_dry_load_button = self.agent_step_buttons["dual_dry_load"]
+    dual_dry_load_reason = None
+    if not production_active:
+        dual_dry_load_reason = u"请先恢复并运行持久正式CoreXY配置。"
+    elif not dual_candidate_path.isFile():
+        dual_dry_load_reason = u"请先完成双参考点B曲面分析。"
+    elif machine_enabled or machine_homed:
+        dual_dry_load_reason = u"加载双参考点干运行前必须禁用机器并处于未Home状态。"
+    if dual_dry_load_reason is not None:
+        dual_dry_load_button.setEnabled(False)
+        dual_dry_load_button.setToolTipText(dual_dry_load_reason)
+    elif dual_dry_load_button.isEnabled():
+        dual_dry_load_button.setToolTipText(
+            u"生成schema 4进程内配置；A保持正式曲面，B在Primary与Home之间插值。")
+
+    dual_dry_path_button = self.agent_step_buttons["dual_dry_path"]
+    dual_dry_path_reason = None
+    if not dual_dry_active:
+        dual_dry_path_reason = u"请先加载双参考点干运行配置。"
+    elif not machine_enabled or not machine_homed:
+        dual_dry_path_reason = u"路径检查需要机器已启用并完成Home。"
+    if dual_dry_path_reason is not None:
+        dual_dry_path_button.setEnabled(False)
+        dual_dry_path_button.setToolTipText(dual_dry_path_reason)
+    elif dual_dry_path_button.isEnabled():
+        dual_dry_path_button.setToolTipText(
+            u"在Primary、中点和Home内缩点执行120 mm往返；只计算，不施加补偿。")
+
+    dual_physical_load_button = self.agent_step_buttons["dual_physical_load"]
+    dual_physical_load_reason = None
+    if not dual_dry_active and not production_active:
+        dual_physical_load_reason = u"请先恢复正式配置，或重新加载双参考点干运行。"
+    elif machine_enabled or machine_homed:
+        dual_physical_load_reason = u"加载临时实补偿前必须禁用机器并处于未Home状态。"
+    if dual_physical_load_reason is not None:
+        dual_physical_load_button.setEnabled(False)
+        dual_physical_load_button.setToolTipText(dual_physical_load_reason)
+    elif dual_physical_load_button.isEnabled():
+        dual_physical_load_button.setToolTipText(
+            u"需输入DUAL PHYSICAL确认；仅当前进程生效，不改正式配置。")
+
+    dual_physical_smoke_button = self.agent_step_buttons["dual_physical_smoke"]
+    dual_physical_smoke_reason = None
+    if not dual_physical_active:
+        dual_physical_smoke_reason = u"请先加载双参考点临时实补偿。"
+    elif not machine_enabled or not machine_homed:
+        dual_physical_smoke_reason = u"物理冒烟需要机器已启用并完成Home。"
+    if dual_physical_smoke_reason is not None:
+        dual_physical_smoke_button.setEnabled(False)
+        dual_physical_smoke_button.setToolTipText(dual_physical_smoke_reason)
+    elif dual_physical_smoke_button.isEnabled():
+        dual_physical_smoke_button.setToolTipText(
+            u"在三个空间位置执行60 mm实补偿往返；结束后自动禁用机器。")
+
+    dual_home_validate_button = self.agent_step_buttons["dual_home_validate"]
+    dual_home_validate_reason = None
+    if not dual_physical_active:
+        dual_home_validate_reason = u"请先加载双参考点临时实补偿。"
+    elif not machine_enabled or not machine_homed:
+        dual_home_validate_reason = u"Home视觉验收需要机器已启用并完成Home。"
+    elif values.get("A-state") != "0" or values.get("B-state") != "0":
+        dual_home_validate_reason = u"请重新Home，使A/B初始状态都为0。"
+    if dual_home_validate_reason is not None:
+        dual_home_validate_button.setEnabled(False)
+        dual_home_validate_button.setToolTipText(dual_home_validate_reason)
+    elif dual_home_validate_button.isEnabled():
+        dual_home_validate_button.setToolTipText(
+            u"按原3速度×6距离网格实测Home B，并与未补偿基线逐单元比较。")
+
+    dual_primary_validate_button = self.agent_step_buttons[
+        "dual_primary_validate"]
+    dual_primary_validate_reason = None
+    if not dual_physical_active:
+        dual_primary_validate_reason = u"请先加载双参考点临时实补偿。"
+    elif not machine_enabled or not machine_homed:
+        dual_primary_validate_reason = u"Primary回归需要机器已启用并完成Home。"
+    elif values.get("A-state") != "0" or values.get("B-state") != "0":
+        dual_primary_validate_reason = u"请重新Home，使A/B初始状态都为0。"
+    if dual_primary_validate_reason is not None:
+        dual_primary_validate_button.setEnabled(False)
+        dual_primary_validate_button.setToolTipText(
+            dual_primary_validate_reason)
+    elif dual_primary_validate_button.isEnabled():
+        dual_primary_validate_button.setToolTipText(
+            u"复测正式验收网格，与已验证的25%正式实测结果比较，检查Primary退化。")
+
+    dual_review_button = self.agent_step_buttons["dual_review"]
+    dual_review_reason = None
+    dual_home_path = agent_artifact(
+        "diagnostics/latest-dual-reference-home-validation.properties")
+    dual_primary_path = agent_artifact(
+        "diagnostics/latest-dual-reference-primary-validation.properties")
+    if not dual_home_path.isFile() or not dual_primary_path.isFile():
+        dual_review_reason = u"需要先完成Home视觉验收和Primary回归验收。"
+    elif machine_enabled or machine_homed:
+        dual_review_reason = u"综合复核前请保持机器禁用且未Home。"
+    if dual_review_reason is not None:
+        dual_review_button.setEnabled(False)
+        dual_review_button.setToolTipText(dual_review_reason)
+    elif dual_review_button.isEnabled():
+        dual_review_button.setToolTipText(
+            u"只读复核两个锚点是否同时通过；不会修改或启用正式配置。")
+
+    dual_restore_button = self.agent_step_buttons["dual_restore"]
+    dual_restore_reason = None
+    if not dual_dry_active and not dual_physical_active:
+        dual_restore_reason = u"当前没有双参考点临时配置需要恢复。"
+    elif machine_enabled or machine_homed:
+        dual_restore_reason = u"恢复正式配置前必须禁用机器并处于未Home状态。"
+    if dual_restore_reason is not None:
+        dual_restore_button.setEnabled(False)
+        dual_restore_button.setToolTipText(dual_restore_reason)
+    elif dual_restore_button.isEnabled():
+        dual_restore_button.setToolTipText(
+            u"结束双参考点试验并重新加载未改动的正式25%配置。")
+
+    analysis_button = self.agent_step_buttons["warning_analysis"]
+    analysis_reason = None
+    if not production_active:
+        analysis_reason = u"当前不是已验证的持久正式补偿。"
+    elif confirmation.getProperty(
+            "confirmation.result", "") != "WARNING_CONFIRMED":
+        analysis_reason = u"只有定向复测确认警告后才需要候选分析。"
+    elif (confirmation.getProperty("production.promoted-at", "") !=
+          formal.getProperty("production.promoted-at", "")):
+        analysis_reason = u"定向复测不属于当前正式配置版本。"
+    if analysis_reason is not None:
+        analysis_button.setEnabled(False)
+        analysis_button.setToolTipText(analysis_reason)
+    elif analysis_button.isEnabled():
+        analysis_button.setToolTipText(
+            u"只读计算细粒度增益的留出残差、合成偏置和警告消除余量。")
+
+    load_trial_button = self.agent_step_buttons["warning_trial_load"]
+    load_trial_reason = None
+    recommended_gain = agent_float(warning_analysis, "recommended-gain")
+    if not production_active:
+        load_trial_reason = u"必须先恢复正在运行的持久正式补偿。"
+    elif recommended_gain is None:
+        load_trial_reason = u"最新候选分析没有推荐可验证的增益。"
+    elif warning_analysis.getProperty("integrity.config-unchanged", "") != "true":
+        load_trial_reason = u"候选分析未通过正式配置完整性检查。"
+    elif machine_enabled or machine_homed:
+        load_trial_reason = u"加载临时候选前必须禁用机器并处于未Home状态。"
+    if load_trial_reason is not None:
+        load_trial_button.setEnabled(False)
+        load_trial_button.setToolTipText(load_trial_reason)
+    elif load_trial_button.isEnabled():
+        load_trial_button.setToolTipText(
+            u"仅当前OpenPnP进程加载推荐增益；不改写当前正式配置。")
+
+    for key in ["warning_trial_smoke", "warning_trial_validate"]:
+        button = self.agent_step_buttons[key]
+        reason = None
+        if not warning_trial_active:
+            reason = u"请先加载推荐的警告候选临时补偿。"
+        elif not machine_enabled or not machine_homed:
+            reason = u"该测试需要机器已启用并完成Home。"
+        elif values.get("homing-bypass") != "false" or \
+                values.get("A-state") != "0" or values.get("B-state") != "0":
+            reason = u"请重新Home，使A/B初始状态都为0。"
+        if reason is not None:
+            button.setEnabled(False)
+            button.setToolTipText(reason)
+
+    restore_button = self.agent_step_buttons["restore_formal"]
+    restore_reason = None
+    if not warning_trial_active:
+        restore_reason = u"当前没有警告候选临时配置需要恢复。"
+    elif machine_enabled or machine_homed:
+        restore_reason = u"恢复正式配置前必须禁用机器并处于未Home状态。"
+    if restore_reason is not None:
+        restore_button.setEnabled(False)
+        restore_button.setToolTipText(restore_reason)
+    elif restore_button.isEnabled():
+        restore_button.setToolTipText(
+            u"丢弃进程内候选并重新载入未改动的正式配置。")
+
+    fresh_session_path = agent_artifact(
+        "sessions/current-session.properties")
+    fresh_session = read_agent_properties(fresh_session_path)
+    fresh_session_dir = File(fresh_session.getProperty(
+        "session.directory", ""))
+    fresh_session_valid = (fresh_session_path.isFile() and
+        fresh_session_dir.isDirectory() and
+        fresh_session.getProperty("formal.production-revision", "") ==
+        formal.getProperty("production.promoted-at", ""))
+    fresh_files = {}
+    for name in ["formal-primary", "formal-home-b",
+                 "uncompensated-primary", "uncompensated-home-b"]:
+        fresh_files[name] = File(fresh_session_dir, name + ".properties")
+
+    fresh_reasons = {}
+    if not production_active:
+        fresh_reasons["fresh_start"] = u"请先恢复持久正式CoreXY配置。"
+    elif machine_enabled or machine_homed:
+        fresh_reasons["fresh_start"] = u"新建会话前必须禁用机器并处于未Home状态。"
+
+    if not production_active:
+        fresh_reasons["fresh_formal_primary"] = u"当前不是持久正式补偿。"
+        fresh_reasons["fresh_formal_home"] = u"当前不是持久正式补偿。"
+        fresh_reasons["fresh_uncomp_load"] = u"当前不是持久正式补偿。"
+    elif not fresh_session_valid:
+        fresh_reasons["fresh_formal_primary"] = u"请先建立新的同期会话。"
+        fresh_reasons["fresh_formal_home"] = u"请先建立新的同期会话。"
+        fresh_reasons["fresh_uncomp_load"] = u"请先建立新的同期会话。"
+    else:
+        if not machine_enabled or not machine_homed:
+            fresh_reasons["fresh_formal_primary"] = u"请启用机器并完成Home。"
+        if not fresh_files["formal-primary"].isFile():
+            fresh_reasons["fresh_formal_home"] = u"请先完成同期正式Primary扫描。"
+        elif not machine_enabled or not machine_homed:
+            fresh_reasons["fresh_formal_home"] = u"请重新启用机器并完成Home。"
+        if not fresh_files["formal-home-b"].isFile():
+            fresh_reasons["fresh_uncomp_load"] = u"请先完成同期正式Home B扫描。"
+        elif machine_enabled or machine_homed:
+            fresh_reasons["fresh_uncomp_load"] = u"关闭补偿前必须禁用机器并处于未Home状态。"
+
+    if not home_baseline_active:
+        fresh_reasons["fresh_uncomp_primary"] = u"请先加载同期未补偿模式。"
+        fresh_reasons["fresh_uncomp_home"] = u"请先加载同期未补偿模式。"
+        fresh_reasons["fresh_analyze"] = u"请先完成同期未补偿采样。"
+        fresh_reasons["fresh_restore"] = u"当前没有同期未补偿模式需要恢复。"
+    else:
+        if not machine_enabled or not machine_homed:
+            fresh_reasons["fresh_uncomp_primary"] = u"请启用机器并完成Home。"
+        if not fresh_files["uncompensated-primary"].isFile():
+            fresh_reasons["fresh_uncomp_home"] = u"请先完成同期未补偿Primary扫描。"
+        elif not machine_enabled or not machine_homed:
+            fresh_reasons["fresh_uncomp_home"] = u"请重新启用机器并完成Home。"
+        if not all([path.isFile() for path in fresh_files.values()]):
+            fresh_reasons["fresh_analyze"] = u"四组同期扫描尚未全部完成。"
+            fresh_reasons["fresh_fit"] = u"四组同期扫描尚未全部完成。"
+        elif machine_enabled or machine_homed:
+            fresh_reasons["fresh_analyze"] = u"分析前请保持机器禁用。"
+            fresh_reasons["fresh_fit"] = u"拟合前请保持机器禁用。"
+        if machine_enabled or machine_homed:
+            fresh_reasons["fresh_restore"] = u"恢复正式配置前必须禁用机器并处于未Home状态。"
+
+    if not fresh_session_valid or not all(
+            [path.isFile() for path in fresh_files.values()]):
+        fresh_reasons["fresh_fit"] = u"四组同期扫描尚未全部完成。"
+    elif machine_enabled or machine_homed:
+        fresh_reasons["fresh_fit"] = u"拟合前请保持机器禁用。"
+    else:
+        fresh_reasons.pop("fresh_fit", None)
+
+    for key in ["fresh_start", "fresh_formal_primary", "fresh_formal_home",
+                "fresh_uncomp_load", "fresh_uncomp_primary",
+                "fresh_uncomp_home", "fresh_analyze", "fresh_fit",
+                "fresh_restore"]:
+        if key in fresh_reasons:
+            self.agent_step_buttons[key].setEnabled(False)
+            self.agent_step_buttons[key].setToolTipText(fresh_reasons[key])
+
+    primary_home_button = self.agent_step_buttons["primary_home_regression"]
+    primary_home_reason = None
+    if not production_active:
+        primary_home_reason = u"请先恢复持久正式Primary补偿配置。"
+    elif not machine_enabled:
+        primary_home_reason = u"请先启用机器；该步骤会自动执行正常Home。"
+    elif values.get("homing-bypass") != "false":
+        primary_home_reason = u"当前Home过程尚未结束。"
+    if primary_home_reason is not None:
+        primary_home_button.setEnabled(False)
+        primary_home_button.setToolTipText(primary_home_reason)
+    elif primary_home_button.isEnabled():
+        primary_home_button.setToolTipText(
+            u"正常Home重建坐标系，然后执行一次只读Home B回归；不参与拟合。")
+
+    if production_active:
+        archived_spatial_keys = [
+            "home_baseline_load", "home_baseline", "home_retest",
+            "home_probe_load", "home_probe_x_plus", "home_probe_x_minus",
+            "home_probe_y_plus", "home_probe_y_minus",
+            "home_probe_analyze", "home_candidate_load",
+            "home_candidate_measure", "home_candidate_review",
+            "home_surface_load", "home_surface_scan", "home_surface_analyze",
+            "dual_dry_load", "dual_dry_path", "dual_physical_load",
+            "dual_physical_smoke", "dual_home_validate",
+            "dual_primary_validate", "dual_review",
+            "fresh_start", "fresh_formal_primary", "fresh_formal_home",
+            "fresh_uncomp_load", "fresh_uncomp_primary",
+            "fresh_uncomp_home", "fresh_analyze", "fresh_fit"]
+        for key in archived_spatial_keys:
+            self.agent_step_buttons[key].setEnabled(False)
+            self.agent_step_buttons[key].setToolTipText(
+                u"已归档：生产路线仅使用Primary曲面；Home只执行P1回归检查。")
+
+    rollback_button = self.agent_step_buttons["rollback"]
+    if (machine_enabled or machine_homed) and rollback_button.isEnabled():
+        rollback_button.setEnabled(False)
+        rollback_button.setToolTipText(
+            u"回滚前必须禁用机器并使其处于未Home状态。")
+
+    # T1 is analysis-only. It must remain callable even when an older
+    # process-local trial has locked the movement-related workflow buttons.
+    segmented_analyze_button = self.agent_step_buttons[
+        "traditional_segmented_analyze"]
+    segmented_analyze_script = agent_script(
+        "CoreXY_Agent_Traditional_Segmented_Analyze.py")
+    segmented_analyze_button.setEnabled(segmented_analyze_script.isFile())
+    segmented_analyze_button.setToolTipText(
+        u"只读取同期基线并生成本机候选；不移动机器、不加载补偿、不修改正式配置。"
+        if segmented_analyze_script.isFile() else u"T1分析脚本缺失。")
+
+
+def run_agent_workflow_script(self, script_name):
+    path = agent_script(script_name)
+    if not path.isFile():
+        JOptionPane.showMessageDialog(
+            self, u"找不到工作流脚本：{}".format(path.getAbsolutePath()),
+            u"CoreXY Agent工作流", JOptionPane.ERROR_MESSAGE)
+        return
+    self.append_log(u"启动Agent工作流脚本：{}".format(script_name))
+    try:
+        source = unicode(String(Files.readAllBytes(path.toPath()), "UTF-8"))
+        script_code = compile(source, path.getAbsolutePath(), "exec")
+        script_namespace = dict(globals())
+        exec script_code in script_namespace
+    except Exception as error:
+        message = u"Agent工作流脚本返回错误：{}".format(error_text(error))
+        self.append_log(message)
+        JOptionPane.showMessageDialog(
+            self, message, u"CoreXY Agent工作流错误",
+            JOptionPane.ERROR_MESSAGE)
+    finally:
+        self.refresh_agent_workflow()
+        if hasattr(self, "refresh_external_fixed_artifacts"):
+            self.refresh_external_fixed_artifacts()
+        self.refresh_status()
+
+
+CoreXYTuner._build_agent_workflow_panel = _build_agent_workflow_panel
+CoreXYTuner.refresh_agent_workflow = refresh_agent_workflow
+CoreXYTuner.run_agent_workflow_script = run_agent_workflow_script
+
+_original_refresh_status = CoreXYTuner.refresh_status
+
+
+def _refresh_status_with_external_corexy(self):
+    _original_refresh_status(self)
+    try:
+        values = parse_agent_status(current_agent_status())
+        available = (values.get("installed") == "true" and
+                     values.get("configured") == "true")
+        mode = values.get("mode", "")
+        config_path = values.get("config", "")
+        active = read_agent_properties(File(config_path))
+        formal = read_agent_properties(agent_artifact("config/corexy.properties"))
+        fixed_temporary = (
+            available and values.get("enabled") == "true" and
+            values.get("dry-run") == "false" and mode == "state-offset" and
+            active.getProperty("trial.kind", "") ==
+            "legacy-fixed-vector-physical")
+        fixed_persistent = (
+            available and values.get("enabled") == "true" and
+            values.get("dry-run") == "false" and mode == "state-offset" and
+            active.getProperty("model.kind", "") ==
+            "FRESH_FIXED_VECTOR_V1" and
+            active.getProperty("production.persistence", "") ==
+            "persistent")
+        fixed_profile = (
+            formal.getProperty("model.kind", "") == "FRESH_FIXED_VECTOR_V1" and
+            formal.getProperty("production.persistence", "") == "persistent")
+        fixed_disabled = (
+            available and fixed_profile and values.get("enabled") == "false" and
+            agent_same_path(config_path, agent_artifact(
+                "config/corexy.properties").getCanonicalPath()))
+        onboarding_ready = (
+            fixed_disabled and formal.getProperty(
+                "onboarding.state", "") == "ready-for-calibration" and
+            formal.getProperty("production.acceptance", "") ==
+            "bootstrap-new-machine")
+        home_baseline = (
+            available and values.get("enabled") == "false" and
+            active.getProperty("trial.kind", "") ==
+            "home-reference-baseline")
+        if fixed_persistent:
+            gain = agent_float(active, "model.gain", 0.0) * 100.0
+            external_state = u"固定A/B补偿生效中（补偿比例{:.0f}%）".format(gain)
+        elif fixed_temporary:
+            gain = agent_float(active, "model.gain", 0.0) * 100.0
+            external_state = u"传统固定A/B临时补偿运行中（增益{:.0f}%）".format(gain)
+        elif onboarding_ready:
+            external_state = u"新机器初始化完成（零补偿，等待首次标定）"
+        elif fixed_disabled:
+            external_state = u"固定A/B正式补偿已停用（参数仍保留）"
+        elif home_baseline:
+            external_state = u"未补偿基线模式已加载（仅当前进程）"
+        elif available and mode in ["distance-speed-state-offset",
+                                    "distance-speed-position-state-offset"]:
+            external_state = u"Agent曲面正式配置运行中；传统A/B试用需先执行F1"
+        elif available:
+            external_state = u"已加载，当前模式={}".format(mode or u"未知")
+        else:
+            external_state = u"不可用"
+
+        session = read_agent_properties(agent_artifact(
+            "sessions/current-session.properties"))
+        session_id = session.getProperty("session.id", u"无")
+        session_state = session.getProperty("session.state", u"无")
+        current_candidate_path, current_candidate = current_fixed_candidate()
+        if current_candidate is not None:
+            session_state = u"候选已生成，等待选择补偿比例并应用"
+        elif fixed_persistent:
+            session_id = u"已归档：{}".format(session_id)
+            session_state = u"正式配置已应用"
+        active_kind = active.getProperty(
+            "trial.kind", active.getProperty("model.kind", u"未知"))
+        if home_baseline:
+            active_kind = u"未补偿基线"
+        gain = (0.0 if home_baseline else
+                agent_float(active, "model.gain", 0.0) * 100.0)
+        persistence = active.getProperty(
+            "trial.persistence", active.getProperty(
+                "production.persistence", u"未标记"))
+        review_path = latest_external_file(
+            "diagnostics",
+            "latest-legacy-fixed-physical-review.properties",
+            "legacy-fixed-physical-review-")
+        review = read_agent_properties(review_path)
+        validation_path = latest_external_file(
+            "diagnostics",
+            "latest-legacy-fixed-physical-validation.properties",
+            "legacy-fixed-physical-validation-")
+        validation = read_agent_properties(validation_path)
+        validation_current = (
+            fixed_temporary and validation_path.isFile() and
+            agent_same_path(validation.getProperty("source-trial", ""),
+                            config_path))
+        reviewed_validation = read_agent_properties(File(
+            review.getProperty("source-physical-validation", "")))
+        review_current = (
+            validation_current and review_path.isFile() and
+            review.getProperty("state", "") in ["passed", "failed"] and
+            reviewed_validation.getProperty("created", "") ==
+            validation.getProperty("created", ""))
+        health = read_agent_properties(agent_artifact(
+            "diagnostics/latest-production-health.properties"))
+        production_revision = formal.getProperty("production.promoted-at", u"未应用")
+        health_current = (health.getProperty("production.promoted-at", "") ==
+                          formal.getProperty("production.promoted-at", ""))
+        health_result = ((u"进行中" if health.getProperty(
+            "state", "") == "running" else health.getProperty(
+                "health.result", u"尚未执行"))
+                         if health_current else u"当前版本尚未执行")
+        health_time = health.getProperty("completed", health.getProperty(
+            "created", u"无")) if health_current else u"无"
+        review_result = review.getProperty("state", u"尚未复核")
+        accepted_review = read_agent_properties(File(
+            formal.getProperty("production.source-review", "")))
+        if (review_result == "failed" and
+                accepted_review.getProperty("created", "") ==
+                review.getProperty("created", "") and
+                formal.getProperty("production.acceptance", "") ==
+                "user-accepted-with-deviation"):
+            review_result = u"系统目标未达标；用户有条件接受"
+        review_time = review.getProperty("created", u"无")
+        displayed_candidate = current_candidate
+        if displayed_candidate is None:
+            displayed_candidate = read_agent_properties(File(
+                formal.getProperty("production.source-candidate", "")))
+        candidate_result = displayed_candidate.getProperty(
+            "state", u"尚未生成")
+        candidate_time = displayed_candidate.getProperty(
+            "created", displayed_candidate.getProperty("completed", u"无"))
+        pixel = agent_float(health, "health.pixel-size.rounded.mm", 0.0)
+        pixel_line = (u"尚无当前版本像素门限"
+                      if not health_current or pixel <= 0.0 else
+                      u"{:.3f} mm/px；PASS={:.3f} mm；WARNING={:.3f} mm".format(
+                           pixel, pixel * 3.0, pixel * 6.0))
+        next_action = u"打开检测与诊断页开始或继续标定"
+        session_dir = session.getProperty("session.directory", "")
+        if fixed_temporary:
+            next_action = u"检测到旧版临时配置；请关闭并重新打开OpenPnP"
+        elif current_candidate is not None:
+            next_action = u"在候选与应用页确认补偿比例和A/B值，然后点击应用补偿"
+        elif fixed_persistent and health_current and health.getProperty(
+                "state", "") == "running":
+            next_action = u"健康检查正在进行；请等待完成，期间不要执行其他运动"
+        elif fixed_persistent and health_current:
+            if health_result == "PASS":
+                next_action = u"健康检查PASS；查看残差或报告，投入运行前重新Enable并Home"
+            elif health_result == "WARNING":
+                next_action = u"健康检查WARNING；查看报告，处理机械状态后可重新Home复测或停用补偿"
+            else:
+                next_action = u"健康检查FAIL；建议停用补偿并检查机械状态"
+        elif fixed_persistent:
+            next_action = (u"可运行健康检查或空载往返检查" if
+                           machine.isEnabled() and machine.isHomed() else
+                           u"请Enable并重新Home，再运行健康检查或空载往返检查")
+        elif onboarding_ready:
+            next_action = u"机器已初始化；请在当前状态页点击开始新标定"
+        elif fixed_disabled:
+            next_action = u"补偿已停用；可修改补偿比例和A/B数值，然后点击应用补偿"
+        elif session_dir and not File(
+                session_dir, "uncompensated-primary.properties").isFile():
+            next_action = u"完成同期未补偿Primary扫描"
+        elif current_candidate is None:
+            next_action = u"生成固定A+/B+候选"
+        elif not latest_external_file(
+                "diagnostics",
+                "latest-legacy-fixed-physical-review.properties",
+                "legacy-fixed-physical-review-").isFile():
+            next_action = u"选择25/50/75/100%并完成实机复测"
+        lines = [
+            u"外置Agent：{}    当前补偿：{}".format(
+                u"可用" if available else u"不可用", external_state),
+            u"模型：{}    补偿比例：{:.0f}%    持久性：{}".format(
+                active_kind, gain, persistence),
+            u"机器：Enabled={}    Homed={}    A/B状态={}/{}".format(
+                machine.isEnabled(), machine.isHomed(),
+                values.get("A-state", "?"), values.get("B-state", "?")),
+            u"正式版本：{}    Session：{} / {}".format(
+                production_revision, session_id, session_state),
+            u"最近候选：{}    时间：{}".format(candidate_result, candidate_time),
+            u"最近健康：{}    时间：{}".format(health_result, health_time),
+            u"相机门限：{}".format(pixel_line),
+            u"流程：开始新标定 → 采集并生成候选 → 选择补偿比例 → 应用补偿（自动Disable） → 重新Enable/Home → 健康检查或空载往返检查",
+            u"操作提示：应用或停用都会等待运动静止并自动Disable；切换后必须重新Enable和Home。补偿生效时参数锁定，停用后恢复编辑并重载同期推荐值。",
+            u"下一步：{}".format(next_action)
+        ]
+        self.status_area.setText(u"\n\n".join(lines))
+        self.status_area.setCaretPosition(0)
+    except Exception as error:
+        self.append_log(u"外置CoreXY状态读取失败：{}".format(error_text(error)))
+
+
+CoreXYTuner.refresh_status = _refresh_status_with_external_corexy
+
+_original_build_tabs = CoreXYTuner._build_tabs
+
+
+def _build_tabs_with_agent(self):
+    self._build_agent_workflow_panel()
+    _original_build_tabs(self)
+    self.tabs.addTab(u"CoreXY外置补偿", self.agent_workflow_panel)
+    if not self.cross_supported:
+        for listener in self.cross_apply_button.getActionListeners():
+            self.cross_apply_button.removeActionListener(listener)
+        self.cross_apply_button.setText(u"转到传统A/B外置试用")
+        self.cross_apply_button.setToolTipText(
+            u"当前OpenPnP没有内置A/B接口；使用F1-F6运行同一固定向量候选。")
+        self.cross_apply_button.addActionListener(
+            lambda event: self.tabs.setSelectedComponent(
+                self.agent_workflow_panel))
+    self.tabs.setSelectedComponent(self.agent_workflow_panel)
+
+
+CoreXYTuner._build_tabs = _build_tabs_with_agent
+
+
+agent_original_ui_backend = agent_script(
+    "CoreXY_Agent_Original_UI_Backend.pytxt")
+if agent_original_ui_backend.isFile():
+    backend_source = unicode(String(Files.readAllBytes(
+        agent_original_ui_backend.toPath()), "UTF-8"))
+    backend_code = compile(
+        backend_source, agent_original_ui_backend.getAbsolutePath(), "exec")
+    exec backend_code in globals()
