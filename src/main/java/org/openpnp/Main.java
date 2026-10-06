@@ -237,6 +237,7 @@ public class Main {
                         catch (Exception e) {
                             Logger.warn(e, "Startup script failed.");
                         }
+                        org.openpnp.corexy.CoreXYIntegration.initialize(configuration);
                     });
                 }
                 catch (Exception e) {

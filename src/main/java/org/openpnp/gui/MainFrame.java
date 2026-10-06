@@ -660,6 +660,7 @@ public class MainFrame extends JFrame {
         experimentalFeaturesMenu.add(new JMenuItem(motionPerformanceCenterAction));
         experimentalFeaturesMenu.add(new JMenuItem(flyingVisionCenterAction));
         experimentalFeaturesMenu.add(new JMenuItem(cameraDiagnosticsAction));
+        experimentalFeaturesMenu.add(new JMenuItem(coreXYPrecisionAction));
         experimentalFeaturesMenu.add(new JMenuItem(safetyWorkbenchAction));
         experimentalFeaturesMenu.setVisible(
                 ExperimentalMotionCenterDialog.isExperimentalModeEnabled());
@@ -1939,6 +1940,12 @@ public class MainFrame extends JFrame {
         @Override
         public void actionPerformed(ActionEvent event) {
             new CameraDiagnosticsDialog(MainFrame.this).setVisible(true);
+        }
+    };
+    private Action coreXYPrecisionAction = new AbstractAction("CoreXY 自动精度校准...") {
+        @Override
+        public void actionPerformed(ActionEvent event) {
+            new org.openpnp.corexy.ui.CoreXYWizard(MainFrame.this, configuration).setVisible(true);
         }
     };
     private Action safetyWorkbenchAction = new AbstractAction("3D 安全工作台...") {

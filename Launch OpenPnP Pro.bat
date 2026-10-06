@@ -2,7 +2,7 @@
 setlocal
 cd /d "%~dp0"
 
-set "OPENPNP_JAR=target\openpnp-gui-2.6P3-beta45.jar"
+set "OPENPNP_JAR=target\openpnp-gui-2.6P3-beta48.jar"
 if not exist "%OPENPNP_JAR%" (
     echo OpenPnP Pro has not been packaged yet.
     echo Run the Maven package task first, then try again.

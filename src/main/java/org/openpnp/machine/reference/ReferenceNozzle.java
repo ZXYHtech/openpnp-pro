@@ -464,6 +464,9 @@ public class ReferenceNozzle extends AbstractNozzle implements HeadMountable {
 
     @Override
     public Location getCameraToolCalibratedOffset(Camera camera) {
+        if (org.openpnp.corexy.precision.ToolPointRuntime.replacesNative(this)) {
+            return new Location(camera.getUnitsPerPixel().getUnits());
+        }
         // Apply the axis offset from runout calibration here. 
         ReferenceNozzleTip calibrationNozzleTip = getCalibrationNozzleTip();
         if (calibrationNozzleTip != null && calibrationNozzleTip.getCalibration().isCalibrated(this)) {
@@ -507,6 +510,7 @@ public class ReferenceNozzle extends AbstractNozzle implements HeadMountable {
             ReferenceNozzleTip calibrationNozzleTip = getCalibrationNozzleTip();
             if (calibrationNozzleTip != null && calibrationNozzleTip.getCalibration().isCalibrated(this)) {
                 Location correctionOffset = calibrationNozzleTip.getCalibration().getCalibratedOffset(this, location.getRotation());
+                correctionOffset = correctionOffset.add(org.openpnp.corexy.precision.ToolPointRuntime.correction(this, location));
                 location = location.subtract(correctionOffset);
                 if (!quiet) {
                     Logger.trace("{}.toHeadLocation({}, ...) runout compensation {}", getName(), location, correctionOffset);
@@ -526,6 +530,7 @@ public class ReferenceNozzle extends AbstractNozzle implements HeadMountable {
             if (calibrationNozzleTip != null && calibrationNozzleTip.getCalibration().isCalibrated(this)) {
                 Location offset =
                         calibrationNozzleTip.getCalibration().getCalibratedOffset(this, location.getRotation());
+                offset = offset.add(org.openpnp.corexy.precision.ToolPointRuntime.correction(this, location));
                 location = location.add(offset);
             }
             // Unapply the rotationModeOffset.

@@ -1,0 +1,3072 @@
+#!/usr/bin/env jython
+
+
+
+from __future__ import absolute_import, division
+
+import math
+import random
+
+from jarray import array
+from java.awt import (BorderLayout, Color, Dimension, FlowLayout, Font,
+                      GridBagConstraints, GridBagLayout, Insets)
+from java.awt.event import WindowAdapter
+from java.io import (File, FileInputStream, FileOutputStream, OutputStreamWriter)
+from java.lang import String, System
+from java.nio.file import Files
+from java.text import SimpleDateFormat
+from java.util import Date, Properties
+from javax.swing import (BorderFactory, BoxLayout, JButton, JCheckBox, JComboBox, JDialog, JFrame,
+                         JLabel, JOptionPane, JPanel, JProgressBar, JScrollPane, JSpinner, JTabbedPane,
+                         JTextArea, JTextField, Scrollable, SpinnerNumberModel,
+                         SwingUtilities, Timer, WindowConstants)
+
+from org.openpnp.gui.components import SimpleGraphView
+from org.openpnp.machine.reference.axis import ReferenceControllerAxis
+from org.openpnp.machine.reference.axis.ReferenceControllerAxis import BacklashCompensationMethod
+from org.openpnp.model import Length, LengthUnit, Location
+from org.openpnp.spi import Axis
+from org.openpnp.spi.MotionPlanner import CompletionType
+from org.openpnp.util import MovableUtils, SimpleGraph
+from org.openpnp.util.UiUtils import submitUiMachineTask
+
+
+SETTINGS_RELATIVE_PATH = "TornadoSMT/CoreXY_Repeatability.properties"
+CANDIDATE_RELATIVE_PATH = "TornadoSMT/CoreXY_Diagnostic_Candidate.properties"
+SNAPSHOT_RELATIVE_PATH = "TornadoSMT/CoreXY_Repeatability.previous.properties"
+EVENT_RELATIVE_PATH = "Events/Machine.AfterHoming.CoreXYRepeatability.py"
+JOB_GUARD_RELATIVE_PATH = "Events/Job.Starting.CoreXYGuard.py"
+DEFAULT_DISTANCES = "5, 10, 15, 20, 30, 50, 80, 120"
+DEFAULT_SPEEDS = "0.25, 0.50, 0.75, 1.00"
+DEFAULT_TARGET_TOLERANCE = "0.025"
+DEFAULT_DETECTION_FLOOR = "0.005"
+LEGACY_CROSS_KEYS = (
+    "cross_enabled", "cross_source_axis_id", "cross_source_axis_name",
+    "cross_target_axis_id", "cross_target_axis_name", "cross_min_move_mm",
+    "cross_positive_offset_mm", "cross_negative_offset_mm", "cross_speed_factor",
+)
+METHOD_LABELS = [
+    u"单边优化定位（推荐）",
+    u"每次单边定位",
+    u"关闭补偿",
+]
+METHOD_VALUES = [
+    "OneSidedOptimizedPositioning",
+    "OneSidedPositioning",
+    "None",
+]
+APPROACH_LABELS = [
+    u"最后从负方向接近（先 +补偿，再 -补偿）",
+    u"最后从正方向接近（先 -补偿，再 +补偿）",
+]
+def settings_file():
+    return File(scripting.getScriptsDirectory(), SETTINGS_RELATIVE_PATH)
+
+
+def candidate_file():
+    return File(scripting.getScriptsDirectory(), CANDIDATE_RELATIVE_PATH)
+
+
+def snapshot_file():
+    return File(scripting.getScriptsDirectory(), SNAPSHOT_RELATIVE_PATH)
+
+
+def event_file():
+    return File(scripting.getScriptsDirectory(), EVENT_RELATIVE_PATH)
+
+
+def job_guard_file():
+    return File(scripting.getScriptsDirectory(), JOB_GUARD_RELATIVE_PATH)
+
+
+def finite(value):
+    return not math.isnan(value) and not math.isinf(value)
+
+
+def magnitude(x, y):
+    return math.hypot(x, y)
+
+
+def vector_distance(a_x, a_y, b_x, b_y):
+    return math.hypot(a_x - b_x, a_y - b_y)
+
+
+def max_pairwise_span(vectors):
+    span = 0.0
+    for i in range(len(vectors)):
+        for j in range(i + 1, len(vectors)):
+            span = max(span, vector_distance(
+                vectors[i][0], vectors[i][1], vectors[j][0], vectors[j][1]))
+    return span
+
+
+def parse_numbers(text, label, minimum_count):
+    values = []
+    for token in text.replace(u"，", ",").split(","):
+        token = token.strip()
+        if token:
+            value = float(token)
+            if not finite(value) or value <= 0:
+                raise ValueError(u"{}必须是大于 0 的有限数字。".format(label))
+            values.append(value)
+    if len(values) < minimum_count:
+        raise ValueError(u"{}至少需要 {} 个值。".format(label, minimum_count))
+    return values
+
+
+def improvement_percent(before, after):
+    if before <= 0 or not finite(after):
+        return 0.0
+    return (before - after) * 100.0 / before
+
+
+def safe_float(field, fallback=0.0):
+    try:
+        return float(field.getText().strip())
+    except Exception:
+        return fallback
+
+
+def error_text(error):
+    try:
+        return unicode(error)
+    except Exception:
+        try:
+            return unicode(error.getMessage())
+        except Exception:
+            return u"未知错误"
+
+
+def load_properties():
+    props = Properties()
+    path = settings_file()
+    if path.isFile():
+        stream = FileInputStream(path)
+        try:
+            props.load(stream)
+        finally:
+            stream.close()
+    return props
+
+
+def save_properties(props):
+    for key in LEGACY_CROSS_KEYS:
+        props.remove(key)
+    path = settings_file()
+    parent = path.getParentFile()
+    if not parent.isDirectory() and not parent.mkdirs():
+        raise IOError("Cannot create settings directory: {}".format(parent))
+    stream = FileOutputStream(path)
+    try:
+        props.store(stream, "OpenPnP CoreXY repeatability compensation")
+    finally:
+        stream.close()
+
+
+def controller_axes():
+    result = []
+    for axis in machine.getAxes():
+        if isinstance(axis, ReferenceControllerAxis) and axis.getType() in (Axis.Type.X, Axis.Type.Y):
+            result.append(axis)
+    return result
+
+
+def axis_label(axis):
+    return u"{}  [{} / {}]".format(axis.getName(), axis.getType(), axis.getLetter())
+
+
+class CoreXYDiagram(JPanel):
+    """Pure Swing status diagram, avoiding JDK-internal Graphics implementations."""
+
+    def __init__(self, tuner):
+        JPanel.__init__(self)
+        self.tuner = tuner
+        self.motion = "X+"
+        self.setLayout(BorderLayout(8, 8))
+        self.setPreferredSize(Dimension(760, 285))
+        self.setBackground(Color(250, 250, 248))
+        self.setBorder(BorderFactory.createLineBorder(Color(190, 194, 198)))
+
+        title = JLabel(u"CoreXY状态示意（标准Swing组件，不代表实时电机遥测）")
+        title.setFont(Font("Dialog", Font.BOLD, 15))
+        title.setBorder(BorderFactory.createEmptyBorder(8, 12, 0, 12))
+        self.add(title, BorderLayout.NORTH)
+
+        machine_panel = JPanel(GridBagLayout())
+        machine_panel.setOpaque(False)
+        self.a_motor = self._motor_panel(u"A电机")
+        self.b_motor = self._motor_panel(u"B电机")
+        belt = JLabel(u"================  CoreXY皮带路径  ================")
+        belt.setHorizontalAlignment(JLabel.CENTER)
+        belt.setForeground(Color(80, 84, 88))
+        machine_panel.add(self.a_motor.getParent(), self._c(0, 0, 0.2))
+        machine_panel.add(belt, self._c(1, 0, 0.6))
+        machine_panel.add(self.b_motor.getParent(), self._c(2, 0, 0.2))
+
+        gantry = JLabel(u"X横梁  ───────────────  [贴装头]  ───────────────  → X+")
+        gantry.setOpaque(True)
+        gantry.setBackground(Color(70, 76, 80))
+        gantry.setForeground(Color.WHITE)
+        gantry.setHorizontalAlignment(JLabel.CENTER)
+        gantry.setBorder(BorderFactory.createEmptyBorder(8, 8, 8, 8))
+        machine_panel.add(gantry, self._c(0, 1, 1.0, 3))
+        y_axis = JLabel(u"[贴装头]  ↑ Y+")
+        y_axis.setHorizontalAlignment(JLabel.CENTER)
+        y_axis.setForeground(Color(38, 112, 75))
+        machine_panel.add(y_axis, self._c(0, 2, 1.0, 3))
+        self.add(machine_panel, BorderLayout.CENTER)
+
+        status = JPanel(GridBagLayout())
+        status.setOpaque(False)
+        self.motion_state_label = JLabel()
+        self.motion_state_label.setFont(Font("Dialog", Font.BOLD, 14))
+        self.total_correction_label = JLabel()
+        self.reference_label = JLabel(u"A-、B-均为(0,0) mm参考状态；修正是状态偏置，不会逐次累加。")
+        status.add(self.motion_state_label, self._c(0, 0, 1.0))
+        status.add(self.total_correction_label, self._c(0, 1, 1.0))
+        status.add(self.reference_label, self._c(0, 2, 1.0))
+        status.setBorder(BorderFactory.createEmptyBorder(0, 12, 8, 12))
+        self.add(status, BorderLayout.SOUTH)
+        self.set_motion("X+")
+
+    def _c(self, x, y, weightx=0.0, width=1):
+        c = GridBagConstraints()
+        c.gridx = x
+        c.gridy = y
+        c.gridwidth = width
+        c.weightx = weightx
+        c.fill = GridBagConstraints.HORIZONTAL
+        c.anchor = GridBagConstraints.CENTER
+        c.insets = Insets(5, 8, 5, 8)
+        return c
+
+    def _motor_panel(self, title):
+        panel = JPanel(BorderLayout(3, 3))
+        panel.setOpaque(False)
+        motor = JLabel(title)
+        motor.setOpaque(True)
+        motor.setForeground(Color.WHITE)
+        motor.setHorizontalAlignment(JLabel.CENTER)
+        motor.setFont(Font("Dialog", Font.BOLD, 16))
+        motor.setPreferredSize(Dimension(150, 64))
+        motor.setBorder(BorderFactory.createLineBorder(Color(65, 68, 72)))
+        panel.add(motor, BorderLayout.CENTER)
+        return motor
+
+    def _motor_text(self, name, direction):
+        if direction == "+":
+            state = u"<font color='#C8F4C2' size='+1'><b>顺时针</b></font>"
+        elif direction == "-":
+            state = u"<font color='#FFD39A' size='+1'><b>逆时针</b></font>"
+        else:
+            state = u"<font color='#F0F0F0' size='+1'><b>静止</b></font>"
+        return u"<html><center><b>{}</b><br>{}</center></html>".format(
+            name, state)
+
+    def set_motion(self, motion):
+        self.motion = motion
+        directions = {
+            "X+": ("+", "+"), "X-": ("-", "-"),
+            "Y+": ("+", "-"), "Y-": ("-", "+"),
+            "A+": ("+", None), "A-": ("-", None),
+            "B+": (None, "+"), "B-": (None, "-")}
+        a_direction, b_direction = directions.get(motion, (None, None))
+        active_a = a_direction is not None
+        active_b = b_direction is not None
+        a_state = (u"A+ 顺时针" if a_direction == "+" else
+                   (u"A- 逆时针" if a_direction == "-" else u"A 静止"))
+        b_state = (u"B+ 顺时针" if b_direction == "+" else
+                   (u"B- 逆时针" if b_direction == "-" else u"B 静止"))
+        active_color = Color(41, 105, 165)
+        inactive_color = Color(112, 116, 120)
+        self.a_motor.setBackground(active_color if active_a else inactive_color)
+        self.b_motor.setBackground(active_color if active_b else inactive_color)
+        self.a_motor.setText(self._motor_text(u"A电机", a_direction))
+        self.b_motor.setText(self._motor_text(u"B电机", b_direction))
+        a_positive = a_direction == "+"
+        b_positive = b_direction == "+"
+        a_corr_x = safe_float(self.tuner.cross_a_x_field) if a_positive else 0.0
+        a_corr_y = safe_float(self.tuner.cross_positive_field) if a_positive else 0.0
+        b_corr_x = safe_float(self.tuner.cross_b_x_field) if b_positive else 0.0
+        b_corr_y = safe_float(self.tuner.cross_b_y_field) if b_positive else 0.0
+        self.motion_state_label.setText(
+            u"运动 {}：{}，{}".format(motion, a_state, b_state))
+        self.total_correction_label.setText(
+            u"当前状态合成修正：X {:+.5f} mm，Y {:+.5f} mm".format(
+                a_corr_x + b_corr_x, a_corr_y + b_corr_y))
+        self.revalidate()
+        self.repaint()
+
+
+class ViewportWidthPanel(JPanel, Scrollable):
+    """A scrolling panel that always contracts back to the viewport width."""
+
+    def __init__(self, layout):
+        JPanel.__init__(self, layout)
+
+    def getPreferredScrollableViewportSize(self):
+        return self.getPreferredSize()
+
+    def getScrollableUnitIncrement(self, visible_rect, orientation, direction):
+        return 18
+
+    def getScrollableBlockIncrement(self, visible_rect, orientation, direction):
+        return max(18, visible_rect.height - 18)
+
+    def getScrollableTracksViewportWidth(self):
+        return True
+
+    def getScrollableTracksViewportHeight(self):
+        parent = self.getParent()
+        return (parent is not None and
+                self.getPreferredSize().height <= parent.getHeight())
+
+
+class CoreXYTuner(JFrame):
+    def __init__(self):
+        JFrame.__init__(self, u"CoreXY 重复定位补偿")
+        self.axes = controller_axes()
+        self.props = load_properties()
+        self.motion_planner = machine.getMotionPlanner()
+        self.cross_supported = (
+            hasattr(self.motion_planner, "setCoreXYCompensationEnabled") and
+            hasattr(self.motion_planner, "setCoreXYCompensationAPositiveOffset") and
+            hasattr(self.motion_planner, "setCoreXYCompensationBPositiveOffset")
+        )
+        self.cross_calibration_supported = (
+            self.cross_supported and
+            hasattr(machine.getCalibrationSolutions(), "calibrateCoreXYKinematics") and
+            hasattr(machine.getCalibrationSolutions(),
+                    "buildCoreXYTrialCompensationCandidates")
+        )
+        self.last_report = None
+        self.last_report_file = None
+        self.last_diagnostic_result = None
+        self.loaded_candidate_signature = None
+        self.candidate_validation_status = "not_loaded"
+        self.setDefaultCloseOperation(WindowConstants.DISPOSE_ON_CLOSE)
+        self.setMinimumSize(Dimension(820, 600))
+        self.setLayout(BorderLayout(8, 8))
+        self.getRootPane().setBorder(BorderFactory.createEmptyBorder(10, 10, 10, 10))
+
+        if not self.axes:
+            JOptionPane.showMessageDialog(gui, u"没有找到 X/Y 控制器轴。", u"CoreXY 补偿", JOptionPane.ERROR_MESSAGE)
+            self.dispose()
+            return
+
+        self._build_settings_panel()
+        self._build_cross_panel()
+        self._build_test_panel()
+        self._build_log_panel()
+        self._build_buttons()
+        self._build_diagnostic_panel()
+        self._build_residual_panel()
+        self._build_explanation_panel()
+        self._build_tabs()
+        preferred_axis_id = self.props.getProperty("axis_id", "")
+        preferred_index = None
+        for index, axis in enumerate(self.axes):
+            if axis.getId() == preferred_axis_id:
+                preferred_index = index
+                break
+            if preferred_index is None and axis.getType() == Axis.Type.Y:
+                preferred_index = index
+        if preferred_index is not None:
+            self.axis_combo.setSelectedIndex(preferred_index)
+        self.axis_combo.addActionListener(lambda event: self.refresh_axis())
+        self.refresh_axis()
+        self.refresh_cross_settings()
+        self.refresh_candidate_status()
+        self.refresh_status()
+        self.pack()
+        self.setSize(1000, 820)
+        self.setLocationRelativeTo(gui)
+
+    def _constraints(self, x, y, width=1, weightx=0.0, fill=GridBagConstraints.NONE):
+        c = GridBagConstraints()
+        c.gridx = x
+        c.gridy = y
+        c.gridwidth = width
+        c.weightx = weightx
+        c.fill = fill
+        c.anchor = GridBagConstraints.WEST
+        c.insets = Insets(4, 5, 4, 5)
+        return c
+
+    def _build_settings_panel(self):
+        panel = JPanel(GridBagLayout())
+        panel.setBorder(BorderFactory.createTitledBorder(u"补偿设置"))
+        self.axis_combo = JComboBox([axis_label(axis) for axis in self.axes])
+        self.method_combo = JComboBox(METHOD_LABELS)
+        self.approach_combo = JComboBox(APPROACH_LABELS)
+        self.offset_field = JTextField("0.100", 9)
+        self.speed_field = JTextField("0.20", 9)
+        self.auto_home = JCheckBox(u"每次 Home 后自动应用", True)
+
+        rows = [
+            (u"控制器轴", self.axis_combo),
+            (u"补偿方式", self.method_combo),
+            (u"最终接近方向", self.approach_combo),
+            (u"补偿行程 (mm)", self.offset_field),
+            (u"末段速度因子", self.speed_field),
+        ]
+        for row, pair in enumerate(rows):
+            label, component = pair
+            panel.add(JLabel(label), self._constraints(0, row))
+            panel.add(component, self._constraints(1, row, 1, 1.0, GridBagConstraints.HORIZONTAL))
+        panel.add(self.auto_home, self._constraints(1, len(rows), 1, 1.0, GridBagConstraints.HORIZONTAL))
+
+        note = JTextArea(
+            u"此处为原OpenPnP自带的反向间隙校准（单轴Backlash Compensation），仅用于独立机械间隙。"
+            u"当前机器使用CoreXY二维补偿时，"
+            u"建议X/Y方式均保持“关闭补偿”，避免同一误差被重复修正。"
+        )
+        note.setEditable(False)
+        note.setOpaque(False)
+        note.setLineWrap(True)
+        note.setWrapStyleWord(True)
+        panel.add(note, self._constraints(0, len(rows) + 1, 2, 1.0, GridBagConstraints.HORIZONTAL))
+        self.settings_panel = panel
+
+    def _build_cross_panel(self):
+        root = JPanel(BorderLayout(8, 8))
+        root.setBorder(BorderFactory.createEmptyBorder(8, 8, 8, 8))
+        self.cross_enabled = JCheckBox(u"当前启用状态", False)
+        self.cross_enabled.setEnabled(False)
+        self.cross_source_combo = JComboBox([axis_label(axis) for axis in self.axes])
+        self.cross_target_combo = JComboBox([axis_label(axis) for axis in self.axes])
+        self.cross_threshold_field = JTextField("15.0", 9)
+        self.cross_threshold_b_field = JTextField("15.0", 9)
+        self.cross_a_x_field = JTextField("0.000", 9)
+        self.cross_positive_field = JTextField("-0.050", 9)
+        self.cross_b_x_field = JTextField("0.000", 9)
+        self.cross_b_y_field = JTextField("-0.050", 9)
+        self.cross_speed_field = JTextField("0.25", 9)
+        self.cross_apply_button = JButton(u"保存并启用 CoreXY 补偿")
+        self.cross_load_candidate_button = JButton(u"载入最新诊断候选")
+        self.cross_disable_button = JButton(u"关闭 CoreXY 补偿")
+        self.cross_test_button = JButton(u"空载往返验证")
+        self.cross_calibrate_button = JButton(u"完整 CoreXY 自动视觉校准")
+        self.cross_calibrate_button.setEnabled(self.cross_calibration_supported)
+        self.cross_apply_button.addActionListener(lambda event: self.apply_cross_settings())
+        self.cross_load_candidate_button.addActionListener(lambda event: self.load_diagnostic_candidate())
+        self.cross_disable_button.addActionListener(lambda event: self.disable_cross_settings())
+        self.cross_test_button.addActionListener(lambda event: self.start_cross_test())
+        self.cross_calibrate_button.addActionListener(lambda event: self.start_cross_calibration())
+        for field in (self.cross_a_x_field, self.cross_positive_field,
+                      self.cross_b_x_field, self.cross_b_y_field):
+            field.addActionListener(lambda event: self.diagram.set_motion(self.diagram.motion)
+                                    if hasattr(self, "diagram") else None)
+
+        axes_panel = JPanel(GridBagLayout())
+        self.cross_axes_panel = axes_panel
+        axes_panel.setBorder(BorderFactory.createTitledBorder(u"笛卡尔轴与运行状态"))
+        axes_panel.add(JLabel(u"X控制器轴"), self._constraints(0, 0))
+        axes_panel.add(self.cross_source_combo,
+                       self._constraints(1, 0, 1, 0.5, GridBagConstraints.HORIZONTAL))
+        axes_panel.add(JLabel(u"Y控制器轴"), self._constraints(2, 0))
+        axes_panel.add(self.cross_target_combo,
+                       self._constraints(3, 0, 1, 0.5, GridBagConstraints.HORIZONTAL))
+        axes_panel.add(self.cross_enabled, self._constraints(4, 0))
+
+        a_panel = JPanel(GridBagLayout())
+        self.cross_a_panel = a_panel
+        a_border = BorderFactory.createTitledBorder(u"A电机")
+        a_border.setTitleFont(Font("Dialog", Font.BOLD, 16))
+        a_panel.setBorder(a_border)
+        a_panel.add(JLabel(u"A = X + Y"), self._constraints(0, 0, 2))
+        a_panel.add(JLabel(u"A+：顺时针；A-：逆时针，参考 (0,0) mm"),
+                    self._constraints(0, 1, 2))
+        self.cross_a_enabled_checkbox = JCheckBox(u"启用A方向补偿", True)
+        a_panel.add(self.cross_a_enabled_checkbox, self._constraints(0, 2, 2))
+        a_panel.add(JLabel(u"A触发阈值 (mm)"), self._constraints(0, 3))
+        a_panel.add(self.cross_threshold_field,
+                    self._constraints(1, 3, 1, 1.0, GridBagConstraints.HORIZONTAL))
+        a_panel.add(JLabel(u"A+的X修正量 (mm)"), self._constraints(0, 4))
+        a_panel.add(self.cross_a_x_field,
+                    self._constraints(1, 4, 1, 1.0, GridBagConstraints.HORIZONTAL))
+        a_panel.add(JLabel(u"A+的Y修正量 (mm)"), self._constraints(0, 5))
+        a_panel.add(self.cross_positive_field,
+                    self._constraints(1, 5, 1, 1.0, GridBagConstraints.HORIZONTAL))
+
+        b_panel = JPanel(GridBagLayout())
+        self.cross_b_panel = b_panel
+        b_border = BorderFactory.createTitledBorder(u"B电机")
+        b_border.setTitleFont(Font("Dialog", Font.BOLD, 16))
+        b_panel.setBorder(b_border)
+        b_panel.add(JLabel(u"B = X - Y"), self._constraints(0, 0, 2))
+        b_panel.add(JLabel(u"B+：顺时针；B-：逆时针，参考 (0,0) mm"),
+                    self._constraints(0, 1, 2))
+        self.cross_b_enabled_checkbox = JCheckBox(u"启用B方向补偿", True)
+        b_panel.add(self.cross_b_enabled_checkbox, self._constraints(0, 2, 2))
+        b_panel.add(JLabel(u"B触发阈值 (mm)"), self._constraints(0, 3))
+        b_panel.add(self.cross_threshold_b_field,
+                    self._constraints(1, 3, 1, 1.0, GridBagConstraints.HORIZONTAL))
+        b_panel.add(JLabel(u"B+的X修正量 (mm)"), self._constraints(0, 4))
+        b_panel.add(self.cross_b_x_field,
+                    self._constraints(1, 4, 1, 1.0, GridBagConstraints.HORIZONTAL))
+        b_panel.add(JLabel(u"B+的Y修正量 (mm)"), self._constraints(0, 5))
+        b_panel.add(self.cross_b_y_field,
+                    self._constraints(1, 5, 1, 1.0, GridBagConstraints.HORIZONTAL))
+
+        motor_parameters = JPanel(GridBagLayout())
+        self.cross_motor_parameters_panel = motor_parameters
+        motor_parameters.add(a_panel,
+                             self._constraints(0, 0, 1, 0.5, GridBagConstraints.HORIZONTAL))
+        motor_parameters.add(b_panel,
+                             self._constraints(1, 0, 1, 0.5, GridBagConstraints.HORIZONTAL))
+
+        north = JPanel()
+        self.cross_north_panel = north
+        north.setLayout(BoxLayout(north, BoxLayout.Y_AXIS))
+        north.add(axes_panel)
+        north.add(motor_parameters)
+        root.add(north, BorderLayout.NORTH)
+
+        self.diagram = CoreXYDiagram(self)
+        root.add(self.diagram, BorderLayout.CENTER)
+
+        bottom = JPanel(GridBagLayout())
+        motion_buttons = JPanel()
+        for motion in ("X+", "X-", "Y+", "Y-"):
+            button = JButton(motion)
+            button.addActionListener(lambda event, value=motion: self.set_diagram_motion(value))
+            motion_buttons.add(button)
+        bottom.add(JLabel(u"示例运动"), self._constraints(0, 0))
+        bottom.add(motion_buttons, self._constraints(1, 0, 3, 1.0, GridBagConstraints.HORIZONTAL))
+        speed_label = JLabel(u"补偿微移速度系数 (0-1]")
+        self.cross_speed_label = speed_label
+        bottom.add(speed_label, self._constraints(0, 1))
+        bottom.add(self.cross_speed_field, self._constraints(1, 1))
+        support_text = (u"运动规划器支持A/B二维补偿" if self.cross_supported
+                        else u"当前程序不支持A/B规划器，请使用最新定制构建")
+        self.cross_support_label = JLabel(support_text)
+        bottom.add(self.cross_support_label, self._constraints(2, 1, 2))
+        self.candidate_page_status_label = JLabel(u"候选状态：尚未载入")
+        load_button = JButton(u"载入最新诊断候选")
+        self.candidate_load_button = load_button
+        load_button.addActionListener(lambda event: self.load_diagnostic_candidate())
+        validation_button = JButton(u"进入验证与应用")
+        self.candidate_validation_button = validation_button
+        validation_button.addActionListener(lambda event: self.tabs.setSelectedIndex(4))
+        candidate_buttons = JPanel()
+        self.candidate_buttons_panel = candidate_buttons
+        self.cross_bottom_panel = bottom
+        candidate_buttons.add(load_button)
+        candidate_buttons.add(validation_button)
+        bottom.add(self.candidate_page_status_label,
+                   self._constraints(0, 2, 2, 1.0, GridBagConstraints.HORIZONTAL))
+        bottom.add(candidate_buttons, self._constraints(2, 2, 2))
+        root.add(bottom, BorderLayout.SOUTH)
+        self.cross_panel = root
+
+    def _build_test_panel(self):
+        panel = JPanel(GridBagLayout())
+        panel.setBorder(BorderFactory.createTitledBorder(u"空载往返检查（不修改配置、不进行视觉测量）"))
+        self.distance_spinner = JSpinner(SpinnerNumberModel(50.0, 0.1, 500.0, 1.0))
+        self.cycles_spinner = JSpinner(SpinnerNumberModel(5, 1, 100, 1))
+        parameters = JPanel(GridBagLayout())
+        distance_label = JLabel(u"L1 距离 (mm)")
+        distance_label.setFont(Font("Dialog", Font.BOLD, 13))
+        cycles_label = JLabel(u"循环次数")
+        cycles_label.setFont(Font("Dialog", Font.BOLD, 13))
+        self.distance_spinner.setFont(Font("Dialog", Font.BOLD, 13))
+        self.cycles_spinner.setFont(Font("Dialog", Font.BOLD, 13))
+        parameters.add(distance_label, self._constraints(0, 0))
+        parameters.add(self.distance_spinner, self._constraints(1, 0))
+        parameters.add(cycles_label, self._constraints(2, 0))
+        parameters.add(self.cycles_spinner, self._constraints(3, 0))
+        safety_note = JLabel(
+            u"请提前检查台面有无障碍物、收纳撤下所有吸嘴，保障运行安全。")
+        self.test_safety_note = safety_note
+        parameters.add(safety_note, self._constraints(
+            0, 1, 5, 1.0, GridBagConstraints.HORIZONTAL))
+        panel.add(parameters, self._constraints(
+            0, 0, 1, 1.0, GridBagConstraints.HORIZONTAL))
+
+        directions = JPanel(GridBagLayout())
+        directions.setBorder(BorderFactory.createTitledBorder(
+            u"点击方向后立即进行该方向的往返；中心按钮执行随机多点路径"))
+        button_layout = (
+            ("B-", u"B-  ↖", 0, 0), ("Y+", u"Y+  ↑", 1, 0),
+            ("A+", u"A+  ↗", 2, 0), ("X-", u"X-  ←", 0, 1),
+            ("RANDOM", u"随机路径", 1, 1), ("X+", u"X+  →", 2, 1),
+            ("A-", u"A-  ↙", 0, 2), ("Y-", u"Y-  ↓", 1, 2),
+            ("B+", u"B+  ↘", 2, 2),
+        )
+        self.test_direction_buttons = []
+        for direction, label, column, row in button_layout:
+            button = JButton(label)
+            button.setPreferredSize(Dimension(150, 38))
+            if direction == "RANDOM":
+                button.addActionListener(lambda event: self.start_random_test())
+            else:
+                button.addActionListener(
+                    lambda event, value=direction: self.start_test(value))
+            directions.add(button, self._constraints(
+                column, row, 1, 1.0, GridBagConstraints.HORIZONTAL))
+            self.test_direction_buttons.append(button)
+        panel.add(directions, self._constraints(
+            0, 1, 1, 1.0, GridBagConstraints.HORIZONTAL))
+        safety_note = JTextArea(
+            u"测试前会检查X/Y高低软限位、起点、目标点和2 mm余量。"
+        )
+        safety_note.setEditable(False)
+        safety_note.setOpaque(False)
+        safety_note.setLineWrap(True)
+        safety_note.setWrapStyleWord(True)
+        panel.add(safety_note, self._constraints(
+            0, 2, 1, 1.0, GridBagConstraints.HORIZONTAL))
+        self.test_panel = panel
+
+    def _build_log_panel(self):
+        container = JPanel(BorderLayout(6, 6))
+        self.log = JTextArea(5, 60)
+        self.log.setEditable(False)
+        self.log.setLineWrap(True)
+        self.log.setWrapStyleWord(True)
+        container.add(JScrollPane(self.log), BorderLayout.CENTER)
+        self.log_panel = container
+
+    def _build_buttons(self):
+        panel = JPanel()
+        recommend_button = JButton(u"载入旧单轴示例")
+        apply_button = JButton(u"保存并立即启用")
+        disable_button = JButton(u"关闭补偿")
+        restore_button = JButton(u"恢复首次备份")
+        close_button = JButton(u"关闭")
+        recommend_button.addActionListener(lambda event: self.load_recommended())
+        apply_button.addActionListener(lambda event: self.apply_settings())
+        disable_button.addActionListener(lambda event: self.disable_settings())
+        restore_button.addActionListener(lambda event: self.restore_backup())
+        close_button.addActionListener(lambda event: self.dispose())
+        for button in (recommend_button, apply_button, disable_button, restore_button, close_button):
+            panel.add(button)
+        self.legacy_buttons = panel
+
+    def _build_diagnostic_panel(self):
+        root = JPanel(BorderLayout(8, 8))
+        north = JPanel()
+        north.setLayout(BoxLayout(north, BoxLayout.Y_AXIS))
+        north.add(self._build_primary_fiducial_panel())
+        controls = JPanel(GridBagLayout())
+        self.diag_controls_panel = controls
+        controls.setBorder(BorderFactory.createTitledBorder(u"检测参数"))
+        self.diag_distance_field = JTextField(DEFAULT_DISTANCES, 38)
+        self.diag_speed_field = JTextField(DEFAULT_SPEEDS, 38)
+        self.diag_repeats_spinner = JSpinner(SpinnerNumberModel(3, 3, 10, 1))
+        self.diag_target_field = JTextField(DEFAULT_TARGET_TOLERANCE, 10)
+        self.diag_floor_field = JTextField(DEFAULT_DETECTION_FLOOR, 10)
+        self.diag_run_button = JButton(u"开始检测、拟合并临时验证候选")
+        self.diag_save_button = JButton(u"另存报告")
+        self.diag_save_button.setEnabled(False)
+        self.diag_status_label = JLabel(u"就绪；检测不会永久修改补偿配置")
+        self.diag_stage_label = JLabel(u"当前阶段：等待开始")
+        self.diag_progress_bar = JProgressBar(0, 100)
+        self.diag_progress_bar.setStringPainted(True)
+        self.diag_progress_bar.setString(u"总体进度 0%")
+        self.diag_progress_timer = Timer(
+            300, lambda event: self.update_diagnostic_progress())
+        rows = [
+            (u"A/B虚拟运动距离 (mm)", self.diag_distance_field),
+            (u"主运动速度系数", self.diag_speed_field),
+            (u"每档重复次数", self.diag_repeats_spinner),
+            (u"用户目标重复定位精度 (mm)", self.diag_target_field),
+            (u"最小可信位移 (mm)", self.diag_floor_field),
+        ]
+        self.diag_parameter_rows = []
+        for row, pair in enumerate(rows):
+            label = JLabel(pair[0])
+            self.diag_parameter_rows.append((label, pair[1]))
+            controls.add(label, self._constraints(0, row))
+            controls.add(pair[1], self._constraints(
+                1, row, 1, 1.0, GridBagConstraints.HORIZONTAL))
+        buttons = JPanel()
+        self.diag_buttons_panel = buttons
+        buttons.add(self.diag_run_button)
+        buttons.add(self.diag_save_button)
+        controls.add(buttons, self._constraints(1, len(rows)))
+        controls.add(self.diag_status_label,
+                     self._constraints(1, len(rows) + 1, 1, 1.0,
+                                       GridBagConstraints.HORIZONTAL))
+        controls.add(self.diag_stage_label,
+                     self._constraints(0, len(rows) + 2, 2, 1.0,
+                                       GridBagConstraints.HORIZONTAL))
+        controls.add(self.diag_progress_bar,
+                     self._constraints(0, len(rows) + 3, 2, 1.0,
+                                       GridBagConstraints.HORIZONTAL))
+        self.diag_run_button.addActionListener(lambda event: self.start_diagnosis())
+        self.diag_save_button.addActionListener(lambda event: self.save_report_copy())
+
+        self.report_area = JTextArea()
+        self.report_area.setEditable(False)
+        self.report_area.setFont(Font("Monospaced", Font.PLAIN, 12))
+        self.report_area.setText(u"尚未执行诊断。\n\n检测完成后，本页会给出结论、误差来源、候选参数和补偿前后验证结果。")
+        north.add(controls)
+        root.add(north, BorderLayout.NORTH)
+        root.add(JScrollPane(self.report_area), BorderLayout.CENTER)
+        self.diagnostic_panel = root
+        self.refresh_primary_fiducial()
+
+    def _build_primary_fiducial_panel(self):
+        panel = JPanel(GridBagLayout())
+        panel.setBorder(BorderFactory.createTitledBorder(
+            u"主要标定点Primary Fiducial"))
+        self.primary_x_field = JTextField(9)
+        self.primary_y_field = JTextField(9)
+        self.primary_z_field = JTextField(9)
+        self.primary_diameter_field = JTextField(9)
+        fields = (
+            (u"X (mm)", self.primary_x_field),
+            (u"Y (mm)", self.primary_y_field),
+            (u"Z (mm)", self.primary_z_field),
+            (u"特征直径 (mm)", self.primary_diameter_field),
+        )
+        for column, pair in enumerate(fields):
+            panel.add(JLabel(pair[0]), self._constraints(column * 2, 0))
+            panel.add(pair[1], self._constraints(
+                column * 2 + 1, 0, 1, 1.0, GridBagConstraints.HORIZONTAL))
+        refresh_button = JButton(u"刷新")
+        capture_button = JButton(u"捕获当前相机位置")
+        save_button = JButton(u"保存主要标定点")
+        move_button = JButton(u"相机安全前往")
+        refresh_button.addActionListener(lambda event: self.refresh_primary_fiducial())
+        capture_button.addActionListener(lambda event: self.capture_primary_fiducial())
+        save_button.addActionListener(lambda event: self.save_primary_fiducial())
+        move_button.addActionListener(lambda event: self.move_to_primary_fiducial())
+        buttons = JPanel()
+        for button in (refresh_button, capture_button, save_button, move_button):
+            buttons.add(button)
+        panel.add(buttons, self._constraints(0, 1, 8, 1.0,
+                                             GridBagConstraints.HORIZONTAL))
+        self.primary_status_label = JLabel(
+            u"X和Y必须是已定义的非零机器坐标；捕获后仍需点击保存。")
+        panel.add(self.primary_status_label,
+                  self._constraints(0, 2, 8, 1.0, GridBagConstraints.HORIZONTAL))
+        return panel
+
+    def primary_fiducial_values(self):
+        x = float(self.primary_x_field.getText().strip())
+        y = float(self.primary_y_field.getText().strip())
+        z = float(self.primary_z_field.getText().strip())
+        diameter = float(self.primary_diameter_field.getText().strip())
+        if not all([finite(value) for value in (x, y, z, diameter)]):
+            raise ValueError(u"主要标定点XYZ和特征直径必须是有限数值。")
+        if abs(x) < 1e-9 or abs(y) < 1e-9:
+            raise ValueError(
+                u"主要标定点X或Y为0，表示位置尚未正确定义。请捕获实际机器位置并保存。")
+        if diameter <= 0:
+            raise ValueError(u"主要标定点特征直径必须大于0。")
+        return x, y, z, diameter
+
+    def refresh_primary_fiducial(self):
+        try:
+            head = machine.getDefaultHead()
+            location = head.getCalibrationPrimaryFiducialLocation()
+            diameter = head.getCalibrationPrimaryFiducialDiameter()
+            if location is None:
+                location = Location(LengthUnit.Millimeters)
+            location = location.convertToUnits(LengthUnit.Millimeters)
+            self.primary_x_field.setText("{:.6f}".format(location.getX()))
+            self.primary_y_field.setText("{:.6f}".format(location.getY()))
+            self.primary_z_field.setText("{:.6f}".format(location.getZ()))
+            diameter_mm = 0.0
+            if diameter is not None and diameter.isInitialized():
+                diameter_mm = diameter.convertToUnits(
+                    LengthUnit.Millimeters).getValue()
+            self.primary_diameter_field.setText("{:.6f}".format(diameter_mm))
+            if abs(location.getX()) < 1e-9 or abs(location.getY()) < 1e-9:
+                self.primary_status_label.setText(
+                    u"未就绪：X或Y为0，请用相机对准实际标定点后捕获并保存。")
+                self.primary_status_label.setForeground(Color(180, 45, 35))
+            else:
+                self.primary_status_label.setText(
+                    u"已读取机器配置；捕获或编辑后需点击保存。")
+                self.primary_status_label.setForeground(Color(35, 105, 65))
+        except Exception as error:
+            self.primary_status_label.setText(u"读取失败：{}".format(error_text(error)))
+            self.primary_status_label.setForeground(Color(180, 45, 35))
+
+    def save_primary_fiducial(self):
+        try:
+            x, y, z, diameter = self.primary_fiducial_values()
+            head = machine.getDefaultHead()
+            head.setCalibrationPrimaryFiducialLocation(
+                Location(LengthUnit.Millimeters, x, y, z, 0))
+            head.setCalibrationPrimaryFiducialDiameter(
+                Length(diameter, LengthUnit.Millimeters))
+            config.save()
+            self.primary_status_label.setText(
+                u"已保存到机器配置：XYZ=({:.3f},{:.3f},{:.3f}) mm，直径={:.3f} mm".format(
+                    x, y, z, diameter))
+            self.primary_status_label.setForeground(Color(35, 105, 65))
+        except Exception as error:
+            JOptionPane.showMessageDialog(
+                self, error_text(error), u"无法保存主要标定点", JOptionPane.ERROR_MESSAGE)
+
+    def capture_primary_fiducial(self):
+        if not machine.isEnabled() or not machine.isHomed():
+            JOptionPane.showMessageDialog(
+                self, u"请先启用机器并完成Home。", u"无法捕获", JOptionPane.WARNING_MESSAGE)
+            return
+        camera = machine.getDefaultHead().getDefaultCamera()
+
+        def run():
+            location = camera.getLocation().convertToUnits(LengthUnit.Millimeters)
+
+            def completed():
+                self.primary_x_field.setText("{:.6f}".format(location.getX()))
+                self.primary_y_field.setText("{:.6f}".format(location.getY()))
+                self.primary_z_field.setText("{:.6f}".format(location.getZ()))
+                self.primary_status_label.setText(
+                    u"已捕获当前下视相机位置；确认特征直径后点击保存主要标定点。")
+                self.primary_status_label.setForeground(Color(145, 90, 20))
+            SwingUtilities.invokeLater(completed)
+        submitUiMachineTask(run)
+
+    def move_to_primary_fiducial(self):
+        try:
+            if not machine.isEnabled() or not machine.isHomed():
+                raise RuntimeError(u"请先启用机器并完成Home。")
+            x, y, z, diameter = self.primary_fiducial_values()
+            camera = machine.getDefaultHead().getDefaultCamera()
+            location = Location(LengthUnit.Millimeters, x, y, z, 0)
+            self.require_xy_soft_limits(camera.getAxisX(), camera.getAxisY())
+            self.validate_xy_location(
+                camera, location, camera.getAxisX(), camera.getAxisY(),
+                u"主要标定点Primary Fiducial")
+        except Exception as error:
+            JOptionPane.showMessageDialog(
+                self, error_text(error), u"无法前往主要标定点", JOptionPane.ERROR_MESSAGE)
+            return
+
+        def run():
+            MovableUtils.moveToLocationAtSafeZ(camera, location)
+            camera.waitForCompletion(CompletionType.WaitForStillstand)
+
+            def completed():
+                self.primary_status_label.setText(u"下视相机已安全移动到主要标定点。")
+            SwingUtilities.invokeLater(completed)
+        submitUiMachineTask(run)
+
+    def _build_residual_panel(self):
+        root = JPanel(BorderLayout(8, 8))
+        note = JTextArea(
+            u"二维图以主要标定点为原点：右侧=X+、左侧=X-、上方=Y+、下方=Y-。"
+            u"A+/A-/B+/B-表示从相应运动方向返回主要标定点后的实际落点。"
+            u"上方图观察绝对落点，下方图观察相反方向之间的状态残差；"
+            u"灰色0.05 mm圈仅为视觉参考，不是健康检查PASS门限。")
+        note.setEditable(False)
+        note.setOpaque(False)
+        note.setLineWrap(True)
+        note.setWrapStyleWord(True)
+        note.setBorder(BorderFactory.createEmptyBorder(4, 6, 2, 6))
+        self.residual_note = note
+        legend_stack = JPanel()
+        legend_stack.setLayout(BoxLayout(legend_stack, BoxLayout.Y_AXIS))
+
+        def legend_row(title, entries):
+            row = JPanel(FlowLayout(FlowLayout.LEFT, 10, 1))
+            row.add(JLabel(title))
+            for text, color in entries:
+                label = JLabel(u"● " + text)
+                label.setForeground(color)
+                label.setFont(label.getFont().deriveFont(Font.BOLD))
+                row.add(label)
+            return row
+
+        legend_stack.add(legend_row(
+            u"上方散点（返回状态）：",
+            [(u"A+", Color(210, 65, 45)),
+             (u"A-", Color(230, 135, 35)),
+             (u"B+", Color(40, 115, 190)),
+             (u"B-", Color(35, 155, 125))]))
+        legend_stack.add(legend_row(
+            u"下方曲线（运动速度）：",
+            [(u"A 40%", Color(190, 55, 45)),
+             (u"A 70%", Color(220, 125, 35)),
+             (u"A 90%", Color(145, 80, 35)),
+             (u"B 40%", Color(35, 105, 185)),
+             (u"B 70%", Color(35, 150, 125)),
+             (u"B 90%", Color(70, 95, 55))]))
+        legend_hint = JLabel(
+            u"暖色=A，冷色=B；散点颜色区分正/负返回状态，曲线颜色区分速度。")
+        legend_hint.setBorder(BorderFactory.createEmptyBorder(0, 10, 3, 6))
+        legend_stack.add(legend_hint)
+        north = JPanel(BorderLayout(2, 2))
+        north.add(note, BorderLayout.NORTH)
+        north.add(legend_stack, BorderLayout.CENTER)
+        root.add(north, BorderLayout.NORTH)
+        graphs = JPanel(GridBagLayout())
+        raw_panel = JPanel(BorderLayout(4, 4))
+        raw_panel.setBorder(BorderFactory.createTitledBorder(u"未补偿：绝对落点分布"))
+        self.raw_scatter_view = SimpleGraphView()
+        self.raw_scatter_view.setPreferredSize(Dimension(420, 245))
+        self.raw_scatter_view.setToolTipText(
+            u"以主要标定点为(0,0)。点落在哪个象限，就表示回归定位偏向哪一侧。")
+        raw_panel.add(self.raw_scatter_view, BorderLayout.CENTER)
+        compensated_panel = JPanel(BorderLayout(4, 4))
+        compensated_panel.setBorder(BorderFactory.createTitledBorder(u"补偿后：绝对落点分布"))
+        self.compensated_scatter_view = SimpleGraphView()
+        self.compensated_scatter_view.setPreferredSize(Dimension(420, 245))
+        self.compensated_scatter_view.setToolTipText(
+            u"使用与未补偿图相同的方向定义。靠近原点表示绝对定位更准，集中表示重复性更好；两者需分开理解。")
+        compensated_panel.add(self.compensated_scatter_view, BorderLayout.CENTER)
+        raw_trend_panel = JPanel(BorderLayout(4, 4))
+        raw_trend_panel.setBorder(BorderFactory.createTitledBorder(
+            u"未补偿：方向状态残差 / 运动距离"))
+        self.raw_trend_view = SimpleGraphView()
+        self.raw_trend_view.setPreferredSize(Dimension(420, 220))
+        self.raw_trend_view.setToolTipText(
+            u"横轴是往返运动距离，纵轴是两方向回归点之间的径向差值；移动鼠标可读取距离和各曲线残差。")
+        raw_trend_panel.add(self.raw_trend_view, BorderLayout.CENTER)
+        raw_trend_panel.add(JLabel(
+            u"X：距离(mm) 15/28/34/60/180/270    Y：状态残差(mm)"),
+            BorderLayout.SOUTH)
+        compensated_trend_panel = JPanel(BorderLayout(4, 4))
+        compensated_trend_panel.setBorder(BorderFactory.createTitledBorder(
+            u"补偿后：方向状态残差 / 运动距离"))
+        self.compensated_trend_view = SimpleGraphView()
+        self.compensated_trend_view.setPreferredSize(Dimension(420, 220))
+        self.compensated_trend_view.setToolTipText(
+            u"与左图对比：曲线整体下降表示有效；局部抬升用于定位特定速度和距离的过补偿或机械扰动。")
+        compensated_trend_panel.add(self.compensated_trend_view,
+                                    BorderLayout.CENTER)
+        compensated_trend_panel.add(JLabel(
+            u"X：距离(mm) 15/28/34/60/180/270    Y：状态残差(mm)"),
+            BorderLayout.SOUTH)
+        graph_constraints = []
+        for x, y in [(0, 0), (1, 0), (0, 1), (1, 1)]:
+            constraints = self._constraints(
+                x, y, 1, 0.5, GridBagConstraints.BOTH)
+            constraints.weighty = 0.5
+            graph_constraints.append(constraints)
+        graphs.add(raw_panel, graph_constraints[0])
+        graphs.add(compensated_panel, graph_constraints[1])
+        graphs.add(raw_trend_panel, graph_constraints[2])
+        graphs.add(compensated_trend_panel, graph_constraints[3])
+        graph_scroll = JScrollPane(graphs)
+        graph_scroll.setBorder(BorderFactory.createEmptyBorder())
+        graph_scroll.getVerticalScrollBar().setUnitIncrement(18)
+        graph_scroll.getHorizontalScrollBar().setUnitIncrement(18)
+        self.residual_graphs_panel = graphs
+        self.residual_graphs_scroll = graph_scroll
+        root.add(graph_scroll, BorderLayout.CENTER)
+        self.scatter_status_label = JLabel(u"完成一次完整诊断后显示散点。")
+        self.scatter_status_label.setBorder(BorderFactory.createEmptyBorder(2, 6, 4, 6))
+        self.residual_interpretation_area = JTextArea(11, 70)
+        self.residual_interpretation_area.setEditable(False)
+        self.residual_interpretation_area.setLineWrap(True)
+        self.residual_interpretation_area.setWrapStyleWord(True)
+        self.residual_interpretation_button = JButton(u"解读信息")
+        self.residual_interpretation_button.setToolTipText(
+            u"打开残差公式、图形阅读方法和针对当前测量的自动结论。")
+        self.residual_interpretation_button.addActionListener(
+            lambda event: self.show_residual_interpretation())
+        self.residual_interpretation_dialog = None
+        south = JPanel(BorderLayout(8, 4))
+        south.setBorder(BorderFactory.createEmptyBorder(0, 6, 2, 6))
+        south.add(self.scatter_status_label, BorderLayout.CENTER)
+        south.add(self.residual_interpretation_button, BorderLayout.EAST)
+        root.add(south, BorderLayout.SOUTH)
+        self.residual_panel = root
+
+    def show_residual_interpretation(self):
+        language = getattr(self, "ui_language", "zh_CN")
+        title = (u"Residual Interpretation" if language == "en" else
+                 u"残差分布解读")
+        dialog = self.residual_interpretation_dialog
+        if dialog is None or not dialog.isDisplayable():
+            dialog = JDialog(self, title, False)
+            dialog.setDefaultCloseOperation(WindowConstants.DISPOSE_ON_CLOSE)
+            dialog.setLayout(BorderLayout(8, 8))
+            self.residual_interpretation_area.setBorder(
+                BorderFactory.createEmptyBorder(10, 10, 10, 10))
+            dialog.add(JScrollPane(self.residual_interpretation_area),
+                       BorderLayout.CENTER)
+            dialog.setMinimumSize(Dimension(640, 420))
+            dialog.setSize(860, 600)
+            dialog.setLocationRelativeTo(self)
+            self.residual_interpretation_dialog = dialog
+        else:
+            dialog.setTitle(title)
+        self.residual_interpretation_area.setCaretPosition(0)
+        dialog.setVisible(True)
+        dialog.toFront()
+
+    def _scatter_colors(self):
+        return {
+            "X+": Color(205, 55, 45), "X-": Color(132, 32, 105),
+            "Y+": Color(38, 105, 190), "Y-": Color(35, 145, 160),
+            "A+": Color(230, 125, 25), "A-": Color(145, 85, 35),
+            "B+": Color(42, 145, 70), "B-": Color(55, 95, 45),
+        }
+
+    def _relative_points(self, locations, reference, sequence):
+        points = []
+        for location in locations:
+            relative = location.convertToUnits(LengthUnit.Millimeters).subtract(reference)
+            # SimpleGraph stores points by X key. A sub-nanometer suffix preserves
+            # repeated points with identical X without changing the visible result.
+            points.append((relative.getX() + sequence[0] * 1e-10,
+                           relative.getY()))
+            sequence[0] += 1
+        return points
+
+    def _add_scatter_group(self, scale, name, distance, points, color):
+        if not points:
+            return
+        row = SimpleGraph.DataRow(
+            u"{} {:.1f}mm".format(name, distance), color)
+        row.setLineShown(False)
+        row.setMarkerShown(True)
+        for x, y in points:
+            row.recordDataPoint(x, y)
+        scale.addDataRow(row)
+        if len(points) < 2:
+            return
+        center_x = sum([point[0] for point in points]) / len(points)
+        center_y = sum([point[1] for point in points]) / len(points)
+        radius = max([math.hypot(point[0] - center_x, point[1] - center_y)
+                      for point in points])
+        if radius <= 1e-9:
+            radius = 0.0005
+        top = SimpleGraph.DataRow(u"{}范围上".format(name), color)
+        bottom = SimpleGraph.DataRow(u"{}范围下".format(name), color)
+        top.setMarkerShown(False)
+        bottom.setMarkerShown(False)
+        for index in range(33):
+            angle = math.pi * index / 32.0
+            top.recordDataPoint(center_x + radius * math.cos(angle),
+                                center_y + radius * math.sin(angle))
+            bottom.recordDataPoint(center_x + radius * math.cos(angle),
+                                   center_y - radius * math.sin(angle))
+        scale.addDataRow(top)
+        scale.addDataRow(bottom)
+
+    def _new_scatter_graph(self):
+        graph = SimpleGraph()
+        graph.setRelativePaddingLeft(0.10)
+        graph.setRelativePaddingRight(0.04)
+        scale = SimpleGraph.DataScale("XY Residual mm")
+        scale.setRelativePaddingTop(0.08)
+        scale.setRelativePaddingBottom(0.08)
+        scale.setSymmetricIfSigned(True)
+        scale.setSquareAspectRatio(True)
+        scale.setColor(Color.GRAY)
+        graph.addDataScale(scale)
+        return graph, scale
+
+    def _add_result_to_scatter(self, scale, name, item, reference, sequence, colors):
+        positive = self._relative_points(item.getPositiveLocations(), reference, sequence)
+        negative = self._relative_points(item.getNegativeLocations(), reference, sequence)
+        self._add_scatter_group(
+            scale, name + "+", item.getDistanceMm(), positive, colors[name + "+"])
+        self._add_scatter_group(
+            scale, name + "-", item.getDistanceMm(), negative, colors[name + "-"])
+
+    def _add_scatter_axes(self, scale, extent):
+        extent = max(0.005, extent * 1.12)
+        horizontal = SimpleGraph.DataRow(u"X轴", Color(120, 120, 120))
+        horizontal.recordDataPoint(-extent, 0.0)
+        horizontal.recordDataPoint(extent, 0.0)
+        vertical = SimpleGraph.DataRow(u"Y轴", Color(120, 120, 120))
+        vertical.recordDataPoint(-1e-12, -extent)
+        vertical.recordDataPoint(1e-12, extent)
+        scale.addDataRow(horizontal)
+        scale.addDataRow(vertical)
+
+    def _graph_extent(self, results, reference):
+        extent = 0.0
+        for item in results:
+            for location in list(item.getPositiveLocations()) + list(item.getNegativeLocations()):
+                relative = location.convertToUnits(LengthUnit.Millimeters).subtract(reference)
+                extent = max(extent, abs(relative.getX()), abs(relative.getY()))
+        return extent
+
+    def update_residual_plots(self, result):
+        reference = result.getReferenceLocation().convertToUnits(LengthUnit.Millimeters)
+        colors = self._scatter_colors()
+        raw_results = []
+        raw_results.append(("X", result.getBaselineXResult()))
+        raw_results.append(("Y", result.getBaselineYResult()))
+        for item in result.getACalibration().getDistanceResults():
+            raw_results.append(("A", item))
+        for item in result.getBCalibration().getDistanceResults():
+            raw_results.append(("B", item))
+        raw_graph, raw_scale = self._new_scatter_graph()
+        sequence = [1]
+        for name, item in raw_results:
+            self._add_result_to_scatter(
+                raw_scale, name, item, reference, sequence, colors)
+        self._add_scatter_axes(
+            raw_scale, self._graph_extent([item for name, item in raw_results], reference))
+        self.raw_scatter_view.setGraph(raw_graph)
+
+        selected = result.getSelectedCandidateValidation()
+        if selected is not None:
+            compensated_results = [
+                ("X", selected.getXResult()), ("Y", selected.getYResult()),
+                ("A", selected.getAResult()), ("B", selected.getBResult()),
+            ]
+            compensated_graph, compensated_scale = self._new_scatter_graph()
+            sequence = [1]
+            for name, item in compensated_results:
+                self._add_result_to_scatter(
+                    compensated_scale, name, item, reference, sequence, colors)
+            self._add_scatter_axes(compensated_scale, self._graph_extent(
+                [item for name, item in compensated_results], reference))
+            self.compensated_scatter_view.setGraph(compensated_graph)
+            candidate = selected.getCandidate()
+            self.scatter_status_label.setText(
+                u"左：全部未补偿距离样本；右：选中{:.0f}%候选在最大距离下的X/Y/A/B留出验证。最坏残差{:.4f} mm。".format(
+                    candidate.getCandidateScale() * 100.0,
+                    selected.getWorstResidualMm()))
+        else:
+            empty_graph, empty_scale = self._new_scatter_graph()
+            self._add_scatter_axes(empty_scale, 0.005)
+            self.compensated_scatter_view.setGraph(empty_graph)
+            self.scatter_status_label.setText(u"未生成可验证候选；左图仍显示未补偿测量分布。")
+
+    def scatter_records_from_result(self, result):
+        reference = result.getReferenceLocation().convertToUnits(LengthUnit.Millimeters)
+        raw_results = [("X", result.getBaselineXResult()),
+                       ("Y", result.getBaselineYResult())]
+        for item in result.getACalibration().getDistanceResults():
+            raw_results.append(("A", item))
+        for item in result.getBCalibration().getDistanceResults():
+            raw_results.append(("B", item))
+        raw_records = self.scatter_records_for_results(raw_results, reference)
+        compensated_records = []
+        selected = result.getSelectedCandidateValidation()
+        if selected is not None:
+            compensated_records = self.scatter_records_for_results([
+                ("X", selected.getXResult()), ("Y", selected.getYResult()),
+                ("A", selected.getAResult()), ("B", selected.getBResult()),
+            ], reference)
+        return raw_records, compensated_records
+
+    def scatter_records_for_results(self, results, reference):
+        records = []
+        for name, item in results:
+            for sign, locations in (("+", item.getPositiveLocations()),
+                                    ("-", item.getNegativeLocations())):
+                for location in locations:
+                    relative = location.convertToUnits(
+                        LengthUnit.Millimeters).subtract(reference)
+                    records.append((name, item.getDistanceMm(), sign,
+                                    relative.getX(), relative.getY()))
+        return records
+
+    def store_scatter_records(self, props, prefix, records):
+        props.setProperty(prefix + ".count", str(len(records)))
+        for index, record in enumerate(records):
+            name, distance, sign, x, y = record
+            props.setProperty(
+                prefix + ".{}".format(index),
+                "{}|{:.9f}|{}|{:.9f}|{:.9f}".format(
+                    name, distance, sign, x, y))
+
+    def load_scatter_records(self, props, prefix):
+        records = []
+        count = int(props.getProperty(prefix + ".count", "0"))
+        for index in range(count):
+            value = props.getProperty(prefix + ".{}".format(index))
+            if not value:
+                continue
+            parts = value.split("|")
+            if len(parts) != 5 or parts[0] not in ("X", "Y", "A", "B") or \
+                    parts[2] not in ("+", "-"):
+                continue
+            records.append((parts[0], float(parts[1]), parts[2],
+                            float(parts[3]), float(parts[4])))
+        return records
+
+    def render_scatter_records(self, raw_records, compensated_records,
+                               candidate_scale, validation_worst):
+        colors = self._scatter_colors()
+
+        def render(records):
+            graph, scale = self._new_scatter_graph()
+            groups = {}
+            order = []
+            for name, distance, sign, x, y in records:
+                key = (name, distance, sign)
+                if key not in groups:
+                    groups[key] = []
+                    order.append(key)
+                groups[key].append((x, y))
+            sequence = 1
+            for name, distance, sign in order:
+                points = []
+                for x, y in groups[(name, distance, sign)]:
+                    points.append((x + sequence * 1e-10, y))
+                    sequence += 1
+                self._add_scatter_group(
+                    scale, name + sign, distance, points, colors[name + sign])
+            extent = 0.0
+            for name, distance, sign, x, y in records:
+                extent = max(extent, abs(x), abs(y))
+            self._add_scatter_axes(scale, extent)
+            return graph
+
+        self.raw_scatter_view.setGraph(render(raw_records))
+        self.compensated_scatter_view.setGraph(render(compensated_records))
+        if compensated_records:
+            self.scatter_status_label.setText(
+                u"已从诊断候选恢复：左图为未补偿样本；右图为选中{}%候选的留出验证，最坏残差{} mm。".format(
+                    candidate_scale, validation_worst))
+        else:
+            self.scatter_status_label.setText(
+                u"已从诊断候选恢复未补偿散点；该候选没有可恢复的补偿验证散点。")
+
+    def restore_candidate_artifacts(self, props):
+        restored = []
+        report_path = props.getProperty("diagnostic_report_path", "")
+        if report_path:
+            report_file = File(report_path)
+            if report_file.isFile():
+                report = unicode(String(
+                    Files.readAllBytes(report_file.toPath()), "UTF-8"))
+                self.last_report = report
+                self.last_report_file = report_file
+                self.report_area.setText(report)
+                self.report_area.setCaretPosition(0)
+                self.diag_save_button.setEnabled(True)
+                self.diag_status_label.setText(
+                    u"已随诊断候选载入报告：{}".format(report_file.getName()))
+                restored.append(u"诊断报告")
+            else:
+                self.diag_status_label.setText(
+                    u"候选记录的诊断报告文件已不存在：{}".format(report_path))
+        raw_records = self.load_scatter_records(props, "scatter.raw")
+        compensated_records = self.load_scatter_records(props, "scatter.compensated")
+        if raw_records:
+            self.render_scatter_records(
+                raw_records, compensated_records,
+                props.getProperty("candidate_scale", "未知"),
+                props.getProperty("validation_worst_residual_mm", "未知"))
+            restored.append(u"残差分布")
+        elif self.last_diagnostic_result is not None:
+            self.update_residual_plots(self.last_diagnostic_result)
+            restored.append(u"本次会话残差分布")
+        else:
+            self.scatter_status_label.setText(
+                u"这是旧格式候选，没有保存残差散点；重新执行完整诊断后即可跨会话恢复。")
+        return u"、".join(restored) if restored else u"无附属数据"
+
+    def _build_explanation_panel(self):
+        text = JTextArea()
+        text.setEditable(False)
+        text.setLineWrap(True)
+        text.setWrapStyleWord(True)
+        text.setFont(Font("Dialog", Font.PLAIN, 14))
+        text.setMargin(Insets(12, 14, 12, 14))
+        text.setText(
+            u"CoreXY重复定位诊断与二维耦合补偿 - 使用说明\n\n"
+
+            u"【一、工具用途与适用范围】\n"
+            u"本工具用于CoreXY贴片机上能够稳定复现的方向状态误差，例如X轴往返后留下Y方向偏差、Y轴往返后"
+            u"留下X方向偏差，且误差在相同方向、距离和速度下具有一致性。工具通过下视相机观察主要标定点，"
+            u"分别测量A=X+Y和B=X-Y两条虚拟传动链，生成二维状态补偿，并用真实往返测量验证改善程度。\n"
+            u"适用：方向改变后出现近似固定偏移、存在较明确的触发距离、重复测量离散较小。\n"
+            u"不适用：误差随机跳变、皮带轮或紧定螺钉松动、视觉识别漂移、误差随工作区坐标连续变化，或者误差"
+            u"主要随加速度和jerk改变。此类问题应先处理机械、视觉或使用二维位置误差图，固定A/B状态偏置不能"
+            u"替代机械维修。\n\n"
+
+            u"【二、实现边界】\n"
+            u"二维CoreXY补偿由当前定制OpenPnP运动规划器支持，不是原版OpenPnP单轴backlash功能。Tuner不会"
+            u"改写普通G-code文本，也不会发送G92；规划器在逻辑运动转换为驱动运动时插入状态偏置修正，并在位置"
+            u"回报中扣除驱动偏置，因此OpenPnP逻辑坐标保持不变。脚本启动时会检查所需Java接口，旧构建会在"
+            u"机器运动前拒绝自动诊断。\n\n"
+
+            u"【三、首次使用前检查】\n"
+            u"1) 先检查A/B电机主动轮、紧定螺钉、皮带张力、惰轮阻力、横梁正交和导轨阻力，确认误差具有重复性。\n"
+            u"2) 启用机器并完成Home；确认下视相机能稳定识别圆形标定特征。\n"
+            u"3) X/Y控制器轴必须属于同一个驱动器，并同时启用高、低软限位。\n"
+            u"4) 定义主要标定点Primary Fiducial的X/Y/Z和特征直径，X或Y不能为0。\n"
+            u"5) 清空覆盖最大测试范围的夹具、PCB、元件、吸嘴和线缆障碍；软限位不知道实体是否会碰撞。\n"
+            u"6) 确认原OpenPnP单轴补偿的处理策略。本机推荐正式启用CoreXY补偿时把X/Y单轴backlash设为None，"
+            u"避免两个方向状态模型同时修正同一机械现象。\n\n"
+
+            u"【四、各页面功能】\n"
+            u"当前状态：查看正式文件、运行时开关、轴ID、Home恢复脚本、任务保护和原OpenPnP单轴补偿。\n"
+            u"检测与诊断：管理主要标定点，设置距离、速度、重复次数和判定参数，执行完整自动视觉诊断并查看报告。\n"
+            u"残差分布：比较未补偿测量点与最终候选留出验证点的XY分布。\n"
+            u"候选补偿：载入诊断候选，核对A/B阈值、四个修正分量、速度和CoreXY状态示意图。\n"
+            u"验证与应用：执行八方向或随机空载运动，正式保存、启用、关闭或回滚CoreXY补偿。\n"
+            u"使用说明：查看完整操作、原理、判定方法和风险说明。\n\n"
+
+            u"【五、推荐标准流程】\n"
+            u"1) 完成机械检查、Home、软限位设置和主要标定点定义。\n"
+            u"2) 在当前状态页确认CoreXY接口可用，且没有旧X到Y耦合补偿处于启用状态。\n"
+            u"3) 在检测与诊断页设置覆盖实际生产范围的距离和速度；先使用3次重复，必要时提高到5次以上。\n"
+            u"4) 开始诊断，观察当前阶段和总进度；测试期间不要点动机器或启动贴片任务。\n"
+            u"5) 先阅读诊断结论、静止视觉噪声、距离/速度依赖和机械嫌疑，再查看候选数字。\n"
+            u"6) 在残差分布页确认点团是否集中、候选后是否向中心收敛、是否有单一方向明显变差。\n"
+            u"7) 载入最新诊断候选；报告和残差图会同步恢复。核对参数后再进入验证与应用。\n"
+            u"8) 先以低速、较小L1执行八方向空载检查，再扩大距离并使用随机路径检查状态切换。\n"
+            u"9) 确认候选已验证改善且空载路径正常后，保存并启用CoreXY补偿。\n"
+            u"10) 重新Home，在当前状态页确认“正式文件已启用”和“运动规划器运行开关已启用”，再开始生产。\n\n"
+
+            u"【六、主要标定点Primary Fiducial】\n"
+            u"定义位置位于【机器配置】-【贴装头】-【ReferenceHead H1】-【校准套件】，检测页提供相同数据的编辑"
+            u"入口。X/Y决定测试中心，Z决定相机成像高度，特征直径用于视觉搜索和居中。标定点应固定、清晰、"
+            u"近似圆形，且周围具有足够的全方向运动空间。\n"
+            u"刷新：重新读取机器配置。捕获当前相机位置：把下视相机当前位置填入XYZ，但不会自动保存。保存主要"
+            u"标定点：写入机器配置并调用config.save()。相机安全前往：先执行Safe Z，再前往已填写坐标。X=0或"
+            u"Y=0被视为尚未正确设置，诊断和前往操作都会拒绝执行；特征直径必须大于0。\n\n"
+
+            u"【七、X/Y、A/B和正负号】\n"
+            u"X+、X-、Y+、Y-表示机器笛卡尔运动方向。A+、A-、B+、B-表示虚拟传动方向，计算关系为"
+            u"ΔA=ΔX+ΔY、ΔB=ΔX-ΔY。本机定义A+、B+为对应电机顺时针，A-、B-为逆时针。\n"
+            u"纯轴状态关系：X+对应A+、B+；X-对应A-、B-；Y+对应A+、B-；Y-对应A-、B+。\n"
+            u"45度关系：A+位于X正/Y正方位，A-位于X负/Y负方位；B+位于X正/Y负方位，B-位于X负/Y正方位。\n"
+            u"运动名称中的“+”表示进入哪个方向状态；修正数值前的“+/-”表示增补方向，两者不是同一概念。"
+            u"例如B+修正(+0.06920,-0.10580)表示进入B+状态时，建立朝X正方向0.06920 mm、朝Y负方向"
+            u"0.10580 mm的二维偏置，不表示只服务于X+运动。\n\n"
+
+            u"【八、状态补偿怎样工作】\n"
+            u"A-和B-的偏置均以(0,0) mm为参考。A+和B+各自拥有一个(X,Y)二维修正向量。A/B可能同时切换，"
+            u"最终修正是两个当前状态向量的合计。例如A+(+0.01825,+0.03285)、B+(+0.06920,-0.10580)，"
+            u"大距离X+进入A+、B+后合计为(+0.08745,-0.07295) mm。\n"
+            u"它是状态偏置，不是每次运动累加：已经处于B+时继续B+运动不会再次增加同一向量；从B+切回B-时"
+            u"撤销B+偏置。A状态同理。小于阈值的运动保持之前状态，不会累计距离触发，也不会把状态自动清零。"
+            u"阈值是状态切换门槛，不是超过阈值后按距离比例增加补偿。Home会把运行时A/B状态重置为零参考，"
+            u"之后需要一条达到阈值的运动重新建立方向状态。\n\n"
+
+            u"【九、完整自动诊断做了什么】\n"
+            u"1) 暂时备份并关闭现有X/Y单轴、旧耦合和CoreXY补偿。\n"
+            u"2) Safe Z前往主要标定点并视觉居中；多次静止识别，计算视觉噪声。\n"
+            u"3) 根据主要标定点和X/Y软限位计算安全距离，保留2 mm余量；越界档位跳过，少于3档则停止。\n"
+            u"4) 使用45度往返分别隔离A=X+Y、B=X-Y，在每个安全距离重复测量正、负返回状态。\n"
+            u"5) 在最大安全距离测量未补偿纯X和纯Y基线，并在多个速度测量A/B速度依赖。\n"
+            u"6) 拟合A/B触发阈值与二维修正，产生100%、75%、50%三档候选。\n"
+            u"7) 逐档临时启用候选，分别重新实测纯X、纯Y、A斜向、B斜向；不是只做数学预测。\n"
+            u"8) 选择各方向不恶化且实测最坏残差最低的方案，生成报告、候选文件和散点数据。\n"
+            u"9) 无论成功、失败或异常，finally清理临时状态并恢复诊断前配置。诊断本身不会正式启用候选。\n\n"
+
+            u"【十、门限、目标和候选选取】\n"
+            u"实测检测门限=max(界面视觉最小门限, 3×静止视觉噪声)，回答“差异是否大到能够可靠测出”。用户目标"
+            u"重复定位精度回答“补偿后是否满足生产要求”。两者作用不同；候选可能已证明改善但仍未达到生产目标。"
+            u"machine.xml中的configuredTolerance或acceptableTolerance是人为配置值，不参与本工具判定。\n"
+            u"外置Agent页的“补偿目标与参考点”使用统一二维径向残差R=sqrt(X残差^2+Y残差^2)。默认目标为"
+            u"0.050 mm，代表希望方向状态差落入的可接受范围，不是固定补偿量。目标不得低于3倍实测视觉下限；"
+            u"高于0.080 mm会警告，高于0.100 mm需要高级确认。候选选择以满足目标所需的最小修正为优先，"
+            u"而不是把残差强行归零；若安全偏置上限内没有候选能达到目标，程序应报告目标暂不可达，不能为通过"
+            u"而自动放宽用户目标或突破安全上限。\n"
+            u"A/B阈值不是固定15 mm。每个实际测量距离都会作为阈值候选；低于阈值的样本按不补偿试算，高于或"
+            u"等于阈值的样本按固定状态向量试算。修正候选包括实测向量、任意两向量中点和X/Y分量中位数。"
+            u"程序回代全部距离和速度样本，使用minimax原则选择“所有样本中最坏残差最小”的折中，不会只追求"
+            u"平均值好看。\n"
+            u"候选幅值低于检测门限时无法区别于噪声；任一A/B候选超过0.5 mm时风险过大；预计改善不足5%时固定"
+            u"模型价值不足，这些情况不会生成正常候选。三档留出验证还要求每个X/Y/A/B方向不能比各自基线恶化"
+            u"超过检测门限，并且总体最坏残差必须实际下降，从而降低过度补偿风险。\n"
+            u"建议主运动速度是在已测试速度中选择最接近候选模型的一档；补偿微移速度是状态切换时执行小偏置的"
+            u"速度，通常取测试速度中的最低档，两者不能混用。\n\n"
+
+            u"【十一、如何阅读诊断报告】\n"
+            u"“通过”表示候选留出验证有改善并达到用户目标；“有改善但未达目标”表示软件补偿有效但精度仍不足；"
+            u"“候选未改善”表示实测验证没有优于未补偿基线；“未生成候选”表示误差太小、过大、不稳定或固定模型"
+            u"无法形成有意义折中。后两种情况不应直接正式启用。\n"
+            u"纯X修正差(+a,+b)表示X+返回状态相对于X-返回状态需要建立朝X正方向a、朝Y正方向b的修正；负值"
+            u"表示相应轴负方向。纯Y同理。该向量是两种返回受力状态之间的差，不是某一次运动的绝对坐标误差。"
+            u"诊断引擎已经换算为规划器应使用的修正方向，通常不应再次人为取反。\n"
+            u"幅值是二维向量长度，反映方向状态差的总体大小；离散反映相同条件重复测量的一致性。幅值大但离散小"
+            u"通常适合状态补偿；离散接近或超过幅值说明结果不稳定，应先检查视觉和机械。距离跨度大提示皮带张力、"
+            u"横梁扭转或位置依赖；速度跨度大提示动态参数、振动、加速度或jerk影响。\n"
+            u"故障嫌疑排序是诊断建议而不是零件损坏的确定结论。B分量明显更大时优先检查右侧B电机传动链，A分量"
+            u"明显更大时优先检查左侧A电机传动链；两者接近时优先比较两条皮带张力和横梁约束。\n\n"
+
+            u"【十二、残差散点图】\n"
+            u"图形原点是视觉居中后的主要标定点，不是机器绝对坐标；X+向右、Y+向上。相同返回方向使用同一颜色，"
+            u"同一距离的重复点用细圈表示分布范围。左图包含未补偿纯X/Y基线和A/B多距离样本；右图包含最终候选"
+            u"在最大距离下的X/Y/A/B留出验证。\n"
+            u"点团整体离开原点但内部紧密：存在稳定系统偏差。点团松散：随机误差或视觉/机械不稳定。不同距离点团"
+            u"逐渐移动：存在距离或工作区依赖。补偿后点团向中心收敛且范围不扩大：候选有效。某一种颜色远离中心："
+            u"该方向可能过补偿或模型不完整。图用于理解分布，最终通过与否仍以数值残差和不恶化判定为准。\n\n"
+
+            u"【十二-A、第二复测基准：Home视觉点】\n"
+            u"外置Agent可把贴装头配置中的homing fiducial作为第二个只读复测基准。本机Home视觉点约为"
+            u"X=435.046、Y=336.578 mm，靠近X/Y最大行程，因此不强行执行越过Home点的对称路径。程序只从"
+            u"Home向工作区内部退让：X-起步再X+返回得到A+/B+，Y-起步再Y+返回得到A+/B-。两次返回共同"
+            u"保持A+，两者的XY位置差可隔离B+/B-的二维残差。该角点不能独立隔离A+/A-，因此报告会明确"
+            u"标记A不可观测。\n"
+            u"Home结果只用于验证主要标定点所得补偿在工作区另一端是否仍有效，不直接加入速度-距离曲面拟合。"
+            u"两个标定点不足以建立可信的全XY位置曲面；把Home数据硬插值到生产补偿反而可能造成区域间过补偿。"
+            u"测试会检查Home、X-/Y-退让点的可达性，并在首选距离不可达时回退到较短安全距离；软限位仍不能"
+            u"识别实体障碍，运行前必须清空完整路径。\n\n"
+
+            u"【十三、载入、修改、应用、关闭和回滚】\n"
+            u"载入最新诊断候选只把数值填入界面，不会立即启用。新版候选同时恢复关联诊断报告和散点；旧格式候选"
+            u"只能恢复参数。载入后若修改轴ID、A/B阈值、四个修正分量或补偿速度，原留出验证不再证明新参数有效，"
+            u"界面会标记为人工修改并要求明确确认。最可靠的做法是修改后重新完整诊断。\n"
+            u"保存并启用时会先建立“最近一次正式应用前”快照，再写入正式属性文件、运动规划器和machine.xml。"
+            u"本机推荐勾选把X/Y单轴补偿设为None。关闭CoreXY只关闭正式开关，不等于删除候选或历史报告。"
+            u"“回滚到上一次的CoreXY补偿”恢复最近一次正式应用前的CoreXY数据；因为正式应用可能同时改变X/Y"
+            u"单轴补偿，回滚也会恢复快照中当时的X/Y单轴设置。\n\n"
+
+            u"【十四、八方向与随机路径验证】\n"
+            u"八个方位按钮都从当前贴装头位置A出发，抵达一个目标点后返回A。X/Y按钮的笛卡尔位移为L1；A/B"
+            u"45度按钮的两个XY分量各为L1/2，因此虚拟电机变化量|ΔA|或|ΔB|为L1。循环次数表示同一路线"
+            u"重复多少次。\n"
+            u"随机路径每轮随机选择4至8个互不重复方位，保证同时包含横/竖和45度方向。每个点距A为0.4×L1至"
+            u"L1，路线为A→B1→B2→…→Bn→A，中间点之间连续运动，不会每段返回A；每轮和相邻两次操作会生成"
+            u"不同路线。提交前与实际执行前都会再次检查全部端点、软限位和2 mm余量。\n"
+            u"空载验证不使用相机、不测量回位误差，只用于检查运动范围、方向映射、A/B状态切换和补偿动作是否"
+            u"异常。它不能代替完整视觉诊断。应先低速、小L1，在人工监督下逐步扩大范围。\n\n"
+
+            u"【十五、手动获得A+和B+修正量】\n"
+            u"测量前暂时关闭CoreXY补偿和X/Y原单轴补偿。用下视相机十字对准固定标定点，记录机器坐标R。完成"
+            u"往返后，用OpenPnP的X/Y点动重新对准标定点，记录重新对准所需点动量C=新坐标-R；C就是应尝试的"
+            u"修正方向。若已知的是贴装头实际偏离量E，则C=-E。不要仅根据画面左右判断正负，相机画面可能旋转"
+            u"或镜像。每个方向重复5至10次，分别取X/Y分量中位数。\n"
+            u"纯轴分离法：Y-走L再Y+返回，最终为A+、B-，B-是零参考，因此测得C可作为A+；Y+走L再Y-返回，"
+            u"最终为A-、B+，测得C可作为B+。X-走L再X+返回，最终为A+、B+，测得合成修正应近似A++B+；"
+            u"X+走L再X-返回，最终为A-、B-，应接近零，用于检查测量方法。L必须明显大于待测阈值。\n"
+            u"45度分离法：X-、Y-同时运动再沿X+、Y+返回，只切换A；X-、Y+同时运动再沿X+、Y-返回，只切换B。"
+            u"若X-走100 mm再X+返回后，贴装头实际偏离为X=-0.100、Y=+0.100 mm，重新对准量为"
+            u"(+0.100,-0.100) mm。这只能得到A++B+的合计；还必须用Y往返分离其中一个向量，再推算并直接复测"
+            u"另一个向量。人工结果必须经过低速空载和完整视觉验证后才适合正式应用。\n\n"
+
+            u"【十六、软限位与碰撞安全】\n"
+            u"本工具要求X/Y高低软限位全部启用，并在测试点与软限位之间保留至少2 mm。自动诊断会跳过超出安全"
+            u"范围的距离；剩余距离少于3档时拒绝开始。八方向和随机路径会在确认前及机器任务开始后各检查一次。"
+            u"直线运动在坐标软限位内不代表实体安全：夹具、飞达、PCB、元件、吸嘴、相机、横梁和线缆不属于软"
+            u"限位模型。Safe Z只降低垂直碰撞风险，不能保证水平路径无障碍。任何自动运动都必须由用户确认整个"
+            u"区域安全，并准备使用急停。\n\n"
+
+            u"【十七、Home恢复、任务保护和有效期】\n"
+            u"成功Home后，OpenPnP触发Machine.AfterHoming.CoreXYRepeatability.py。脚本读取正式属性文件，恢复"
+            u"轴ID、A/B阈值、A+/B+二维向量和补偿微移速度，再按corexy_enabled启用或关闭。它不发送G1/G92，"
+            u"也不修改控制器坐标。仅启动OpenPnP但未成功Home时，不能假设补偿已经恢复。\n"
+            u"贴片任务结束不会自动关闭CoreXY补偿；正常运行中它会持续有效，直到用户关闭、运行参数失配、换用"
+            u"不支持的运动规划器、配置被外部覆盖或OpenPnP重启后尚未Home。Job.Starting保护会在任务开始前比较"
+            u"正式文件和运行时开关、轴ID、阈值、修正量、速度、驱动器关系及X/Y单轴状态；失配时阻止任务并要求"
+            u"重新Home。故意做无补偿对照测试前必须先明确关闭任务保护。\n"
+            u"机械结构、皮带张力、主动轮、惰轮、横梁、相机标定、固件步距、微步、速度、加速度或jerk发生明显"
+            u"变化后，旧候选不再具有充分依据，应重新诊断。长期使用也应定期复测，并以生产速度和实际工作区域"
+            u"为主。\n\n"
+
+            u"【十八、数据文件位置】\n"
+            u"正式运行参数：.openpnp2/scripts/TornadoSMT/CoreXY_Repeatability.properties\n"
+            u"Home恢复脚本：.openpnp2/scripts/Events/Machine.AfterHoming.CoreXYRepeatability.py\n"
+            u"任务保护脚本：.openpnp2/scripts/Events/Job.Starting.CoreXYGuard.py\n"
+            u"最新诊断候选：.openpnp2/scripts/TornadoSMT/CoreXY_Diagnostic_Candidate.properties\n"
+            u"上一次应用前快照：.openpnp2/scripts/TornadoSMT/CoreXY_Repeatability.previous.properties\n"
+            u"诊断报告：.openpnp2/scripts/TornadoSMT/CoreXY_Diagnostic_日期_时间.txt\n"
+            u"新版候选文件保存报告路径和绘图所需的相对残差点。报告文本文件被删除后不能自动恢复报告，但候选"
+            u"内部的散点仍可显示。Tuner还会调用config.save()保存OpenPnP机器配置；Home事件明确使用的正式来源"
+            u"仍是CoreXY_Repeatability.properties。\n\n"
+
+            u"【十九、常见问题与处理顺序】\n"
+            u"无法开始诊断：依次检查机器Enabled/Homed、下视相机、主要标定点X/Y非零、Z有效和直径大于0、X/Y轴类型、共同"
+            u"驱动器、高低软限位以及至少3个安全距离。\n"
+            u"视觉噪声过大：改善照明、曝光、焦距、标定点边缘和相机安装稳定性，再重复静止捕获。\n"
+            u"离散大或每次方向不同：先查主动轮松动、皮带跳齿、线缆拉扯、导轨卡滞和视觉误识别，不要用固定"
+            u"offset掩盖随机故障。\n"
+            u"补偿后某方向更差：查看三档候选逐方向残差和右侧散点；不要只看总平均。重新诊断，或先降低机械"
+            u"不对称和速度依赖。\n"
+            u"载入候选没有历史图：这是旧格式候选，重新执行一次完整诊断。\n"
+            u"已保存但运行时未启用：重新成功Home，再查看当前状态和Job.Starting自检；检查Home事件脚本名称、"
+            u"正式文件轴ID和当前运动规划器是否一致。\n"
+            u"Mark invalid：应运行短启动脚本CoreXY_Repeatability_Tuner.py，不要直接把pytxt改名为py；启动器会"
+            u"先提高Jython解析器mark上限。脚本文件不应加入coding: utf-8声明。\n\n"
+
+            u"【二十、最终决策原则】\n"
+            u"稳定幅值明显大于离散、距离/速度依赖可接受、三档留出验证各方向不恶化且最坏残差下降：可以受控"
+            u"应用候选。候选改善但未达到目标：可低速试用，同时继续机械优化。候选未改善、方向明显恶化、离散"
+            u"接近幅值或结果随位置/速度剧烈变化：不要正式启用，先解决机械、视觉或动态问题。软件补偿应修正"
+            u"稳定且可验证的剩余误差，而不是让故障暂时看起来消失。"
+        )
+        text.setCaretPosition(0)
+        self.explanation_panel = JScrollPane(text)
+
+    def _build_tabs(self):
+        self.tabs = JTabbedPane()
+
+        status_root = JPanel(BorderLayout(8, 8))
+        top = JPanel(BorderLayout(6, 6))
+        self.status_root_panel = status_root
+        self.status_top_panel = top
+        self.status_area = JTextArea(8, 70)
+        self.status_area.setEditable(False)
+        self.status_area.setFont(Font("Monospaced", Font.PLAIN, 12))
+        refresh_button = JButton(u"刷新当前状态")
+        refresh_button.addActionListener(lambda event: self.refresh_status())
+        self.status_refresh_button = refresh_button
+        self.job_guard_checkbox = JCheckBox(
+            u"贴片任务启动前必须通过CoreXY有效性自检",
+            self.props.getProperty("corexy_job_guard_required", "true").lower() == "true")
+        self.job_guard_checkbox.addActionListener(
+            lambda event: self.save_job_guard_setting())
+        status_buttons = JPanel()
+        self.status_buttons_panel = status_buttons
+        status_buttons.add(refresh_button)
+        status_buttons.add(self.job_guard_checkbox)
+        top.add(JScrollPane(self.status_area), BorderLayout.CENTER)
+        top.add(status_buttons, BorderLayout.SOUTH)
+        status_root.add(top, BorderLayout.NORTH)
+        legacy = JPanel(BorderLayout(6, 6))
+        self.status_legacy_panel = legacy
+        legacy.setBorder(BorderFactory.createTitledBorder(u"高级：OpenPnP原单轴补偿"))
+        legacy.add(self.settings_panel, BorderLayout.CENTER)
+        legacy.add(self.legacy_buttons, BorderLayout.SOUTH)
+        status_root.add(legacy, BorderLayout.CENTER)
+
+        validation = ViewportWidthPanel(BorderLayout(8, 8))
+        self.validation_panel = validation
+        self.candidate_status_label = JLabel(u"候选状态：尚未载入")
+        self.disable_single_axis_on_apply = JCheckBox(
+            u"正式启用时将X/Y单轴补偿设为None（本机推荐，应用前会保存回滚快照）", True)
+        validation_header = JPanel(GridBagLayout())
+        self.validation_header_panel = validation_header
+        validation_header.add(self.candidate_status_label,
+                              self._constraints(0, 0, 1, 1.0,
+                                                GridBagConstraints.HORIZONTAL))
+        validation_header.add(self.disable_single_axis_on_apply,
+                              self._constraints(0, 1, 1, 1.0,
+                                                GridBagConstraints.HORIZONTAL))
+        action_buttons = JPanel()
+        self.validation_action_buttons_panel = action_buttons
+        self.rollback_button = JButton(u"回滚到上一次的CoreXY补偿")
+        self.rollback_button.addActionListener(lambda event: self.rollback_cross_settings())
+        for button in (self.cross_load_candidate_button, self.cross_apply_button,
+                       self.cross_disable_button, self.rollback_button):
+            action_buttons.add(button)
+        validation_header.add(action_buttons, self._constraints(0, 2))
+        validation.add(validation_header, BorderLayout.NORTH)
+        center = JPanel(BorderLayout(6, 6))
+        center.add(self.test_panel, BorderLayout.CENTER)
+        self.log_panel.setPreferredSize(Dimension(800, 125))
+        center.add(self.log_panel, BorderLayout.SOUTH)
+        validation.add(center, BorderLayout.CENTER)
+
+        self.tabs.addTab(u"当前状态", status_root)
+        self.tabs.addTab(u"检测与诊断", self.diagnostic_panel)
+        candidate_scroll = JScrollPane(self.cross_panel)
+        candidate_scroll.getVerticalScrollBar().setUnitIncrement(18)
+        candidate_scroll.getHorizontalScrollBar().setUnitIncrement(18)
+        self.tabs.addTab(u"残差分布", self.residual_panel)
+        self.tabs.addTab(u"候选补偿", candidate_scroll)
+        validation_scroll = JScrollPane(validation)
+        validation_scroll.getVerticalScrollBar().setUnitIncrement(18)
+        validation_scroll.getHorizontalScrollBar().setUnitIncrement(18)
+        self.tabs.addTab(u"验证与应用", validation_scroll)
+        self.tabs.addTab(u"使用说明", self.explanation_panel)
+        self.add(self.tabs, BorderLayout.CENTER)
+
+    def set_diagram_motion(self, motion):
+        self.diagram.set_motion(motion)
+
+
+    def layout_external_candidate_header(self, gain_combo, load_button,
+                                         action_panel):
+        """Lay out external candidate controls on the same left edge as L1."""
+        header = self.validation_header_panel
+        header.removeAll()
+        header.setLayout(GridBagLayout())
+        header.setBorder(BorderFactory.createEmptyBorder(0, 10, 0, 0))
+        header.add(
+            self.candidate_status_label,
+            self._constraints(
+                0, 0, 4, 1.0, GridBagConstraints.HORIZONTAL))
+        header.add(JLabel(u"补偿比例"), self._constraints(0, 1))
+        header.add(gain_combo, self._constraints(1, 1))
+        self.candidate_runtime_status_label = JLabel(u"尚未应用补偿。")
+        self.candidate_runtime_status_label.setFont(
+            Font("Dialog", Font.BOLD, 13))
+        header.add(
+            self.candidate_runtime_status_label,
+            self._constraints(
+                2, 1, 2, 1.0, GridBagConstraints.HORIZONTAL))
+        header.add(
+            self.cross_motor_parameters_panel,
+            self._constraints(
+                0, 2, 4, 1.0, GridBagConstraints.HORIZONTAL))
+        header.add(action_panel, self._constraints(0, 3, 4))
+        header.revalidate()
+        header.repaint()
+
+
+    def selected_axis(self):
+        return self.axes[self.axis_combo.getSelectedIndex()]
+
+    def append_log(self, message):
+        message = unicode(message)
+        self.log.append(message + u"\n")
+        self.log.setCaretPosition(self.log.getDocument().getLength())
+        # Keep the Java console message ASCII-only. Some Jython builds select the
+        # byte-string overload and otherwise fail while encoding Chinese text.
+        System.out.println("[CoreXY Repeatability] tuner status updated")
+
+    def save_job_guard_setting(self):
+        required = self.job_guard_checkbox.isSelected()
+        if not required:
+            answer = JOptionPane.showConfirmDialog(
+                self,
+                u"关闭任务启动保护后，即使CoreXY补偿失配或已关闭，贴片任务也可以启动。\n"
+                u"只应在明确进行无补偿对照测试时关闭。是否继续？",
+                u"确认关闭任务保护", JOptionPane.YES_NO_OPTION,
+                JOptionPane.WARNING_MESSAGE)
+            if answer != JOptionPane.YES_OPTION:
+                self.job_guard_checkbox.setSelected(True)
+                return
+        try:
+            self.props = load_properties()
+            self.props.setProperty(
+                "corexy_job_guard_required", "true" if required else "false")
+            save_properties(self.props)
+            self.append_log(u"任务启动保护已{}。".format(u"启用" if required else u"关闭"))
+            self.refresh_status()
+        except Exception as error:
+            self.job_guard_checkbox.setSelected(not required)
+            JOptionPane.showMessageDialog(
+                self, error_text(error), u"无法保存任务保护设置",
+                JOptionPane.ERROR_MESSAGE)
+
+    def corexy_health_issues(self, formal):
+        issues = []
+        if not settings_file().isFile():
+            issues.append(u"正式配置文件缺失")
+            return issues
+        if not self.cross_supported:
+            issues.append(u"当前OpenPnP没有CoreXY运动规划器接口")
+            return issues
+
+        formal_enabled = formal.getProperty("corexy_enabled", "false").lower() == "true"
+        runtime_enabled = self.motion_planner.isCoreXYCompensationEnabled()
+        if not formal_enabled:
+            issues.append(u"正式配置已关闭CoreXY补偿")
+        if not runtime_enabled:
+            issues.append(u"运动规划器运行开关已关闭")
+        if hasattr(self.motion_planner, "isCrossAxisCompensationEnabled"):
+            if self.motion_planner.isCrossAxisCompensationEnabled():
+                issues.append(u"旧X到Y耦合补偿仍处于启用状态")
+
+        x_axis_id = formal.getProperty("corexy_x_axis_id", "")
+        y_axis_id = formal.getProperty("corexy_y_axis_id", "")
+        x_axis = machine.getAxis(x_axis_id)
+        y_axis = machine.getAxis(y_axis_id)
+        if x_axis is None or y_axis is None:
+            issues.append(u"正式配置中的X/Y轴ID已经失效")
+            return issues
+        if x_axis.getType() != Axis.Type.X or y_axis.getType() != Axis.Type.Y:
+            issues.append(u"正式配置轴ID没有分别指向X轴和Y轴")
+        if not hasattr(x_axis, "getDriver") or not hasattr(y_axis, "getDriver"):
+            issues.append(u"X/Y不是可用于CoreXY的控制器轴")
+        elif x_axis.getDriver() != y_axis.getDriver():
+            issues.append(u"X/Y不属于同一个驱动器")
+        if str(x_axis.getBacklashCompensationMethod()) != "None":
+            issues.append(u"X轴原单轴补偿不是None")
+        if str(y_axis.getBacklashCompensationMethod()) != "None":
+            issues.append(u"Y轴原单轴补偿不是None")
+
+        try:
+            if self.motion_planner.getCoreXYCompensationXAxisId() != x_axis_id:
+                issues.append(u"运行时X轴ID与正式配置不一致")
+            if self.motion_planner.getCoreXYCompensationYAxisId() != y_axis_id:
+                issues.append(u"运行时Y轴ID与正式配置不一致")
+
+            expected = (
+                abs(float(formal.getProperty("corexy_min_move_a_mm", "nan"))),
+                abs(float(formal.getProperty("corexy_min_move_b_mm", "nan"))),
+                float(formal.getProperty("corexy_a_positive_x_mm", "nan")),
+                float(formal.getProperty("corexy_a_positive_y_mm", "nan")),
+                float(formal.getProperty("corexy_b_positive_x_mm", "nan")),
+                float(formal.getProperty("corexy_b_positive_y_mm", "nan")),
+                float(formal.getProperty("corexy_speed_factor", "nan")),
+            )
+            a_offset = self.motion_planner.getCoreXYCompensationAPositiveOffset().convertToUnits(
+                LengthUnit.Millimeters)
+            b_offset = self.motion_planner.getCoreXYCompensationBPositiveOffset().convertToUnits(
+                LengthUnit.Millimeters)
+            actual = (
+                self.motion_planner.getCoreXYCompensationMinMoveA().convertToUnits(
+                    LengthUnit.Millimeters).getValue(),
+                self.motion_planner.getCoreXYCompensationMinMoveB().convertToUnits(
+                    LengthUnit.Millimeters).getValue(),
+                a_offset.getX(), a_offset.getY(), b_offset.getX(), b_offset.getY(),
+                self.motion_planner.getCoreXYCompensationSpeedFactor(),
+            )
+            labels = (u"A阈值", u"B阈值", u"A+ X", u"A+ Y", u"B+ X", u"B+ Y", u"补偿速度")
+            for label, actual_value, expected_value in zip(labels, actual, expected):
+                if (not finite(expected_value) or
+                        abs(actual_value - expected_value) > 0.000001):
+                    issues.append(u"{}运行值与正式配置不一致".format(label))
+        except Exception as error:
+            issues.append(u"运行参数回读失败：{}".format(error_text(error)))
+        return issues
+
+    def refresh_status(self):
+        formal = load_properties()
+        guard_required = formal.getProperty(
+            "corexy_job_guard_required", "true").lower() == "true"
+        self.job_guard_checkbox.setSelected(guard_required)
+        lines = []
+        lines.append(u"运动规划器A/B支持：{}".format(
+            u"是" if self.cross_supported else u"否"))
+        if self.cross_supported:
+            try:
+                lines.append(u"CoreXY二维补偿：{}".format(
+                    u"已启用" if self.motion_planner.isCoreXYCompensationEnabled()
+                    else u"已关闭"))
+                a_offset = self.motion_planner.getCoreXYCompensationAPositiveOffset().convertToUnits(
+                    LengthUnit.Millimeters)
+                b_offset = self.motion_planner.getCoreXYCompensationBPositiveOffset().convertToUnits(
+                    LengthUnit.Millimeters)
+                lines.append(u"A阈值={} mm，A+运行修正=({:+.6f}, {:+.6f}) mm".format(
+                    self.motion_planner.getCoreXYCompensationMinMoveA().convertToUnits(
+                        LengthUnit.Millimeters).getValue(), a_offset.getX(), a_offset.getY()))
+                lines.append(u"B阈值={} mm，B+运行修正=({:+.6f}, {:+.6f}) mm".format(
+                    self.motion_planner.getCoreXYCompensationMinMoveB().convertToUnits(
+                        LengthUnit.Millimeters).getValue(), b_offset.getX(), b_offset.getY()))
+            except Exception as error:
+                lines.append(u"规划器状态读取失败：{}".format(error_text(error)))
+        health_issues = self.corexy_health_issues(formal)
+        lines.append(u"CoreXY实际有效性：{}".format(
+            u"通过，可以执行正式任务" if not health_issues else u"未通过"))
+        for issue in health_issues:
+            lines.append(u"  ! {}".format(issue))
+        for axis in self.axes:
+            lines.append(u"{}轴 [{}]：单轴补偿={}，offset={}，速度系数={:.3f}".format(
+                axis.getType(), axis.getName(), axis.getBacklashCompensationMethod(),
+                axis.getBacklashOffset(), axis.getBacklashSpeedFactor()))
+        lines.append(u"Home自动恢复脚本：{}".format(
+            u"存在" if event_file().isFile() else u"缺失"))
+        lines.append(u"任务启动保护：{}；脚本{}".format(
+            u"必须通过" if guard_required else u"已关闭",
+            u"存在" if job_guard_file().isFile() else u"缺失"))
+        lines.append(u"正式配置文件：{}".format(
+            u"存在" if settings_file().isFile() else u"缺失"))
+        lines.append(u"回滚快照：{}".format(
+            u"可用" if snapshot_file().isFile() else u"尚未建立"))
+        lines.append(u"机器状态：启用={}，Homed={}".format(
+            machine.isEnabled(), machine.isHomed()))
+        self.status_area.setText(u"\n".join(lines))
+        self.status_area.setCaretPosition(0)
+
+    def refresh_axis(self):
+        axis = self.selected_axis()
+        method = str(axis.getBacklashCompensationMethod())
+        if method in METHOD_VALUES:
+            self.method_combo.setSelectedIndex(METHOD_VALUES.index(method))
+        offset = axis.getBacklashOffset().convertToUnits(LengthUnit.Millimeters).getValue()
+        self.offset_field.setText("{:.4f}".format(abs(offset)))
+        self.approach_combo.setSelectedIndex(0 if offset >= 0 else 1)
+        self.speed_field.setText("{:.3f}".format(axis.getBacklashSpeedFactor()))
+        enabled_id = self.props.getProperty("axis_id", "")
+        self.auto_home.setSelected(
+            self.props.getProperty("enabled", "false").lower() == "true" and enabled_id == axis.getId()
+        )
+        if not getattr(self, "suppress_axis_status_log", False):
+            self.append_log(
+                u"当前 {}：方式={}，补偿={:.4f} mm，速度因子={:.3f}".format(
+                    axis.getName(), method, offset, axis.getBacklashSpeedFactor()
+                )
+            )
+
+    def load_recommended(self):
+        self.method_combo.setSelectedIndex(METHOD_VALUES.index("OneSidedOptimizedPositioning"))
+        self.approach_combo.setSelectedIndex(0)
+        self.offset_field.setText("0.100")
+        self.speed_field.setText("0.20")
+        self.auto_home.setSelected(True)
+        self.append_log(u"已载入旧单轴示例；CoreXY二维补偿启用时不建议同时应用。")
+
+    def axis_index_by_id(self, axis_id, fallback_type=None):
+        fallback = 0
+        for index, axis in enumerate(self.axes):
+            if axis.getId() == axis_id:
+                return index
+            if fallback_type is not None and axis.getType() == fallback_type:
+                fallback = index
+        return fallback
+
+    def refresh_cross_settings(self):
+        source_id = self.props.getProperty("corexy_x_axis_id", "")
+        target_id = self.props.getProperty("corexy_y_axis_id", "")
+        self.cross_source_combo.setSelectedIndex(self.axis_index_by_id(source_id, Axis.Type.X))
+        self.cross_target_combo.setSelectedIndex(self.axis_index_by_id(target_id, Axis.Type.Y))
+        self.cross_enabled.setSelected(self.props.getProperty("corexy_enabled", "false").lower() == "true")
+        self.cross_threshold_field.setText(self.props.getProperty("corexy_min_move_a_mm", "15.0"))
+        self.cross_threshold_b_field.setText(self.props.getProperty("corexy_min_move_b_mm", "15.0"))
+        self.cross_a_x_field.setText(self.props.getProperty("corexy_a_positive_x_mm", "0.000"))
+        self.cross_positive_field.setText(self.props.getProperty("corexy_a_positive_y_mm", "-0.050"))
+        self.cross_b_x_field.setText(self.props.getProperty("corexy_b_positive_x_mm", "0.000"))
+        self.cross_b_y_field.setText(self.props.getProperty("corexy_b_positive_y_mm", "-0.050"))
+        self.cross_speed_field.setText(self.props.getProperty("corexy_speed_factor", "0.25"))
+
+        if self.cross_supported:
+            try:
+                configured_source = self.motion_planner.getCoreXYCompensationXAxisId()
+                configured_target = self.motion_planner.getCoreXYCompensationYAxisId()
+                if configured_source:
+                    self.cross_source_combo.setSelectedIndex(self.axis_index_by_id(configured_source, Axis.Type.X))
+                if configured_target:
+                    self.cross_target_combo.setSelectedIndex(self.axis_index_by_id(configured_target, Axis.Type.Y))
+                self.cross_enabled.setSelected(self.motion_planner.isCoreXYCompensationEnabled())
+            except Exception:
+                pass
+        if hasattr(self, "diagram"):
+            self.diagram.set_motion(self.diagram.motion)
+
+    def validated_cross_values(self):
+        x_axis = self.axes[self.cross_source_combo.getSelectedIndex()]
+        y_axis = self.axes[self.cross_target_combo.getSelectedIndex()]
+        if x_axis.getType() != Axis.Type.X or y_axis.getType() != Axis.Type.Y:
+            raise ValueError(u"必须分别选择 X 控制器轴和 Y 控制器轴。")
+        if x_axis.getDriver() != y_axis.getDriver():
+            raise ValueError(u"CoreXY 的 X/Y 轴必须由同一个驱动器控制。")
+        try:
+            threshold_a = abs(float(self.cross_threshold_field.getText().strip()))
+            threshold_b = abs(float(self.cross_threshold_b_field.getText().strip()))
+            a_x = float(self.cross_a_x_field.getText().strip())
+            a_y = float(self.cross_positive_field.getText().strip())
+            b_x = float(self.cross_b_x_field.getText().strip())
+            b_y = float(self.cross_b_y_field.getText().strip())
+            speed_factor = float(self.cross_speed_field.getText().strip())
+        except ValueError:
+            raise ValueError(u"A/B 阈值、四个修正分量和速度系数必须是数字。")
+        if not self.cross_a_enabled_checkbox.isSelected():
+            threshold_a, a_x, a_y = 500.0, 0.0, 0.0
+        if not self.cross_b_enabled_checkbox.isSelected():
+            threshold_b, b_x, b_y = 500.0, 0.0, 0.0
+        if threshold_a <= 0 or threshold_b <= 0 or threshold_a > 500 or threshold_b > 500:
+            raise ValueError(u"A/B 触发阈值必须大于 0 且不超过 500 mm。")
+        if max(abs(a_x), abs(a_y), abs(b_x), abs(b_y)) > 2:
+            raise ValueError(u"CoreXY 修正分量的绝对值不能超过 2 mm。")
+        if speed_factor <= 0 or speed_factor > 1:
+            raise ValueError(u"末段修正速度系数必须大于 0 且不超过 1。")
+        return x_axis, y_axis, threshold_a, threshold_b, a_x, a_y, b_x, b_y, speed_factor
+
+    def set_cross_planner(self, enabled, x_axis, y_axis, threshold_a, threshold_b,
+                          a_x, a_y, b_x, b_y, speed_factor):
+        if not self.cross_supported:
+            raise RuntimeError(u"当前 OpenPnP 尚未包含 CoreXY A/B 运动规划器。")
+        self.motion_planner.setCrossAxisCompensationEnabled(False)
+        self.motion_planner.setCoreXYCompensationXAxisId(x_axis.getId())
+        self.motion_planner.setCoreXYCompensationYAxisId(y_axis.getId())
+        self.motion_planner.setCoreXYCompensationMinMoveA(Length(threshold_a, LengthUnit.Millimeters))
+        self.motion_planner.setCoreXYCompensationMinMoveB(Length(threshold_b, LengthUnit.Millimeters))
+        self.motion_planner.setCoreXYCompensationAPositiveOffset(
+            Location(LengthUnit.Millimeters, a_x, a_y, 0, 0))
+        self.motion_planner.setCoreXYCompensationANegativeOffset(Location(LengthUnit.Millimeters))
+        self.motion_planner.setCoreXYCompensationBPositiveOffset(
+            Location(LengthUnit.Millimeters, b_x, b_y, 0, 0))
+        self.motion_planner.setCoreXYCompensationBNegativeOffset(Location(LengthUnit.Millimeters))
+        self.motion_planner.setCoreXYCompensationSpeedFactor(speed_factor)
+        self.motion_planner.setCoreXYCompensationEnabled(enabled)
+
+    def cross_signature(self, values=None):
+        if values is None:
+            values = self.validated_cross_values()
+        return tuple([values[0].getId(), values[1].getId()] +
+                     [round(float(value), 8) for value in values[2:]])
+
+    def save_snapshot(self):
+        snapshot = Properties()
+        snapshot.putAll(self.props)
+        snapshot.setProperty("snapshot.corexy_enabled", "true" if
+                             self.motion_planner.isCoreXYCompensationEnabled() else "false")
+        for axis in self.axes:
+            prefix = "snapshot.axis.{}.".format(axis.getId())
+            snapshot.setProperty(prefix + "method", str(axis.getBacklashCompensationMethod()))
+            snapshot.setProperty(prefix + "offset_mm", str(axis.getBacklashOffset().convertToUnits(
+                LengthUnit.Millimeters).getValue()))
+            snapshot.setProperty(prefix + "speed_factor", str(axis.getBacklashSpeedFactor()))
+            snapshot.setProperty(prefix + "sneak_up_mm", str(axis.getSneakUpOffset().convertToUnits(
+                LengthUnit.Millimeters).getValue()))
+        stream = FileOutputStream(snapshot_file())
+        try:
+            snapshot.store(stream, "OpenPnP CoreXY previous configuration")
+        finally:
+            stream.close()
+
+    def apply_cross_settings(self):
+        snapshot_written = False
+        try:
+            values = self.validated_cross_values()
+            signature = self.cross_signature(values)
+            candidate_unchanged = (self.loaded_candidate_signature is not None and
+                                   signature == self.loaded_candidate_signature)
+            validation_status = (self.candidate_validation_status if candidate_unchanged
+                                 else "manual_modified")
+            if validation_status == "improved":
+                validation_text = u"该参数与已完成临时改善验证的诊断候选一致。"
+            elif validation_status == "manual_modified":
+                validation_text = u"参数已被人工修改，原候选验证结果不再适用于这些数值。"
+            else:
+                validation_text = u"该参数没有可确认的改善验证结果。"
+            conflict_lines = []
+            for axis in (values[0], values[1]):
+                if str(axis.getBacklashCompensationMethod()) != "None":
+                    conflict_lines.append(u"{}轴当前单轴补偿={}".format(
+                        axis.getType(), axis.getBacklashCompensationMethod()))
+            message = [
+                validation_text,
+                u"将保存当前配置作为一键回滚快照。",
+            ]
+            if self.disable_single_axis_on_apply.isSelected():
+                message.append(u"将把X/Y原单轴补偿设为None，避免对同一误差重复补偿。")
+            elif conflict_lines:
+                message.append(u"注意：以下单轴补偿将与CoreXY补偿叠加：\n" +
+                               u"\n".join(conflict_lines))
+            message.append(u"确认正式保存并启用？")
+            answer = JOptionPane.showConfirmDialog(
+                self, u"\n\n".join(message), u"正式应用CoreXY补偿",
+                JOptionPane.YES_NO_OPTION, JOptionPane.WARNING_MESSAGE)
+            if answer != JOptionPane.YES_OPTION:
+                return False
+
+            self.save_snapshot()
+            snapshot_written = True
+            if self.disable_single_axis_on_apply.isSelected():
+                for axis in (values[0], values[1]):
+                    self.ensure_backup(axis)
+                    axis.setBacklashCompensationMethod(
+                        BacklashCompensationMethod.valueOf("None"))
+            self.set_cross_planner(True, *values)
+            if not self.motion_planner.isCoreXYCompensationEnabled():
+                raise RuntimeError(u"运动规划器没有进入 CoreXY 补偿启用状态。")
+            x_axis, y_axis, threshold_a, threshold_b, a_x, a_y, b_x, b_y, speed_factor = values
+            self.cross_enabled.setSelected(True)
+            self.props.setProperty("corexy_enabled", "true")
+            self.props.setProperty("corexy_x_axis_id", x_axis.getId())
+            self.props.setProperty("corexy_y_axis_id", y_axis.getId())
+            self.props.setProperty("corexy_min_move_a_mm", str(threshold_a))
+            self.props.setProperty("corexy_min_move_b_mm", str(threshold_b))
+            self.props.setProperty("corexy_a_positive_x_mm", str(a_x))
+            self.props.setProperty("corexy_a_positive_y_mm", str(a_y))
+            self.props.setProperty("corexy_b_positive_x_mm", str(b_x))
+            self.props.setProperty("corexy_b_positive_y_mm", str(b_y))
+            self.props.setProperty("corexy_speed_factor", str(speed_factor))
+            save_properties(self.props)
+            config.save()
+            self.props = load_properties()
+            self.append_log(
+                u"已启用 CoreXY 补偿：A+({:+.4f},{:+.4f})，B+({:+.4f},{:+.4f})，阈值 A/B={:.2f}/{:.2f} mm。".format(
+                    a_x, a_y, b_x, b_y, threshold_a, threshold_b)
+            )
+            self.candidate_status_label.setText(u"候选状态：已正式保存并启用")
+            self.candidate_page_status_label.setText(u"候选状态：已正式保存并启用")
+            self.refresh_status()
+            return True
+        except Exception as error:
+            restore_note = u""
+            if snapshot_written:
+                try:
+                    self.restore_snapshot_runtime()
+                    restore_note = u"\n\n已自动恢复应用前配置。"
+                except Exception as restore_error:
+                    restore_note = u"\n\n自动恢复也失败：{}".format(error_text(restore_error))
+            JOptionPane.showMessageDialog(
+                self, error_text(error) + restore_note,
+                u"无法保存 CoreXY 补偿", JOptionPane.ERROR_MESSAGE)
+            return False
+
+    def load_diagnostic_candidate(self):
+        path = candidate_file()
+        if not path.isFile():
+            JOptionPane.showMessageDialog(
+                self, u"尚未找到诊断候选文件。请先运行完整 CoreXY 检测与诊断。",
+                u"没有诊断候选", JOptionPane.WARNING_MESSAGE)
+            return
+        props = Properties()
+        stream = FileInputStream(path)
+        try:
+            props.load(stream)
+        finally:
+            stream.close()
+        try:
+            validation_status = props.getProperty("validation_status", "not_run")
+            if validation_status != "improved":
+                answer = JOptionPane.showConfirmDialog(
+                    self,
+                    u"该候选尚未通过临时改善验证，或验证后没有改善。\n"
+                    u"是否仍只载入字段，用于低速、空载、人工监督测试？",
+                    u"候选尚未验证",
+                    JOptionPane.YES_NO_OPTION,
+                    JOptionPane.WARNING_MESSAGE)
+                if answer != JOptionPane.YES_OPTION:
+                    return
+            x_axis_id = props.getProperty("corexy_x_axis_id", "")
+            y_axis_id = props.getProperty("corexy_y_axis_id", "")
+            self.cross_source_combo.setSelectedIndex(
+                self.axis_index_by_id(x_axis_id, Axis.Type.X))
+            self.cross_target_combo.setSelectedIndex(
+                self.axis_index_by_id(y_axis_id, Axis.Type.Y))
+            self.cross_threshold_field.setText(props.getProperty("corexy_min_move_a_mm"))
+            self.cross_threshold_b_field.setText(props.getProperty("corexy_min_move_b_mm"))
+            self.cross_a_x_field.setText(props.getProperty("corexy_a_positive_x_mm"))
+            self.cross_positive_field.setText(props.getProperty("corexy_a_positive_y_mm"))
+            self.cross_b_x_field.setText(props.getProperty("corexy_b_positive_x_mm"))
+            self.cross_b_y_field.setText(props.getProperty("corexy_b_positive_y_mm"))
+            self.cross_speed_field.setText(props.getProperty("corexy_speed_factor"))
+            values = self.validated_cross_values()
+            self.loaded_candidate_signature = self.cross_signature(values)
+            self.candidate_validation_status = validation_status
+            operating_speed = props.getProperty("recommended_operating_speed_factor", "未知")
+            meets_target = props.getProperty("validation_meets_target", "false") == "true"
+            status_text = (u"已验证改善" if validation_status == "improved"
+                           else u"未证明改善")
+            target_text = u"达到用户目标" if meets_target else u"尚未达到用户目标"
+            self.candidate_status_label.setText(
+                u"候选状态：{}；{}；建议主运动速度系数 {}".format(
+                    status_text, target_text, operating_speed))
+            self.candidate_page_status_label.setText(
+                u"候选状态：{}；{}；建议主运动速度 {}".format(
+                    status_text, target_text, operating_speed))
+            self.diagram.set_motion(self.diagram.motion)
+            artifact_text = self.restore_candidate_artifacts(props)
+            self.tabs.setSelectedIndex(3)
+            self.append_log(
+                u"已载入最新诊断候选及{}，尚未启用；建议主运动速度系数={}，"
+                u"留出验证达到目标={}。请核对后点击保存并启用。".format(
+                    artifact_text, operating_speed, u"是" if meets_target else u"否"))
+        except Exception as error:
+            JOptionPane.showMessageDialog(
+                self, error_text(error), u"诊断候选无效", JOptionPane.ERROR_MESSAGE)
+
+    def refresh_candidate_status(self):
+        path = candidate_file()
+        if not path.isFile():
+            self.candidate_status_label.setText(u"候选状态：尚未生成诊断候选")
+            self.candidate_page_status_label.setText(u"候选状态：尚未生成诊断候选")
+            return
+        props = Properties()
+        stream = FileInputStream(path)
+        try:
+            props.load(stream)
+        finally:
+            stream.close()
+        status = props.getProperty("validation_status", "not_run")
+        meets = props.getProperty("validation_meets_target", "false") == "true"
+        self.candidate_status_label.setText(u"候选状态：{}；{}；尚未载入参数页".format(
+            u"已验证改善" if status == "improved" else u"未证明改善",
+            u"达到用户目标" if meets else u"未达到用户目标"))
+        self.candidate_page_status_label.setText(u"候选状态：{}；{}；点击载入后检查参数".format(
+            u"已验证改善" if status == "improved" else u"未证明改善",
+            u"达到用户目标" if meets else u"未达到用户目标"))
+
+    def disable_cross_settings(self):
+        try:
+            if self.cross_supported:
+                self.motion_planner.setCoreXYCompensationEnabled(False)
+            self.props.setProperty("corexy_enabled", "false")
+            save_properties(self.props)
+            config.save()
+            self.cross_enabled.setSelected(False)
+            self.candidate_status_label.setText(u"候选状态：正式CoreXY补偿已关闭")
+            self.candidate_page_status_label.setText(u"候选状态：正式CoreXY补偿已关闭")
+            self.refresh_status()
+            self.append_log(u"已关闭 CoreXY A/B 二维补偿。")
+        except Exception as error:
+            JOptionPane.showMessageDialog(self, error_text(error), u"无法关闭 CoreXY 补偿", JOptionPane.ERROR_MESSAGE)
+
+    def rollback_cross_settings(self):
+        path = snapshot_file()
+        if not path.isFile():
+            JOptionPane.showMessageDialog(
+                self, u"尚未建立回滚快照。首次正式应用CoreXY配置时会自动建立。",
+                u"无法回滚", JOptionPane.WARNING_MESSAGE)
+            return
+        answer = JOptionPane.showConfirmDialog(
+            self, u"将恢复上一次正式应用前的CoreXY和X/Y单轴补偿配置。是否继续？",
+            u"确认回滚", JOptionPane.YES_NO_OPTION, JOptionPane.WARNING_MESSAGE)
+        if answer != JOptionPane.YES_OPTION:
+            return
+        try:
+            self.restore_snapshot_runtime()
+            self.candidate_status_label.setText(
+                u"候选状态：已回滚到上一次的CoreXY补偿")
+            self.candidate_page_status_label.setText(
+                u"候选状态：已回滚到上一次的CoreXY补偿")
+            self.append_log(
+                u"已恢复上一次正式应用前的CoreXY补偿及当时的X/Y单轴补偿设置。")
+        except Exception as error:
+            JOptionPane.showMessageDialog(
+                self, error_text(error), u"回滚失败", JOptionPane.ERROR_MESSAGE)
+
+    def restore_snapshot_runtime(self):
+        snapshot = Properties()
+        stream = FileInputStream(snapshot_file())
+        try:
+            snapshot.load(stream)
+        finally:
+            stream.close()
+        restored = Properties()
+        for key in snapshot.stringPropertyNames():
+            if not key.startswith("snapshot."):
+                restored.setProperty(key, snapshot.getProperty(key))
+        for axis in self.axes:
+            prefix = "snapshot.axis.{}.".format(axis.getId())
+            method = snapshot.getProperty(prefix + "method")
+            if method:
+                self.set_axis(
+                    axis, method,
+                    float(snapshot.getProperty(prefix + "offset_mm", "0")),
+                    float(snapshot.getProperty(prefix + "speed_factor", "0.25")),
+                    float(snapshot.getProperty(prefix + "sneak_up_mm", "0")))
+        self.props = restored
+        save_properties(self.props)
+        self.refresh_cross_settings()
+        values = self.validated_cross_values()
+        core_enabled = self.props.getProperty("corexy_enabled", "false").lower() == "true"
+        self.set_cross_planner(core_enabled, *values)
+        config.save()
+        self.refresh_axis()
+        self.refresh_status()
+
+    def start_cross_test(self):
+        if not self.cross_supported or not self.motion_planner.isCoreXYCompensationEnabled():
+            JOptionPane.showMessageDialog(
+                self, u"当前CoreXY补偿尚未启用。请先完成候选验证和正式应用。",
+                u"不能测试", JOptionPane.WARNING_MESSAGE)
+            return
+        self.tabs.setSelectedIndex(4)
+
+    def validate_diagnostic_environment(self):
+        if not self.cross_calibration_supported:
+            raise RuntimeError(u"当前OpenPnP不包含完整CoreXY诊断接口，请启动最新定制构建。")
+        if not machine.isEnabled() or not machine.isHomed():
+            raise RuntimeError(u"请先启用机器并完成Home。")
+        head = machine.getDefaultHead()
+        camera = head.getDefaultCamera()
+        if not isinstance(camera.getAxisX(), ReferenceControllerAxis):
+            raise RuntimeError(u"下视相机没有直接映射到X控制器轴。")
+        if not isinstance(camera.getAxisY(), ReferenceControllerAxis):
+            raise RuntimeError(u"下视相机没有直接映射到Y控制器轴。")
+        if camera.getAxisX().getDriver() != camera.getAxisY().getDriver():
+            raise RuntimeError(u"CoreXY的X/Y控制器轴必须使用同一个驱动器。")
+        primary = head.getCalibrationPrimaryFiducialLocation()
+        diameter = head.getCalibrationPrimaryFiducialDiameter()
+        if (primary is None or not primary.isInitialized() or diameter is None or
+                not diameter.isInitialized()):
+            raise RuntimeError(
+                u"请先在【机器配置】-【贴装头】-【ReferenceHead H1】-【校准套件】中定义"
+                u"主要标定点Primary Fiducial的X/Y/Z坐标和特征直径。")
+        primary_mm = primary.convertToUnits(LengthUnit.Millimeters)
+        diameter_mm = diameter.convertToUnits(LengthUnit.Millimeters).getValue()
+        if (not finite(primary_mm.getX()) or not finite(primary_mm.getY()) or
+                abs(primary_mm.getX()) < 1e-9 or abs(primary_mm.getY()) < 1e-9):
+            raise RuntimeError(
+                u"主要标定点X或Y为0，不能作为诊断中心。请在本页捕获实际相机位置并保存。")
+        if not finite(diameter_mm) or diameter_mm <= 0:
+            raise RuntimeError(u"主要标定点特征直径必须大于0。")
+        self.require_xy_soft_limits(camera.getAxisX(), camera.getAxisY())
+        self.validate_xy_location(
+            camera, primary, camera.getAxisX(), camera.getAxisY(),
+            u"主要标定点Primary Fiducial")
+        return head, camera
+
+    def require_xy_soft_limits(self, x_axis, y_axis):
+        for axis in (x_axis, y_axis):
+            if not (axis.isSoftLimitLowEnabled() and axis.isSoftLimitHighEnabled()):
+                raise RuntimeError(
+                    u"{}轴必须同时启用高、低软限位后才能执行CoreXY运动测试。".format(
+                        axis.getName()))
+            low = axis.getSoftLimitLow().convertToUnits(
+                LengthUnit.Millimeters).getValue()
+            high = axis.getSoftLimitHigh().convertToUnits(
+                LengthUnit.Millimeters).getValue()
+            if not finite(low) or not finite(high) or high - low <= 4.0:
+                raise RuntimeError(
+                    u"{}轴软限位范围无效或不足以保留2 mm安全余量。".format(axis.getName()))
+
+    def validate_xy_location(self, movable, location, x_axis, y_axis, label):
+        raw = movable.toRaw(location)
+        if not self.motion_planner.isValidLocation(movable, raw):
+            raise RuntimeError(u"{}超出OpenPnP软限位。".format(label))
+        for axis in (x_axis, y_axis):
+            coordinate = raw.getLengthCoordinate(axis).convertToUnits(
+                LengthUnit.Millimeters).getValue()
+            low = axis.getSoftLimitLow().convertToUnits(
+                LengthUnit.Millimeters).getValue()
+            high = axis.getSoftLimitHigh().convertToUnits(
+                LengthUnit.Millimeters).getValue()
+            if coordinate < low + 2.0 or coordinate > high - 2.0:
+                raise RuntimeError(
+                    u"{}的{}坐标{:.3f} mm没有保留距软限位至少2 mm的余量（允许{:.3f}至{:.3f} mm）。".format(
+                        label, axis.getName(), coordinate, low + 2.0, high - 2.0))
+
+    def filter_diagnostic_distances(self, head, camera, distances):
+        x_axis = camera.getAxisX()
+        y_axis = camera.getAxisY()
+        reference = head.getCalibrationPrimaryFiducialLocation()
+        raw = camera.toRaw(reference)
+        maximum = float("inf")
+        for axis in (x_axis, y_axis):
+            coordinate = raw.getLengthCoordinate(axis).convertToUnits(
+                LengthUnit.Millimeters).getValue()
+            low = axis.getSoftLimitLow().convertToUnits(
+                LengthUnit.Millimeters).getValue()
+            high = axis.getSoftLimitHigh().convertToUnits(
+                LengthUnit.Millimeters).getValue()
+            maximum = min(maximum, coordinate - low - 2.0, high - coordinate - 2.0)
+        safe = [distance for distance in distances if distance <= maximum]
+        skipped = [distance for distance in distances if distance > maximum]
+        if len(safe) < 3:
+            raise RuntimeError(
+                u"主要标定点周围可用软限位距离约为{:.3f} mm，安全距离档位不足3个。"
+                u"请减小测试距离或重新选择主要标定点。".format(maximum))
+        return safe, skipped, maximum
+
+    def format_diagnostic_stage(self, stage):
+        parts = unicode(stage or "preparing").split("|")
+        code = parts[0]
+        labels = {
+            "idle": u"等待开始",
+            "preparing": u"检查校准环境并备份现有补偿设置",
+            "reference": u"安全移动到主要标定点Primary Fiducial并执行视觉居中",
+            "vision_noise": u"测量静止视觉噪声并计算可靠检测门限",
+            "distance_ready": u"检查软限位并确定可用测试距离",
+            "fit_virtual_axes": u"拟合A/B虚拟传动方向的平台与阈值",
+            "candidate_fit": u"搜索A/B折中候选并生成100%、75%、50%三档方案",
+            "validation_x": u"临时启用候选：验证纯X往返",
+            "validation_y": u"临时启用候选：验证纯Y往返",
+            "validation_a": u"临时启用候选：验证A=X+Y斜向往返",
+            "validation_b": u"临时启用候选：验证B=X-Y斜向往返",
+            "restoring": u"清除临时状态并恢复检测前配置",
+            "restored": u"检测完成，原配置已经恢复",
+        }
+        if code in ("distance_a", "distance_b") and len(parts) >= 4:
+            name = u"A=X+Y" if code == "distance_a" else u"B=X-Y"
+            return u"距离检测 {}：第 {}/{} 档，虚拟运动距离 {:.3f} mm".format(
+                name, int(parts[1]), int(parts[2]), float(parts[3]))
+        if code in ("speed_a", "speed_b") and len(parts) >= 4:
+            name = u"A=X+Y" if code == "speed_a" else u"B=X-Y"
+            return u"速度检测 {}：第 {}/{} 档，主运动速度系数 {:.3f}".format(
+                name, int(parts[1]), int(parts[2]), float(parts[3]))
+        if code in ("baseline_x", "baseline_y") and len(parts) >= 2:
+            name = u"纯X" if code == "baseline_x" else u"纯Y"
+            return u"未补偿{}方向基线检测，距离 {:.3f} mm".format(
+                name, float(parts[1]))
+        if code.startswith("candidate_validation_") and len(parts) >= 4:
+            direction = code[-1].upper()
+            return u"候选实测验证：第 {}/{} 组（补偿量{:.0f}%），{}方向往返".format(
+                int(parts[1]), int(parts[2]), float(parts[3]) * 100.0, direction)
+        return labels.get(code, u"校准引擎阶段：{}".format(code))
+
+    def update_diagnostic_progress(self):
+        calibration = machine.getCalibrationSolutions()
+        if not (hasattr(calibration, "getCoreXYCalibrationProgressStage") and
+                hasattr(calibration, "getCoreXYCalibrationProgressCompleted") and
+                hasattr(calibration, "getCoreXYCalibrationProgressTotal")):
+            self.diag_progress_bar.setIndeterminate(True)
+            self.diag_progress_bar.setString(u"校准运行中")
+            self.diag_stage_label.setText(
+                u"当前阶段：运行中；当前OpenPnP构建未提供细分进度接口")
+            return
+        stage = calibration.getCoreXYCalibrationProgressStage()
+        completed = int(calibration.getCoreXYCalibrationProgressCompleted())
+        total = max(1, int(calibration.getCoreXYCalibrationProgressTotal()))
+        percent = min(100, max(0, int(round(completed * 100.0 / total))))
+        detail = self.format_diagnostic_stage(stage)
+        self.diag_progress_bar.setIndeterminate(False)
+        self.diag_progress_bar.setValue(percent)
+        self.diag_progress_bar.setString(
+            u"总体进度 {}/{}（{}%）".format(completed, total, percent))
+        self.diag_stage_label.setText(u"当前阶段：{}".format(detail))
+        self.diag_status_label.setText(u"正在检测：{}".format(detail))
+
+    def start_diagnosis(self):
+        try:
+            head, camera = self.validate_diagnostic_environment()
+            distances = parse_numbers(self.diag_distance_field.getText(), u"距离", 3)
+            speeds = parse_numbers(self.diag_speed_field.getText(), u"速度", 2)
+            if max(speeds) > 1.0:
+                raise ValueError(u"速度系数不能超过1.0。")
+            repeats = int(self.diag_repeats_spinner.getValue())
+            target_tolerance = float(self.diag_target_field.getText().strip())
+            detection_floor = float(self.diag_floor_field.getText().strip())
+            if not finite(target_tolerance) or target_tolerance <= 0:
+                raise ValueError(u"用户目标重复定位精度必须大于0。")
+            if not finite(detection_floor) or detection_floor <= 0:
+                raise ValueError(u"视觉最小检测门限必须大于0。")
+            distances, skipped_distances, maximum_safe_distance = \
+                self.filter_diagnostic_distances(head, camera, distances)
+        except Exception as error:
+            JOptionPane.showMessageDialog(
+                self, error_text(error), u"无法开始诊断", JOptionPane.ERROR_MESSAGE)
+            return
+
+        skipped_note = u""
+        if skipped_distances:
+            skipped_note = (
+                u"\n超出主要标定点周围软限位安全范围的距离将跳过：{} mm；当前约可用至{:.3f} mm。".format(
+                    u", ".join([u"{:.3f}".format(value) for value in skipped_distances]),
+                    maximum_safe_distance))
+        answer = JOptionPane.showConfirmDialog(
+            self,
+            u"将使用主要标定点Primary Fiducial执行静止视觉噪声、纯X/Y、A/B斜向、多距离和多速度测试。\n"
+            u"程序会临时关闭并在结束后恢复现有单轴和CoreXY补偿。\n"
+            u"程序会生成100%、75%、50%三档候选，逐档临时执行X/Y/A/B留出验证，"
+            u"只选择各方向不恶化且最坏残差最低的方案；不会永久启用。\n"
+            u"X/Y高低软限位和2 mm余量已经预检；软限位不能识别实体障碍物。"
+            u"请确认全部运动路径、吸嘴和线缆无障碍。" + skipped_note,
+            u"确认CoreXY完整诊断", JOptionPane.OK_CANCEL_OPTION,
+            JOptionPane.WARNING_MESSAGE)
+        if answer != JOptionPane.OK_OPTION:
+            return
+
+        self.diag_run_button.setEnabled(False)
+        self.diag_save_button.setEnabled(False)
+        self.diag_status_label.setText(u"检测运行中；请勿操作机器...")
+        self.diag_stage_label.setText(u"当前阶段：等待校准引擎启动")
+        self.diag_progress_bar.setIndeterminate(False)
+        self.diag_progress_bar.setValue(0)
+        self.diag_progress_bar.setString(u"总体进度 0%")
+        self.report_area.setText(
+            u"诊断正在运行。当前检测项目和总体完成进度显示在上方；完成后本区域显示完整报告。")
+        self.diag_progress_timer.start()
+
+        def run():
+            try:
+                result = machine.getCalibrationSolutions().calibrateCoreXYKinematics(
+                    head, camera, array(distances, 'd'), repeats, array(speeds, 'd'),
+                    target_tolerance, detection_floor)
+                report = self.build_diagnostic_report(
+                    result, camera.getAxisX(), camera.getAxisY())
+                report_file = self.write_report(report)
+                candidate_status = self.write_candidate(
+                    result, camera.getAxisX(), camera.getAxisY(), report_file)
+
+                def completed():
+                    self.diag_progress_timer.stop()
+                    self.last_report = report
+                    self.last_report_file = report_file
+                    self.last_diagnostic_result = result
+                    self.update_residual_plots(result)
+                    self.report_area.setText(report)
+                    self.report_area.setCaretPosition(0)
+                    self.diag_status_label.setText(
+                        u"诊断完成；候选={}；报告={}".format(
+                            candidate_status, report_file.getName()))
+                    self.diag_run_button.setEnabled(True)
+                    self.diag_save_button.setEnabled(True)
+                    self.diag_stage_label.setText(u"当前阶段：检测完成，原配置已经恢复")
+                    self.diag_progress_bar.setIndeterminate(False)
+                    self.diag_progress_bar.setValue(100)
+                    self.diag_progress_bar.setString(u"总体进度 100%")
+                    if candidate_status == u"已验证改善":
+                        self.load_diagnostic_candidate()
+                        self.tabs.setSelectedIndex(1)
+                    self.refresh_status()
+                SwingUtilities.invokeLater(completed)
+            except Exception as error:
+                def failed():
+                    self.diag_progress_timer.stop()
+                    self.diag_run_button.setEnabled(True)
+                    self.diag_status_label.setText(u"诊断失败；原配置已由校准引擎恢复")
+                    self.diag_stage_label.setText(u"当前阶段：诊断异常终止")
+                    self.diag_progress_bar.setIndeterminate(False)
+                    self.diag_progress_bar.setString(u"诊断失败")
+                    self.report_area.setText(error_text(error))
+                    JOptionPane.showMessageDialog(
+                        self, error_text(error), u"CoreXY诊断失败", JOptionPane.ERROR_MESSAGE)
+                    self.refresh_status()
+                SwingUtilities.invokeLater(failed)
+        submitUiMachineTask(run)
+
+    def build_diagnostic_report(self, result, x_axis, y_axis):
+        a_fit = result.getACalibration()
+        b_fit = result.getBCalibration()
+        baseline_x = result.getBaselineXResult()
+        baseline_y = result.getBaselineYResult()
+        trial = result.getTrialCompensation()
+        detection = result.getDiagnosticToleranceMm()
+        target = result.getTargetToleranceMm()
+        x_vector = (baseline_x.getCorrectionXmm(), baseline_x.getCorrectionYmm())
+        y_vector = (baseline_y.getCorrectionXmm(), baseline_y.getCorrectionYmm())
+        x_mag = magnitude(*x_vector)
+        y_mag = magnitude(*y_vector)
+        est_a = ((x_vector[0] + y_vector[0]) * 0.5,
+                 (x_vector[1] + y_vector[1]) * 0.5)
+        est_b = ((x_vector[0] - y_vector[0]) * 0.5,
+                 (x_vector[1] - y_vector[1]) * 0.5)
+        a_items = list(a_fit.getDistanceResults())
+        b_items = list(b_fit.getDistanceResults())
+        a_vectors = [(item.getCorrectionXmm(), item.getCorrectionYmm()) for item in a_items]
+        b_vectors = [(item.getCorrectionXmm(), item.getCorrectionYmm()) for item in b_items]
+        a_tail_span = max_pairwise_span(a_vectors[-min(4, len(a_vectors)):])
+        b_tail_span = max_pairwise_span(b_vectors[-min(4, len(b_vectors)):])
+        a_max_mag = max([magnitude(*item) for item in a_vectors]) if a_vectors else 0.0
+        b_max_mag = max([magnitude(*item) for item in b_vectors]) if b_vectors else 0.0
+        a_distance_dependent = a_tail_span > max(detection, a_max_mag * 0.20)
+        b_distance_dependent = b_tail_span > max(detection, b_max_mag * 0.20)
+        speed_results = list(result.getSpeedResults())
+        a_speed_vectors = [(item.getACorrectionXmm(), item.getACorrectionYmm())
+                           for item in speed_results]
+        b_speed_vectors = [(item.getBCorrectionXmm(), item.getBCorrectionYmm())
+                           for item in speed_results]
+        a_speed_span = max_pairwise_span(a_speed_vectors)
+        b_speed_span = max_pairwise_span(b_speed_vectors)
+        a_speed_dependent = a_speed_span > max(detection, a_max_mag * 0.20)
+        b_speed_dependent = b_speed_span > max(detection, b_max_mag * 0.20)
+        selected_validation = result.getSelectedCandidateValidation()
+        candidate_validations = list(result.getCandidateValidations())
+        validation_available = (trial is not None and
+                                finite(trial.getValidationWorstResidualMm()))
+        validation_improved = (validation_available and selected_validation is not None and
+                               selected_validation.isNonDegrading() and
+                               selected_validation.isImproved())
+        meets_target = (validation_available and
+                        trial.getValidationWorstResidualMm() <= target)
+        if trial is None:
+            grade = u"未生成候选"
+            conclusion = u"固定A/B状态模型无法形成有意义的折中候选，不建议启用软件补偿。"
+        elif not validation_improved:
+            grade = u"候选未改善"
+            conclusion = u"临时验证没有改善，不应保存该候选。优先检查机械传动和运动参数。"
+        elif meets_target:
+            grade = u"通过"
+            conclusion = u"候选在留出验证中有改善并达到用户目标，可以转到候选页复核后应用。"
+        else:
+            grade = u"有改善但未达目标"
+            conclusion = u"候选明显改善重复定位，但仍未达到用户目标，只适合受控试用并继续机械优化。"
+
+        lines = []
+        lines.append(u"CoreXY重复定位检测与诊断报告")
+        lines.append(u"生成时间：{}".format(
+            SimpleDateFormat("yyyy-MM-dd HH:mm:ss").format(Date())))
+        lines.append(u"")
+        lines.append(u"【诊断结论】")
+        lines.append(u"等级：{}".format(grade))
+        lines.append(u"结论：{}".format(conclusion))
+        lines.append(u"")
+        lines.append(u"【判定依据】")
+        lines.append(u"静止视觉噪声：{:.4f} mm".format(
+            result.getStationaryVisionNoiseMm()))
+        lines.append(u"实测检测门限：{:.4f} mm = max(界面最小门限, 3×静止视觉噪声)".format(
+            detection))
+        lines.append(u"用户目标重复定位精度：{:.4f} mm".format(target))
+        lines.append(u"machine.xml configuredTolerance/acceptableTolerance未参与判定。")
+        lines.append(u"")
+        lines.append(u"【纯X/Y方向状态差：通俗解释】")
+        lines.append(u"纯X：修正差({:+.4f},{:+.4f}) mm，幅值{:.4f} mm，离散{:.4f} mm".format(
+            x_vector[0], x_vector[1], x_mag, baseline_x.getScatterMm()))
+        lines.append(u"  表示X+返回状态相对X-返回状态需要朝X{}、朝Y{}建立修正。".format(
+            u"正方向" if x_vector[0] >= 0 else u"负方向",
+            u"正方向" if x_vector[1] >= 0 else u"负方向"))
+        lines.append(u"纯Y：修正差({:+.4f},{:+.4f}) mm，幅值{:.4f} mm，离散{:.4f} mm".format(
+            y_vector[0], y_vector[1], y_mag, baseline_y.getScatterMm()))
+        lines.append(u"  表示Y+返回状态相对Y-返回状态需要朝X{}、朝Y{}建立修正。".format(
+            u"正方向" if y_vector[0] >= 0 else u"负方向",
+            u"正方向" if y_vector[1] >= 0 else u"负方向"))
+        lines.append(u"")
+        lines.append(u"【故障嫌疑排序】")
+        if magnitude(*est_b) > max(detection, magnitude(*est_a) * 2.0):
+            lines.append(u"1. 很高：B=X-Y传动链。优先检查右侧B电机主动轮、紧定螺钉、皮带和惰轮。")
+        elif magnitude(*est_a) > max(detection, magnitude(*est_b) * 2.0):
+            lines.append(u"1. 很高：A=X+Y传动链。优先检查左侧A电机主动轮、紧定螺钉、皮带和惰轮。")
+        else:
+            lines.append(u"1. 高：A/B两条传动链共同影响。优先比较两条皮带张力并检查横梁约束。")
+        lines.append(u"2. 检查主动轮紧定螺钉是否压在电机轴平面，并标记轮轴确认往返后无相对移动。")
+        lines.append(u"3. 在近端、中部、远端检查横梁正交、导轨阻力和皮带自由段张力一致性。")
+        lines.append(u"")
+        lines.append(u"【A/B模型与折中候选】")
+        lines.append(u"A拟合：稳定={}，阈值{:.1f} mm，A+({:+.4f},{:+.4f}) mm".format(
+            a_fit.isStable(), a_fit.getThresholdMm(),
+            a_fit.getPositiveXCorrectionMm(), a_fit.getPositiveYCorrectionMm()))
+        lines.append(u"B拟合：稳定={}，阈值{:.1f} mm，B+({:+.4f},{:+.4f}) mm".format(
+            b_fit.isStable(), b_fit.getThresholdMm(),
+            b_fit.getPositiveXCorrectionMm(), b_fit.getPositiveYCorrectionMm()))
+        lines.append(u"A距离依赖={}（长距离跨度{:.4f} mm），速度依赖={}（速度跨度{:.4f} mm）".format(
+            a_distance_dependent, a_tail_span, a_speed_dependent, a_speed_span))
+        lines.append(u"B距离依赖={}（长距离跨度{:.4f} mm），速度依赖={}（速度跨度{:.4f} mm）".format(
+            b_distance_dependent, b_tail_span, b_speed_dependent, b_speed_span))
+        if a_distance_dependent or b_distance_dependent:
+            lines.append(u"建议：存在距离依赖，固定状态offset只能取折中值；优先检查皮带张力、惰轮阻力和横梁随行程扭转。")
+        if a_speed_dependent or b_speed_dependent:
+            lines.append(u"建议：存在速度依赖，先在实际生产速度复测，并同步降低X/Y加速度与jerk做对比。")
+        if trial is not None:
+            lines.append(u"候选实测比较（每组均重新执行X/Y/A/B；★为最终选中）：")
+            for validation in candidate_validations:
+                candidate = validation.getCandidate()
+                selected_mark = (u"★" if abs(candidate.getCandidateScale() -
+                                               trial.getCandidateScale()) < 1e-9 else u" ")
+                lines.append(
+                    u"{} {:>3.0f}%：X {:.4f}，Y {:.4f}，A {:.4f}，B {:.4f}，最坏 {:.4f} mm；不恶化={}，改善={}".format(
+                        selected_mark, candidate.getCandidateScale() * 100.0,
+                        validation.getXResidualMm(), validation.getYResidualMm(),
+                        validation.getAResidualMm(), validation.getBResidualMm(),
+                        validation.getWorstResidualMm(), validation.isNonDegrading(),
+                        validation.isImproved()))
+            lines.append(u"联合折中：A阈值{:.1f}，A+({:+.5f},{:+.5f})；B阈值{:.1f}，B+({:+.5f},{:+.5f}) mm".format(
+                trial.getThresholdAMm(), trial.getACorrectionXmm(), trial.getACorrectionYmm(),
+                trial.getThresholdBMm(), trial.getBCorrectionXmm(), trial.getBCorrectionYmm()))
+            lines.append(u"样本估算：未补偿最差{:.4f}，候选预计{:.4f} mm，改善{:.1f}%。".format(
+                trial.getUncompensatedWorstResidualMm(), trial.getExpectedWorstResidualMm(),
+                improvement_percent(trial.getUncompensatedWorstResidualMm(),
+                                    trial.getExpectedWorstResidualMm())))
+            if validation_available:
+                lines.append(u"临时留出验证：纯X{:.4f}，纯Y{:.4f}，A/B斜向最差{:.4f}，总最差{:.4f} mm。".format(
+                    trial.getValidationXResidualMm(), trial.getValidationYResidualMm(),
+                    trial.getValidationDiagonalResidualMm(),
+                    trial.getValidationWorstResidualMm()))
+                lines.append(u"验证结论：{}；{}。".format(
+                    u"有改善" if validation_improved else u"没有改善",
+                    u"达到用户目标" if meets_target else u"未达到用户目标"))
+        lines.append(u"")
+        lines.append(u"【距离测量明细】")
+        lines.append(u"方向  距离(mm)    修正X(mm)    修正Y(mm)    离散(mm)")
+        for name, fit in (("A", a_fit), ("B", b_fit)):
+            for item in fit.getDistanceResults():
+                lines.append(u"{}    {:7.1f}      {:+.4f}       {:+.4f}       {:.4f}".format(
+                    name, item.getDistanceMm(), item.getCorrectionXmm(),
+                    item.getCorrectionYmm(), item.getScatterMm()))
+        lines.append(u"")
+        lines.append(u"【速度测量明细】")
+        lines.append(u"速度    A修正(X,Y) mm          B修正(X,Y) mm          相对拟合偏差")
+        for item in result.getSpeedResults():
+            lines.append(u"{:.2f}   ({:+.4f},{:+.4f})   ({:+.4f},{:+.4f})   {:.4f}".format(
+                item.getSpeedFactor(), item.getACorrectionXmm(), item.getACorrectionYmm(),
+                item.getBCorrectionXmm(), item.getBCorrectionYmm(), item.getDeviationMm()))
+        return u"\n".join(lines)
+
+    def write_report(self, report, suffix=None):
+        timestamp = SimpleDateFormat("yyyy-MM-dd_HH-mm-ss").format(Date())
+        name = "CoreXY_Diagnostic_{}.txt".format(timestamp)
+        if suffix:
+            name = "CoreXY_Diagnostic_{}_{}.txt".format(timestamp, suffix)
+        path = File(scripting.getScriptsDirectory(), "TornadoSMT/" + name)
+        writer = OutputStreamWriter(FileOutputStream(path), "UTF-8")
+        try:
+            writer.write(report)
+        finally:
+            writer.close()
+        return path
+
+    def save_report_copy(self):
+        if not self.last_report:
+            return
+        try:
+            path = self.write_report(self.last_report, "copy")
+            self.diag_status_label.setText(u"报告副本：{}".format(path.getAbsolutePath()))
+        except Exception as error:
+            JOptionPane.showMessageDialog(
+                self, error_text(error), u"无法保存报告", JOptionPane.ERROR_MESSAGE)
+
+    def write_candidate(self, result, x_axis, y_axis, report_file):
+        path = candidate_file()
+        trial = result.getTrialCompensation()
+        if trial is None:
+            if path.isFile():
+                path.delete()
+            return u"未生成"
+        speed_results = list(result.getSpeedResults())
+        correction_speed = min([item.getSpeedFactor() for item in speed_results])
+        validation_worst = trial.getValidationWorstResidualMm()
+        validation_available = finite(validation_worst)
+        selected = result.getSelectedCandidateValidation()
+        validation_improved = (validation_available and selected is not None and
+                               selected.isNonDegrading() and selected.isImproved())
+        props = Properties()
+        props.setProperty("corexy_x_axis_id", x_axis.getId())
+        props.setProperty("corexy_y_axis_id", y_axis.getId())
+        props.setProperty("corexy_min_move_a_mm", "{:.6f}".format(trial.getThresholdAMm()))
+        props.setProperty("corexy_min_move_b_mm", "{:.6f}".format(trial.getThresholdBMm()))
+        props.setProperty("corexy_a_positive_x_mm", "{:.6f}".format(trial.getACorrectionXmm()))
+        props.setProperty("corexy_a_positive_y_mm", "{:.6f}".format(trial.getACorrectionYmm()))
+        props.setProperty("corexy_b_positive_x_mm", "{:.6f}".format(trial.getBCorrectionXmm()))
+        props.setProperty("corexy_b_positive_y_mm", "{:.6f}".format(trial.getBCorrectionYmm()))
+        props.setProperty("corexy_speed_factor", "{:.6f}".format(correction_speed))
+        props.setProperty("recommended_operating_speed_factor",
+                          "{:.6f}".format(trial.getRecommendedSpeedFactor()))
+        props.setProperty("expected_worst_residual_mm",
+                          "{:.6f}".format(trial.getExpectedWorstResidualMm()))
+        props.setProperty("candidate_scale",
+                          "{:.6f}".format(trial.getCandidateScale()))
+        props.setProperty("candidate_count",
+                          str(len(list(result.getCandidateValidations()))))
+        props.setProperty("validation_non_degrading", "true" if
+                          selected is not None and selected.isNonDegrading() else "false")
+        props.setProperty("validation_status", "improved" if validation_improved
+                          else ("not_improved" if validation_available else "not_run"))
+        props.setProperty("validation_worst_residual_mm",
+                          "{:.6f}".format(validation_worst) if validation_available else "nan")
+        props.setProperty("validation_meets_target", "true" if
+                          validation_available and validation_worst <= result.getTargetToleranceMm()
+                          else "false")
+        props.setProperty("diagnostic_report_path", report_file.getAbsolutePath())
+        raw_records, compensated_records = self.scatter_records_from_result(result)
+        self.store_scatter_records(props, "scatter.raw", raw_records)
+        self.store_scatter_records(
+            props, "scatter.compensated", compensated_records)
+        stream = FileOutputStream(path)
+        try:
+            props.store(stream, "OpenPnP CoreXY diagnostic trial candidate")
+        finally:
+            stream.close()
+        return u"已验证改善" if validation_improved else u"未证明改善"
+
+    def start_cross_calibration(self):
+        if not self.cross_calibration_supported:
+            JOptionPane.showMessageDialog(
+                self, u"当前程序没有自动校准接口，请启动本目录最新构建的定制版 OpenPnP。",
+                u"无法校准", JOptionPane.ERROR_MESSAGE
+            )
+            return
+        if not machine.isEnabled() or not machine.isHomed():
+            JOptionPane.showMessageDialog(
+                self, u"请先启用机器并完成 Home。",
+                u"无法校准", JOptionPane.WARNING_MESSAGE
+            )
+            return
+        answer = JOptionPane.showConfirmDialog(
+            self,
+            u"校准将使用永久主基准点，暂时关闭 X/Y backlash 和现有耦合补偿。\n"
+            u"45° 运动分别识别 A=X+Y、B=X-Y；距离为 5~120 mm，超出软限位的档位会自动跳过。\n"
+            u"最大档位还会测试 0.25、0.50、0.75、1.00 速度，并用纯 X/Y 留出验证。\n"
+            u"请确认整个运动范围内没有夹具、元件和线缆障碍。",
+            u"确认 CoreXY 视觉校准",
+            JOptionPane.OK_CANCEL_OPTION,
+            JOptionPane.WARNING_MESSAGE,
+        )
+        if answer != JOptionPane.OK_OPTION:
+            return
+
+        self.cross_calibrate_button.setEnabled(False)
+        self.append_log(u"CoreXY 完整视觉校准已提交；正在隔离 A/B 虚拟电机方向。")
+
+        def run_calibration():
+            try:
+                head = machine.getDefaultHead()
+                camera = head.getDefaultCamera()
+                distances = array([5.0, 10.0, 15.0, 20.0, 30.0, 50.0, 80.0, 120.0], 'd')
+                speeds = array([0.25, 0.50, 0.75, 1.00], 'd')
+                result = machine.getCalibrationSolutions().calibrateCoreXYKinematics(
+                    head, camera, distances, 3, speeds
+                )
+
+                def show_result():
+                    self.cross_calibrate_button.setEnabled(True)
+                    self.show_cross_calibration_result(result)
+
+                SwingUtilities.invokeLater(show_result)
+            except Exception as error:
+                def show_error():
+                    self.cross_calibrate_button.setEnabled(True)
+                    JOptionPane.showMessageDialog(
+                        self, error_text(error), u"CoreXY 视觉校准失败", JOptionPane.ERROR_MESSAGE
+                    )
+                SwingUtilities.invokeLater(show_error)
+
+        submitUiMachineTask(run_calibration)
+
+    def show_cross_calibration_result(self, result):
+        a_fit = result.getACalibration()
+        b_fit = result.getBCalibration()
+        trial = result.getTrialCompensation()
+        lines = [u"A=X+Y（45°）: 距离  修正X  修正Y  离散"]
+        for item in a_fit.getDistanceResults():
+            lines.append(u"A {:6.1f}  {:+.4f}  {:+.4f}  {:.4f}".format(
+                item.getDistanceMm(), item.getCorrectionXmm(), item.getCorrectionYmm(), item.getScatterMm()))
+        lines.append(u"B=X-Y（-45°）: 距离  修正X  修正Y  离散")
+        for item in b_fit.getDistanceResults():
+            lines.append(u"B {:6.1f}  {:+.4f}  {:+.4f}  {:.4f}".format(
+                item.getDistanceMm(), item.getCorrectionXmm(), item.getCorrectionYmm(), item.getScatterMm()))
+        lines.extend([
+            u"",
+            u"已临时验证的折中候选：",
+            u"A 阈值 {:.3f} mm，A+ 修正 ({:+.4f}, {:+.4f}) mm".format(
+                trial.getThresholdAMm() if trial is not None else a_fit.getThresholdMm(),
+                trial.getACorrectionXmm() if trial is not None else a_fit.getPositiveXCorrectionMm(),
+                trial.getACorrectionYmm() if trial is not None else a_fit.getPositiveYCorrectionMm()),
+            u"B 阈值 {:.3f} mm，B+ 修正 ({:+.4f}, {:+.4f}) mm".format(
+                trial.getThresholdBMm() if trial is not None else b_fit.getThresholdMm(),
+                trial.getBCorrectionXmm() if trial is not None else b_fit.getPositiveXCorrectionMm(),
+                trial.getBCorrectionYmm() if trial is not None else b_fit.getPositiveYCorrectionMm()),
+            u"留出残差：纯X {:.4f}，纯Y {:.4f}，45° {:.4f} mm；允许 {:.4f} mm".format(
+                result.getValidationXResidualMm(), result.getValidationYResidualMm(),
+                result.getValidationDiagonalResidualMm(), result.getAllowedResidualMm()),
+        ])
+        lines.append(u"速度检查：")
+        for item in result.getSpeedResults():
+            lines.append(u"v={:.2f} A({:+.4f},{:+.4f}) B({:+.4f},{:+.4f}) 偏差 {:.4f}".format(
+                item.getSpeedFactor(), item.getACorrectionXmm(), item.getACorrectionYmm(),
+                item.getBCorrectionXmm(), item.getBCorrectionYmm(), item.getDeviationMm()))
+        if not result.isStable() or trial is None:
+            lines.append(u"结果未通过距离平台、速度一致性或留出验证，不会自动应用。")
+            JOptionPane.showMessageDialog(
+                self, u"\n".join(lines), u"CoreXY 校准结果", JOptionPane.WARNING_MESSAGE
+            )
+            self.append_log(u"视觉校准完成，但结果未通过检查，未修改补偿参数。")
+            return
+
+        lines.append(u"是否写入 A/B 二维补偿？A-、B- 将作为零参考。")
+        answer = JOptionPane.showConfirmDialog(
+            self, u"\n".join(lines), u"应用 CoreXY 校准结果",
+            JOptionPane.YES_NO_OPTION, JOptionPane.QUESTION_MESSAGE
+        )
+        if answer == JOptionPane.YES_OPTION:
+            self.cross_source_combo.setSelectedIndex(self.axis_index_by_id("", Axis.Type.X))
+            self.cross_target_combo.setSelectedIndex(self.axis_index_by_id("", Axis.Type.Y))
+            self.cross_threshold_field.setText("{:.6f}".format(trial.getThresholdAMm()))
+            self.cross_threshold_b_field.setText("{:.6f}".format(trial.getThresholdBMm()))
+            self.cross_a_x_field.setText("{:.6f}".format(trial.getACorrectionXmm()))
+            self.cross_positive_field.setText("{:.6f}".format(trial.getACorrectionYmm()))
+            self.cross_b_x_field.setText("{:.6f}".format(trial.getBCorrectionXmm()))
+            self.cross_b_y_field.setText("{:.6f}".format(trial.getBCorrectionYmm()))
+            tested_speeds = [item.getSpeedFactor() for item in result.getSpeedResults()]
+            self.cross_speed_field.setText("{:.6f}".format(min(tested_speeds)))
+            self.apply_cross_settings()
+        else:
+            self.append_log(u"视觉校准结果已显示，用户选择不应用。")
+
+    def validated_values(self):
+        try:
+            offset = abs(float(self.offset_field.getText().strip()))
+            speed = float(self.speed_field.getText().strip())
+        except ValueError:
+            raise ValueError(u"补偿行程和速度因子必须是数字。")
+        if offset <= 0 or offset > 2.0:
+            raise ValueError(u"补偿行程必须大于 0 且不超过 2 mm。")
+        if speed <= 0 or speed > 1.0:
+            raise ValueError(u"末段速度因子必须大于 0 且不超过 1。")
+        if self.approach_combo.getSelectedIndex() == 1:
+            offset = -offset
+        return METHOD_VALUES[self.method_combo.getSelectedIndex()], offset, speed
+
+    def ensure_backup(self, axis):
+        prefix = "backup.{}.".format(axis.getId())
+        if self.props.getProperty(prefix + "method") is None:
+            self.props.setProperty(prefix + "method", str(axis.getBacklashCompensationMethod()))
+            self.props.setProperty(
+                prefix + "offset_mm",
+                str(axis.getBacklashOffset().convertToUnits(LengthUnit.Millimeters).getValue()),
+            )
+            self.props.setProperty(prefix + "speed_factor", str(axis.getBacklashSpeedFactor()))
+            self.props.setProperty(
+                prefix + "sneak_up_mm",
+                str(axis.getSneakUpOffset().convertToUnits(LengthUnit.Millimeters).getValue()),
+            )
+
+    def set_axis(self, axis, method_name, offset_mm, speed_factor, sneak_up_mm=0.0):
+        axis.setBacklashCompensationMethod(BacklashCompensationMethod.valueOf(method_name))
+        axis.setBacklashOffset(Length(offset_mm, LengthUnit.Millimeters))
+        axis.setSneakUpOffset(Length(sneak_up_mm, LengthUnit.Millimeters))
+        axis.setBacklashSpeedFactor(speed_factor)
+
+    def apply_settings(self):
+        try:
+            method, offset, speed = self.validated_values()
+            axis = self.selected_axis()
+            if (method != "None" and self.cross_supported and
+                    self.motion_planner.isCoreXYCompensationEnabled()):
+                answer = JOptionPane.showConfirmDialog(
+                    self,
+                    u"CoreXY二维补偿当前已启用。启用原单轴补偿可能对同一误差重复修正。\n"
+                    u"继续将关闭CoreXY二维补偿并应用该单轴设置。是否继续？",
+                    u"补偿方式冲突", JOptionPane.YES_NO_OPTION,
+                    JOptionPane.WARNING_MESSAGE)
+                if answer != JOptionPane.YES_OPTION:
+                    return
+                self.motion_planner.setCoreXYCompensationEnabled(False)
+                self.props.setProperty("corexy_enabled", "false")
+            self.ensure_backup(axis)
+            self.set_axis(axis, method, offset, speed)
+            self.props.setProperty("enabled", str(self.auto_home.isSelected()).lower())
+            self.props.setProperty("axis_id", axis.getId())
+            self.props.setProperty("axis_name", axis.getName())
+            self.props.setProperty("method", method)
+            self.props.setProperty("offset_mm", str(offset))
+            self.props.setProperty("speed_factor", str(speed))
+            save_properties(self.props)
+            config.save()
+            self.refresh_status()
+            self.append_log(u"已保存并应用；OpenPnP 运动规划器会从下一条运动开始补偿。")
+            JOptionPane.showMessageDialog(self, u"设置已保存。建议先用 20 mm、5 次循环验证。", u"CoreXY 补偿", JOptionPane.INFORMATION_MESSAGE)
+        except Exception as error:
+            JOptionPane.showMessageDialog(self, error_text(error), u"无法保存", JOptionPane.ERROR_MESSAGE)
+
+    def disable_settings(self):
+        try:
+            axis = self.selected_axis()
+            self.ensure_backup(axis)
+            axis.setBacklashCompensationMethod(BacklashCompensationMethod.valueOf("None"))
+            self.props.setProperty("enabled", "false")
+            save_properties(self.props)
+            config.save()
+            self.method_combo.setSelectedIndex(METHOD_VALUES.index("None"))
+            self.auto_home.setSelected(False)
+            self.append_log(u"已关闭所选轴补偿，并关闭 Home 后自动应用。")
+        except Exception as error:
+            JOptionPane.showMessageDialog(self, error_text(error), u"无法关闭", JOptionPane.ERROR_MESSAGE)
+
+    def restore_backup(self):
+        axis = self.selected_axis()
+        prefix = "backup.{}.".format(axis.getId())
+        method = self.props.getProperty(prefix + "method")
+        if method is None:
+            JOptionPane.showMessageDialog(self, u"该轴还没有首次备份。", u"CoreXY 补偿", JOptionPane.WARNING_MESSAGE)
+            return
+        try:
+            self.set_axis(
+                axis,
+                method,
+                float(self.props.getProperty(prefix + "offset_mm")),
+                float(self.props.getProperty(prefix + "speed_factor")),
+                float(self.props.getProperty(prefix + "sneak_up_mm", "0")),
+            )
+            self.props.setProperty("enabled", "false")
+            save_properties(self.props)
+            config.save()
+            self.props = load_properties()
+            self.refresh_axis()
+            self.append_log(u"已恢复首次备份，并关闭 Home 后自动应用。")
+        except Exception as error:
+            JOptionPane.showMessageDialog(self, error_text(error), u"无法恢复", JOptionPane.ERROR_MESSAGE)
+
+    def test_motion_vector(self, direction, distance):
+        vectors = {
+            "X+": (distance, 0.0), "X-": (-distance, 0.0),
+            "Y+": (0.0, distance), "Y-": (0.0, -distance),
+            "A+": (distance * 0.5, distance * 0.5),
+            "A-": (-distance * 0.5, -distance * 0.5),
+            "B+": (distance * 0.5, -distance * 0.5),
+            "B-": (-distance * 0.5, distance * 0.5),
+        }
+        if direction not in vectors:
+            raise ValueError(u"未知测试方向：{}".format(direction))
+        return vectors[direction]
+
+    def random_direction_unit_vector(self, direction):
+        diagonal = 1.0 / math.sqrt(2.0)
+        vectors = {
+            "X+": (1.0, 0.0), "X-": (-1.0, 0.0),
+            "Y+": (0.0, 1.0), "Y-": (0.0, -1.0),
+            "A+": (diagonal, diagonal), "A-": (-diagonal, -diagonal),
+            "B+": (diagonal, -diagonal), "B-": (-diagonal, diagonal),
+        }
+        return vectors[direction]
+
+    def set_test_buttons_enabled(self, enabled):
+        for button in self.test_direction_buttons:
+            button.setEnabled(enabled)
+
+    def finish_test_ui(self, message):
+        self.set_test_buttons_enabled(True)
+        self.append_log(message)
+
+    def get_test_xy_axes(self):
+        camera = machine.getDefaultHead().getDefaultCamera()
+        x_axis = camera.getAxisX()
+        y_axis = camera.getAxisY()
+        if not isinstance(x_axis, ReferenceControllerAxis):
+            raise RuntimeError(u"下视相机没有直接映射到X控制器轴。")
+        if not isinstance(y_axis, ReferenceControllerAxis):
+            raise RuntimeError(u"下视相机没有直接映射到Y控制器轴。")
+        if x_axis.getDriver() != y_axis.getDriver():
+            raise RuntimeError(u"CoreXY的X/Y控制器轴必须使用同一个驱动器。")
+        self.require_xy_soft_limits(x_axis, y_axis)
+        return x_axis, y_axis
+
+    def start_test(self, direction):
+        if not machine.isEnabled() or not machine.isHomed():
+            JOptionPane.showMessageDialog(self, u"请先启用机器并完成 Home。", u"不能测试", JOptionPane.WARNING_MESSAGE)
+            return
+        distance = float(self.distance_spinner.getValue())
+        cycles = int(self.cycles_spinner.getValue())
+        try:
+            nozzle = machine.getDefaultHead().getDefaultNozzle()
+            x_axis, y_axis = self.get_test_xy_axes()
+            origin = nozzle.getLocation()
+            dx, dy = self.test_motion_vector(direction, distance)
+            target = origin.add(Location(LengthUnit.Millimeters, dx, dy, 0, 0))
+            self.validate_xy_location(nozzle, origin, x_axis, y_axis, u"空载测试起点")
+            self.validate_xy_location(nozzle, target, x_axis, y_axis, u"空载测试目标点")
+        except Exception as error:
+            JOptionPane.showMessageDialog(
+                self, error_text(error), u"空载测试软限位预检失败",
+                JOptionPane.ERROR_MESSAGE)
+            return
+        answer = JOptionPane.showConfirmDialog(
+            self,
+            u"测试方向：{}，路线为A→目标点→A。\n"
+            u"L1={:.3f} mm，目标位移ΔX={:+.3f}、ΔY={:+.3f} mm，共{}次。\n"
+            u"X/Y双向软限位、起点、目标点和2 mm余量已经预检。软限位不能识别实体障碍物。\n"
+            u"测试将强制先移动到Safe Z。请确认夹具、PCB、吸嘴、相机和线缆不会碰撞。\n"
+            u"注意：自动验收标准比您的实际可接受标准严格。".format(
+                direction, distance, dx, dy, cycles),
+            u"确认往返测试",
+            JOptionPane.OK_CANCEL_OPTION,
+            JOptionPane.WARNING_MESSAGE,
+        )
+        if answer != JOptionPane.OK_OPTION:
+            return
+
+        self.set_test_buttons_enabled(False)
+        self.append_log(u"{}方向往返已提交：L1={:.3f} mm，{}次。".format(
+            direction, distance, cycles))
+
+        def run_test():
+            finish_message = u"{}方向往返异常终止；请确认机器当前位置。".format(direction)
+            try:
+                nozzle = machine.getDefaultHead().getDefaultNozzle()
+                nozzle.moveToSafeZ()
+                nozzle.waitForCompletion(CompletionType.WaitForStillstand)
+                origin = nozzle.getLocation()
+                x_axis, y_axis = self.get_test_xy_axes()
+                dx, dy = self.test_motion_vector(direction, distance)
+                target = origin.add(Location(LengthUnit.Millimeters, dx, dy, 0, 0))
+                self.validate_xy_location(nozzle, origin, x_axis, y_axis, u"空载测试起点")
+                self.validate_xy_location(nozzle, target, x_axis, y_axis, u"空载测试目标点")
+                for index in range(cycles):
+                    System.out.println("[CoreXY Repeatability] {} cycle {}/{}: outbound".format(
+                        direction, index + 1, cycles))
+                    nozzle.moveTo(target)
+                    nozzle.waitForCompletion(CompletionType.WaitForStillstand)
+                    System.out.println("[CoreXY Repeatability] {} cycle {}/{}: return".format(
+                        direction, index + 1, cycles))
+                    nozzle.moveTo(origin)
+                    nozzle.waitForCompletion(CompletionType.WaitForStillstand)
+                System.out.println("[CoreXY Repeatability] directional test completed")
+                finish_message = u"{}方向往返完成，已返回起点A。".format(direction)
+            finally:
+                SwingUtilities.invokeLater(
+                    lambda: self.finish_test_ui(finish_message))
+
+        submitUiMachineTask(run_test)
+
+    def build_random_route_specs(self, distance, cycles):
+        cardinal = ["X+", "X-", "Y+", "Y-"]
+        diagonal = ["A+", "A-", "B+", "B-"]
+        all_directions = cardinal + diagonal
+        previous_signature = getattr(self, "last_random_route_signature", None)
+        for attempt in range(30):
+            routes = []
+            signatures = []
+            used_cycle_signatures = set()
+            for cycle in range(cycles):
+                for cycle_attempt in range(30):
+                    point_count = random.randint(4, 8)
+                    selected = [random.choice(cardinal), random.choice(diagonal)]
+                    available = [item for item in all_directions if item not in selected]
+                    selected.extend(random.sample(available, point_count - 2))
+                    random.shuffle(selected)
+                    route = []
+                    for direction in selected:
+                        radius = random.uniform(distance * 0.4, distance)
+                        unit_x, unit_y = self.random_direction_unit_vector(direction)
+                        route.append((direction, radius, unit_x * radius, unit_y * radius))
+                    signature = tuple([(item[0], round(item[1], 3)) for item in route])
+                    if signature not in used_cycle_signatures:
+                        used_cycle_signatures.add(signature)
+                        routes.append(route)
+                        signatures.append(signature)
+                        break
+            complete_signature = tuple(signatures)
+            if len(routes) == cycles and complete_signature != previous_signature:
+                self.last_random_route_signature = complete_signature
+                return routes
+        raise RuntimeError(u"无法生成不重复的随机路径，请重新尝试。")
+
+    def random_route_locations(self, origin, route):
+        return [origin.add(Location(LengthUnit.Millimeters, item[2], item[3], 0, 0))
+                for item in route]
+
+    def validate_random_routes(self, nozzle, origin, routes, x_axis, y_axis):
+        self.validate_xy_location(nozzle, origin, x_axis, y_axis, u"随机测试起点A")
+        for cycle_index, route in enumerate(routes):
+            for point_index, location in enumerate(self.random_route_locations(origin, route)):
+                self.validate_xy_location(
+                    nozzle, location, x_axis, y_axis,
+                    u"随机路径第{}轮B{}点".format(cycle_index + 1, point_index + 1))
+
+    def start_random_test(self):
+        if not machine.isEnabled() or not machine.isHomed():
+            JOptionPane.showMessageDialog(
+                self, u"请先启用机器并完成 Home。", u"不能测试", JOptionPane.WARNING_MESSAGE)
+            return
+        distance = float(self.distance_spinner.getValue())
+        cycles = int(self.cycles_spinner.getValue())
+        try:
+            nozzle = machine.getDefaultHead().getDefaultNozzle()
+            x_axis, y_axis = self.get_test_xy_axes()
+            origin = nozzle.getLocation()
+            routes = self.build_random_route_specs(distance, cycles)
+            self.validate_random_routes(nozzle, origin, routes, x_axis, y_axis)
+        except Exception as error:
+            JOptionPane.showMessageDialog(
+                self, error_text(error), u"随机路径软限位预检失败", JOptionPane.ERROR_MESSAGE)
+            return
+
+        first_route = routes[0]
+        route_text = u"A"
+        for index, item in enumerate(first_route):
+            route_text += u"→B{}[{}，{:.1f}mm]".format(index + 1, item[0], item[1])
+        route_text += u"→A"
+        total_points = sum([len(route) for route in routes])
+        answer = JOptionPane.showConfirmDialog(
+            self,
+            u"将执行随机多点路径：每轮连续经过4至8个不同方位点，最后才返回起点A。\n"
+            u"随机点距A为0.4×L1至L1；L1={:.3f} mm，共{}轮、{}个中间点。\n"
+            u"第一轮路线：{}\n"
+            u"所有端点、X/Y双向软限位和2 mm余量已经预检；点间运动不经过A。\n"
+            u"测试将强制先移动到Safe Z。软限位不能识别实体障碍物，请确认整个区域无碰撞风险。\n"
+            u"注意：自动验收标准比您的实际可接受标准严格。".format(
+                distance, cycles, total_points, route_text),
+            u"确认随机路径测试", JOptionPane.OK_CANCEL_OPTION,
+            JOptionPane.WARNING_MESSAGE)
+        if answer != JOptionPane.OK_OPTION:
+            return
+
+        self.set_test_buttons_enabled(False)
+        self.append_log(u"随机路径已提交：L1最大{:.3f} mm，{}轮、{}个中间点。".format(
+            distance, cycles, total_points))
+
+        def run_random_test():
+            finish_message = u"随机路径异常终止；请确认机器当前位置。"
+            try:
+                nozzle = machine.getDefaultHead().getDefaultNozzle()
+                nozzle.moveToSafeZ()
+                nozzle.waitForCompletion(CompletionType.WaitForStillstand)
+                origin = nozzle.getLocation()
+                x_axis, y_axis = self.get_test_xy_axes()
+                self.validate_random_routes(nozzle, origin, routes, x_axis, y_axis)
+                for cycle_index, route in enumerate(routes):
+                    locations = self.random_route_locations(origin, route)
+                    for point_index, location in enumerate(locations):
+                        direction = route[point_index][0]
+                        System.out.println(
+                            "[CoreXY Repeatability] random cycle {}/{} point {}/{} {}".format(
+                                cycle_index + 1, cycles, point_index + 1,
+                                len(locations), direction))
+                        nozzle.moveTo(location)
+                        nozzle.waitForCompletion(CompletionType.WaitForStillstand)
+                    nozzle.moveTo(origin)
+                    nozzle.waitForCompletion(CompletionType.WaitForStillstand)
+                System.out.println("[CoreXY Repeatability] random path test completed")
+                finish_message = u"随机路径完成，已返回起点A。"
+            finally:
+                SwingUtilities.invokeLater(
+                    lambda: self.finish_test_ui(finish_message))
+
+        submitUiMachineTask(run_random_test)
+
+
+agent_workflow_extension = File(
+    scripting.getScriptsDirectory(),
+    "TornadoSMT/CoreXY_Agent_Workflow_UI.pytxt")
+if agent_workflow_extension.isFile():
+    extension_source = unicode(String(
+        Files.readAllBytes(agent_workflow_extension.toPath()), "UTF-8"))
+    extension_code = compile(
+        extension_source, agent_workflow_extension.getAbsolutePath(), "exec")
+    agent_workflow_namespace = dict(globals())
+    exec extension_code in agent_workflow_namespace
+    COREXY_AGENT_WORKFLOW_NAMESPACE = agent_workflow_namespace
+
+
+def show_window():
+    window = CoreXYTuner()
+    if window.isDisplayable():
+        window.setVisible(True)
+
+
+if SwingUtilities.isEventDispatchThread():
+    show_window()
+else:
+    SwingUtilities.invokeLater(show_window)

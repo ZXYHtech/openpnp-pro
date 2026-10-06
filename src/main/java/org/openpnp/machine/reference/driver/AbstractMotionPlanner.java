@@ -35,6 +35,7 @@ import javax.swing.Icon;
 
 import org.openpnp.gui.support.PropertySheetWizardAdapter;
 import org.openpnp.gui.support.Wizard;
+import org.openpnp.corexy.agent.CoreXYRuntime;
 import org.openpnp.machine.reference.ReferenceMachine;
 import org.openpnp.machine.reference.axis.ReferenceControllerAxis;
 import org.openpnp.machine.reference.axis.ReferenceControllerAxis.BacklashCompensationMethod;
@@ -226,6 +227,16 @@ public abstract class AbstractMotionPlanner extends AbstractModelObject implemen
     
     @Override
     public synchronized void home() throws Exception {
+        CoreXYRuntime.beginHome(this);
+        try {
+            homeWithoutCoreXY();
+        }
+        finally {
+            CoreXYRuntime.endHome(this);
+        }
+    }
+
+    private void homeWithoutCoreXY() throws Exception {
         // Reset lastDirectionalBacklashOffset (we don't actually know it after homing, but it will be known after the first move).
         lastDirectionalBacklashOffset = new AxesLocation();
         // Home all the drivers with their respective mapped axes (can be an empty map). 
@@ -250,6 +261,7 @@ public abstract class AbstractMotionPlanner extends AbstractModelObject implemen
 
     @Override
     public void unhome() {
+        CoreXYRuntime.reset(this, "unhome");
         homed  = false;
     }
 
@@ -315,6 +327,17 @@ public abstract class AbstractMotionPlanner extends AbstractModelObject implemen
 
     @Override
     public synchronized void setGlobalOffsets(AxesLocation axesLocation) throws Exception {
+        AxesLocation logical = axesLocation;
+        axesLocation = CoreXYRuntime.adjustGlobalOffsets(this, logical);
+        try {
+            setGlobalOffsetsWithoutCoreXY(axesLocation);
+        }
+        finally {
+            CoreXYRuntime.restoreGlobalOffsetCoordinates(logical);
+        }
+    }
+
+    private void setGlobalOffsetsWithoutCoreXY(AxesLocation axesLocation) throws Exception {
         // Make sure we're on the same page with the controller, but there is no need to  wait for it to physically complete.
         executeMotionPlan(CompletionType.CommandStillstand);
         // We need to adjust the driver Location for any lastDirectionalBacklashOffset.
@@ -485,6 +508,31 @@ public abstract class AbstractMotionPlanner extends AbstractModelObject implemen
      * @return
      */
     protected synchronized AxesLocation createBacklashCompensatedMotion(HeadMountable hm, double speed,
+            AxesLocation currentLocation, AxesLocation newLocation, MotionOption... options) {
+        CoreXYRuntime.PlanContext context = CoreXYRuntime.beforePlan(
+                this, hm, speed, currentLocation, newLocation);
+        int queueSize = motionCommands.size();
+        AxesLocation previousBacklash = lastDirectionalBacklashOffset;
+        try {
+            AxesLocation stockEnd = createBacklashCompensatedMotionWithoutCoreXY(
+                    hm, speed, context.physicalCurrent, context.physicalTarget, options);
+            return CoreXYRuntime.afterPlan(this, hm, speed, options, stockEnd, context);
+        }
+        catch (RuntimeException failure) {
+            while (motionCommands.size() > queueSize) {
+                motionCommands.removeLast();
+            }
+            lastDirectionalBacklashOffset = previousBacklash;
+            throw failure;
+        }
+    }
+
+    /** Marker used by the standalone extension to avoid installing the same hooks twice. */
+    public static boolean hasNativeCoreXYHooks() {
+        return true;
+    }
+
+    private AxesLocation createBacklashCompensatedMotionWithoutCoreXY(HeadMountable hm, double speed,
             AxesLocation currentLocation, AxesLocation newLocation, MotionOption... options) {
 
         // Adjust the current location to include any backlash compensation offset that was applied in the last move.
@@ -1007,6 +1055,9 @@ public abstract class AbstractMotionPlanner extends AbstractModelObject implemen
         wrapUpCoordinates(hm);
         // Remove old stuff.
         clearMotionPlanOlderThan(NanosecondTime.getRuntimeSeconds() - maximumPlanHistory);
+        if (completionType.isEnforcingStillstand()) {
+            CoreXYRuntime.correctReportedCoordinates(this);
+        }
     }
 
     /**

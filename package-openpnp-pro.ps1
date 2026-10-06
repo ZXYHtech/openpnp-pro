@@ -141,6 +141,11 @@ $version = (Get-Content -LiteralPath "VERSION.txt" -Raw).Trim()
 if ($version -notmatch '^(\d+)\.(\d+)P(\d+)(?:-beta(\d+))?$') {
     throw "VERSION.txt 必须采用 2.6P4 或 2.6P3-beta1 格式，当前为：$version"
 }
+$embeddedVersionSourcePath = Join-Path $repoRoot "src\main\resources\VERSION.txt"
+$embeddedVersionSource = (Get-Content -LiteralPath $embeddedVersionSourcePath -Raw).Trim()
+if ($embeddedVersionSource -ne $version) {
+    throw "版本不一致：根目录 VERSION.txt 为 $version，程序内嵌版本为 $embeddedVersionSource。"
+}
 $baseMajor = [int]$Matches[1]
 $baseMinor = [int]$Matches[2]
 $proRelease = [int]$Matches[3]
@@ -262,6 +267,27 @@ try {
     $jarEntries = & $jarTool tf $jarPath
     if ($LASTEXITCODE -ne 0 -or $jarEntries -notcontains "VERSION.txt") {
         throw "JAR 内缺少 VERSION.txt，安装后会无法显示版本号。"
+    }
+    Add-Type -AssemblyName System.IO.Compression.FileSystem
+    $jarArchive = [System.IO.Compression.ZipFile]::OpenRead($jarPath)
+    try {
+        $jarVersionEntry = $jarArchive.GetEntry("VERSION.txt")
+        if ($null -eq $jarVersionEntry) {
+            throw "JAR 内缺少 VERSION.txt，安装后会无法显示版本号。"
+        }
+        $jarVersionReader = [System.IO.StreamReader]::new($jarVersionEntry.Open())
+        try {
+            $jarVersion = $jarVersionReader.ReadToEnd().Trim()
+        }
+        finally {
+            $jarVersionReader.Dispose()
+        }
+    }
+    finally {
+        $jarArchive.Dispose()
+    }
+    if ($jarVersion -ne $version) {
+        throw "JAR 内版本为 $jarVersion，但安装包版本为 $version；已停止生成混合版本安装包。"
     }
 
     New-Item -ItemType Directory -Force -Path $installerRoot, $installerBuild | Out-Null
