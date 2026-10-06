@@ -4,6 +4,9 @@ import java.util.List;
 
 /** Machine operations are always executed by the caller's machine task, never on the EDT. */
 public interface CalibrationMachine {
+    default java.util.List<String> preparationNotes() {
+        return java.util.Collections.emptyList();
+    }
     boolean isSimulation();
     String fingerprint() throws Exception;
     void prepare(CalibrationRequest request, CalibrationPlan plan) throws Exception;

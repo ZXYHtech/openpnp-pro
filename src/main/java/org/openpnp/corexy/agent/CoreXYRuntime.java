@@ -101,6 +101,15 @@ public final class CoreXYRuntime {
 
     private static void configure(Path configPath, String detectedOpenPnpVersion,
             boolean allowActiveCompensation) throws Exception {
+        CoreXYConfig loaded = CoreXYConfig.load(configPath);
+        org.openpnp.corexy.LegacyCompensationInterlock.assertLegacyLoadAllowed(loaded.enabled || loaded.dryRun);
+        if (org.openpnp.corexy.precision.PrecisionRuntime.isActive()) {
+            // Original Startup/reload scripts can reread a disabled profile; never reset the live model or Home state.
+            config = loaded;
+            openPnpVersion = detectedOpenPnpVersion;
+            lastError = "";
+            return;
+        }
         boolean activeCompensation = hasActiveCompensation();
         if (activeCompensation && !allowActiveCompensation) {
             throw new IllegalStateException(
@@ -111,7 +120,6 @@ public final class CoreXYRuntime {
                     + "runtime A/B state will be cleared without a compensating move.");
         }
         try {
-            CoreXYConfig loaded = CoreXYConfig.load(configPath);
             boolean versionMismatch = !loaded.requiredOpenPnpVersion.equals(
                     detectedOpenPnpVersion);
             if (loaded.versionPolicy == CoreXYConfig.VersionPolicy.STRICT
@@ -157,11 +165,12 @@ public final class CoreXYRuntime {
         CoreXYConfig localConfig = config;
         PlannerState state = state(planner);
         AxesLocation previous = state.activeOffset;
-        if (localConfig == null) {
-            return unchanged(current, target, previous, state);
-        }
         if (state.homingDepth > 0) {
             return unchanged(current, target, new AxesLocation(), state);
+        }
+        org.openpnp.corexy.LegacyCompensationInterlock.assertProductionAllowed();
+        if (localConfig == null) {
+            return unchanged(current, target, previous, state);
         }
 
         boolean operational = localConfig.enabled || localConfig.dryRun;
@@ -430,7 +439,8 @@ public final class CoreXYRuntime {
     static String status() {
         if (org.openpnp.corexy.precision.PrecisionRuntime.isActive()) {
             return "installed=true\nconfigured=true\nenabled=true\nmode=advanced-precision\nlayers="
-                    + org.openpnp.corexy.precision.PrecisionRuntime.getModel().getLayers();
+                    + org.openpnp.corexy.precision.PrecisionRuntime.getModel().getLayers()
+                    + "\nlegacy-enabled=false\nlegacy-suspended=true";
         }
         CoreXYConfig localConfig = config;
         StringBuilder text = new StringBuilder();
@@ -482,6 +492,31 @@ public final class CoreXYRuntime {
 
     public static boolean isLegacyEnabled() {
         return config != null && config.enabled && !config.dryRun;
+    }
+
+    public static boolean isLegacyDryRun() {
+        return config != null && config.dryRun;
+    }
+
+    public static Path getLegacyConfigurationPath() {
+        return config == null ? null : config.source;
+    }
+
+    public static void requireNeutralLegacy() {
+        synchronized (STATES) {
+            for (PlannerState state : STATES.values()) {
+                if (!same(state.activeOffset, new AxesLocation())) {
+                    throw new IllegalStateException("旧 CoreXY 补偿仍有活动偏移，请先 Home 再切换。");
+                }
+            }
+        }
+    }
+
+    public static synchronized void suspendLegacy() {
+        requireNeutralLegacy();
+        config = null;
+        STATES.clear();
+        lastError = "旧插件补偿已由实验版自动停用。";
     }
 
     static void setError(Throwable error) {
@@ -574,12 +609,17 @@ public final class CoreXYRuntime {
             throw fail("CoreXY Agent requires an AbstractMotionPlanner.", null);
         }
         try {
-            planner.getClass().getMethod("isCoreXYCompensationEnabled");
-            throw fail("Embedded CoreXY compensation was detected in this OpenPnP build. "
-                    + "Do not combine it with the Agent.", null);
+            Method embedded = planner.getClass().getMethod("isCoreXYCompensationEnabled");
+            if ((loaded.enabled || loaded.dryRun) && Boolean.TRUE.equals(embedded.invoke(planner))) {
+                throw fail("Embedded CoreXY compensation was detected in this OpenPnP build. "
+                        + "Do not combine it with the Agent.", null);
+            }
         }
         catch (NoSuchMethodException expectedForOfficialOpenPnp) {
             // The official planner has no embedded CoreXY API.
+        }
+        catch (ReflectiveOperationException unreadable) {
+            throw fail("Cannot inspect the existing CoreXY planner.", unreadable);
         }
         AbstractMotionPlanner motionPlanner = (AbstractMotionPlanner) planner;
         validateAxes(

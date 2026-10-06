@@ -64,6 +64,7 @@ public final class CalibrationController {
             prepared = true;
             machine.setCancellationGuard(cancelled::get);
             machine.prepare(request, plan);
+            report.notes.addAll(machine.preparationNotes());
             report.previousObservations.addAll(machine.previousObservations());
             if (!report.previousObservations.isEmpty()) {
                 report.previousMetrics = PrecisionMetrics.evaluate(report.previousObservations, null);

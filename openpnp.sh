@@ -15,9 +15,9 @@ esac
 
 case "$platform" in
 	mac)
-java -Xdock:name=OpenPnP -Xms64m -Xmx1536m -XX:+UseG1GC -XX:MaxGCPauseMillis=100 --add-opens=java.base/java.lang=ALL-UNNAMED --add-opens=java.desktop/java.awt=ALL-UNNAMED --add-opens=java.desktop/java.awt.color=ALL-UNNAMED -jar $rootdir/target/openpnp-gui-2.6P3-beta48.jar
+java -Xdock:name=OpenPnP -Xms64m -Xmx1536m -XX:+UseG1GC -XX:MaxGCPauseMillis=100 --add-opens=java.base/java.lang=ALL-UNNAMED --add-opens=java.desktop/java.awt=ALL-UNNAMED --add-opens=java.desktop/java.awt.color=ALL-UNNAMED -jar $rootdir/target/openpnp-gui-2.6P3-beta49.jar
 	;;
 	linux)
-java $1 -Xms64m -Xmx1536m -XX:+UseG1GC -XX:MaxGCPauseMillis=100 --add-opens=java.base/java.lang=ALL-UNNAMED --add-opens=java.desktop/java.awt=ALL-UNNAMED --add-opens=java.desktop/java.awt.color=ALL-UNNAMED -jar $rootdir/target/openpnp-gui-2.6P3-beta48.jar
+java $1 -Xms64m -Xmx1536m -XX:+UseG1GC -XX:MaxGCPauseMillis=100 --add-opens=java.base/java.lang=ALL-UNNAMED --add-opens=java.desktop/java.awt=ALL-UNNAMED --add-opens=java.desktop/java.awt.color=ALL-UNNAMED -jar $rootdir/target/openpnp-gui-2.6P3-beta49.jar
 	;;
 esac

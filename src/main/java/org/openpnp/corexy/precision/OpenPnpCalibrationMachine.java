@@ -66,6 +66,7 @@ public final class OpenPnpCalibrationMachine implements CalibrationMachine {
     private ControllerShaping.Session shaping;
     private PrecisionProfile previousProfile;
     private boolean originalPlannerCompensation;
+    private org.openpnp.corexy.LegacyCompensationInterlock.Session legacySession;
     private final List<PrecisionSample> priorObservations = new ArrayList<>();
     private java.util.function.BooleanSupplier cancellation = () -> false;
 
@@ -77,6 +78,14 @@ public final class OpenPnpCalibrationMachine implements CalibrationMachine {
     @Override
     public List<PrecisionSample> previousObservations() {
         return new ArrayList<>(priorObservations);
+    }
+
+    @Override
+    public List<String> preparationNotes() {
+        if (legacySession == null) { return java.util.Collections.emptyList(); }
+        Path backup = legacySession.getBackupDirectory();
+        return java.util.Collections.singletonList("已自动停用原插件 Agent、试运行及旧规划器补偿；"
+                + (backup == null ? "旧方案原本已停用。" : "原始参数备份：" + backup));
     }
 
     private void checkCancelled() {
@@ -286,17 +295,10 @@ public final class OpenPnpCalibrationMachine implements CalibrationMachine {
         }
         machine.home();
         PrecisionRuntime.deactivate();
-        if (planner instanceof org.openpnp.corexy.CoreXYAdvancedMotionPlanner) {
-            ((org.openpnp.corexy.CoreXYAdvancedMotionPlanner) planner).setCoreXYCompensationEnabled(false);
-        }
+        legacySession = org.openpnp.corexy.LegacyCompensationInterlock.beginCalibration(configuration);
         ToolPointRuntime.setModels(java.util.Collections.emptyMap());
         x.setBacklashCompensationMethod(BacklashCompensationMethod.None);
         y.setBacklashCompensationMethod(BacklashCompensationMethod.None);
-        Properties properties = CoreXYIntegration.loadProperties(legacy);
-        properties.setProperty("enabled", "false");
-        disabledConfig = Files.createTempFile(legacy.getParent(), "calibration-disabled-", ".properties");
-        CoreXYIntegration.storeProperties(disabledConfig, properties);
-        CoreXYAgent.install(null, disabledConfig.toString());
         MovableUtils.moveToLocationAtSafeZ(camera, settings.fixedMarkers == null
                 ? location(settings.originX, settings.originY, settings.planeZ) : homeViewingLocation(settings), .35 * machine.getSpeed());
         camera.waitForCompletion(CompletionType.WaitForStillstand);
@@ -732,10 +734,16 @@ public final class OpenPnpCalibrationMachine implements CalibrationMachine {
         y.setAccelerationPerSecond2(originalAccelerationY);
         if (keep && model != null) {
             try {
-                Properties properties = CoreXYIntegration.loadProperties(legacy);
-                properties.setProperty("enabled", "false");
-                CoreXYIntegration.storeProperties(legacy, properties);
-                CoreXYAgent.rememberConfiguration(legacy.toString());
+                if (legacySession != null) {
+                    legacySession.commit();
+                }
+                else {
+                    Properties properties = CoreXYIntegration.loadProperties(legacy);
+                    properties.setProperty("enabled", "false");
+                    properties.setProperty("dry-run", "false");
+                    CoreXYIntegration.storeProperties(legacy, properties);
+                    CoreXYAgent.rememberConfiguration(legacy.toString());
+                }
             }
             catch (Exception failedCommit) {
                 cleanup.failure = failedCommit;
@@ -760,7 +768,7 @@ public final class OpenPnpCalibrationMachine implements CalibrationMachine {
             cleanup.run(PrecisionRuntime::deactivate);
             x.setBacklashCompensationMethod(originalBacklashX);
             y.setBacklashCompensationMethod(originalBacklashY);
-            if (planner instanceof org.openpnp.corexy.CoreXYAdvancedMotionPlanner) {
+            if (legacySession == null && planner instanceof org.openpnp.corexy.CoreXYAdvancedMotionPlanner) {
                 ((org.openpnp.corexy.CoreXYAdvancedMotionPlanner) planner).setCoreXYCompensationEnabled(originalPlannerCompensation);
             }
             cleanup.run(this::restoreTools);
@@ -768,8 +776,13 @@ public final class OpenPnpCalibrationMachine implements CalibrationMachine {
             if (shaping != null && machine.isEnabled()) {
                 cleanup.run(() -> transport().query(shaping.previous, 10000));
             }
-            cleanup.run(() -> PrecisionStore.atomicWriteBytes(legacy, originalLegacyBytes));
-            cleanup.run(() -> CoreXYAgent.install(CoreXYAgent.getStartupInstrumentation(), legacy.toString()));
+            if (legacySession != null) {
+                cleanup.run(legacySession::rollback);
+            }
+            else {
+                cleanup.run(() -> PrecisionStore.atomicWriteBytes(legacy, originalLegacyBytes));
+                cleanup.run(() -> CoreXYAgent.install(CoreXYAgent.getStartupInstrumentation(), legacy.toString()));
+            }
             cleanup.run(() -> PrecisionRuntime.restore(originalSettings));
             started = false;
         }

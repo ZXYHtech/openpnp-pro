@@ -39,6 +39,20 @@ public final class CoreXYAgent {
         return startupInstrumentation;
     }
 
+    public static Path getConfigurationPath() {
+        return configPath;
+    }
+
+    /** Disable legacy state without touching a live experimental model or attaching an Agent. */
+    public static synchronized void suspendLegacy(String configuredPath) {
+        if (!hasNativeHooks() && !installed) {
+            throw new IllegalStateException("请先通过独立插件启动器安装 CoreXY 接入。");
+        }
+        CoreXYRuntime.suspendLegacy();
+        configPath = Paths.get(configuredPath).toAbsolutePath().normalize();
+        installed = true;
+    }
+
     private CoreXYAgent() {
     }
 
@@ -49,9 +63,10 @@ public final class CoreXYAgent {
 
         CoreXYCompatibilityCheck.verify();
         if (hasNativeHooks()) {
+            org.openpnp.corexy.LegacyCompensationInterlock.prepareLegacyStartup(requestedConfig);
+            CoreXYRuntime.configure(requestedConfig, version);
             installed = true;
             configPath = requestedConfig;
-            CoreXYRuntime.configure(configPath, version);
             return getStatus();
         }
         if (!installed) {
@@ -94,8 +109,9 @@ public final class CoreXYAgent {
             installed = true;
         }
 
+        org.openpnp.corexy.LegacyCompensationInterlock.prepareLegacyStartup(requestedConfig);
+        CoreXYRuntime.configure(requestedConfig, version);
         configPath = requestedConfig;
-        CoreXYRuntime.configure(configPath, version);
         return getStatus();
     }
 

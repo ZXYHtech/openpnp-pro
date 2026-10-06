@@ -75,6 +75,12 @@ public class CoreXYAdvancedMotionPlanner extends ReferenceAdvancedMotionPlanner 
     protected synchronized AxesLocation createBacklashCompensatedMotion(
             HeadMountable hm, double speed, AxesLocation currentLocation,
             AxesLocation newLocation, MotionOption... options) {
+        if (LegacyCompensationInterlock.isExclusive()) {
+            requireNeutralCoreXYOffset();
+            coreXYCompensationEnabled = false;
+            resetCoreXYCompensationState();
+            return super.createBacklashCompensatedMotion(hm, speed, currentLocation, newLocation, options);
+        }
         AxesLocation previousOffset = getActiveCoreXYOffset();
 
         // Present the previous physical CoreXY offset to the stock planner. The
@@ -218,7 +224,14 @@ public class CoreXYAdvancedMotionPlanner extends ReferenceAdvancedMotionPlanner 
     }
 
     public void setCoreXYCompensationEnabled(boolean enabled) {
+        if (enabled) { LegacyCompensationInterlock.assertLegacyPlannerEnableAllowed(); }
         coreXYCompensationEnabled = enabled;
+    }
+
+    public synchronized void requireNeutralCoreXYOffset() {
+        if (!sameCoordinates(getActiveCoreXYOffset(), new AxesLocation())) {
+            throw new IllegalStateException("旧 CoreXY 规划器仍有活动偏移，请先 Home 再切换。");
+        }
     }
 
     public String getCoreXYCompensationXAxisId() {

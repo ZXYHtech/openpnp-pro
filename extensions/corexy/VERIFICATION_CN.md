@@ -1,3 +1,38 @@
+# CoreXY Precision 2.6P3-beta49 软件交付验证
+
+验证日期：2026-10-06。本版新增实验版与原插件的自动互斥。使用隔离配置、NullDriver 与合成测量；没有连接实机，也没有执行操作系统安装/卸载。
+
+## 行为与故障覆盖
+
+- 实机校准开始训练前自动停用旧 Agent、dry-run 与旧 CoreXY 规划器，保存正式/当前临时参数的原始字节及规划器 XML。成功提交后持续停用；取消、失败或保存失败时恢复原方案。
+- 拦截旧参数重新启用、旧规划器重新启用与临时加载；拒绝的加载不会改写记忆配置路径或清空实验版活动偏移。原插件读取停用配置仍可工作，运动只应用一次补偿。
+- 已保存实验版方案时，原 Startup.00 在 Startup.01 前读取重新安装的旧配置，也会先自动停用，不中断后续实验版启动。损坏档案、备份失败与恢复失败均有故障测试。
+- 实验版停用后保留旧方案关闭状态；原工具箱明确启用后才使用旧方案。离线演练不修改真实机器配置。
+
+## 最终待提交源码及安装包
+
+精确暂存区分别导出至 `.build/publish-beta49-20261006`（回归）和 `.build/delivery-beta49-20261006`（打包），排除本地其他未提交功能。安装器与独立插件均使用仓库标准打包脚本，从相同暂存源码生成。逐一核对的 132 个 CoreXY 类字节完全一致，保留 71 个 Jython 脚本（含 .pytxt），没有覆盖原版 Main 类。
+
+| 项目 | 结果 | 范围 |
+| --- | --- | --- |
+| CoreXY 与版本专项 | 125 项通过 | 包含新增 11 项互斥、恢复、损坏档案及配置重装测试 |
+| 最终完整图形回归 | 570 项，0 失败、0 错误、2 跳过 | 包含上述专项，不重复累计；两项仍要求外部 KiCad 数据及既有安装配置 |
+| 独立启动保护 | 4 项全部通过 | 与图形回归分开运行；Maven Checkstyle、完整 JAR 构建通过 |
+| Pro 安装器及原生启动器 | 通过 | beta49 元数据、内置运行时、WiX/MSI 版本说明与降级保护；原生 --version 退出 0 |
+| 打包后 Pro 界面 | 通过 | 实验菜单、五点界面、新向导、完整原工具箱；模拟驱动，无 Agent 自附加 |
+| 原版 OpenPnP 独立插件 | 通过 | 包内运行时与 -javaagent；Home、视觉基准、Park、五点校验及 71 个 Jython 脚本 |
+| 用户提供原插件共存 | 两种入口均通过 | 原源码 15 个 Java 类不修改地编译；实际原 Startup 脚本及原 Bootstrap 字节码的安装、重新加载与临时启用入口 |
+| 原版 SDK 源码构建 | 通过 | 独立包中 52 个生产 Java 源文件，用已安装原版 SDK 编译；生成的 source/build 不进入发行 ZIP |
+| 独立包离线演练 | 通过 | 使用包内运行时，生成模型评估与模拟报告；不是实机精度证明 |
+
+共存检查覆盖原启动顺序、旧配置被重新安装、实验版偏移保留、单次补偿、旧临时启用拒绝与持久备份。独立插件必须使用包内启动器保证新版内核优先加载。互斥针对本模块及用户提供的原插件，不声称能接管其他未知补偿插件。
+
+本地日志目录：`F:\OpenPnP\analysis\corexy-precision`。最终日志：`publish-beta49-staged-full-complete.log`、`publish-beta49-staged-package.log`、`publish-beta49-installer-build.log`、`publish-beta49-extension-build.log`、`publish-beta49-packaged-gui.log`、`publish-beta49-native-version.log`、`publish-beta49-stock-smoke.log`、`publish-beta49-pro-coexistence.log`、`publish-beta49-stock-coexistence.log`、`publish-beta49-stock-sdk-build.log`、`publish-beta49-bundled-offline.log`、`publish-beta49-artifact-audit.log`。打包前修复的测试清理问题及启动顺序问题，已由最终回归与共存检查重新验证。
+
+以下为历史版本记录，数量不与 beta49 合并累计。
+
+---
+
 # CoreXY Precision 2.6P3-beta48 软件交付验证
 
 验证日期：2026-10-06。新增 5 个永久固定 marker（其中一个为 Home 视觉基准），共享于 Pro 原生入口和原版 OpenPnP 独立 Agent。全部测试使用隔离配置、NullDriver/拒绝运动的几何 fixture 或数字物理模拟；没有连接实机。

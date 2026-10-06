@@ -86,23 +86,33 @@ public final class CoreXYIntegration {
             if (PrecisionRuntime.isActive()) {
                 return;
             }
-            CoreXYAgent.install(CoreXYAgent.getStartupInstrumentation(), legacyConfiguration(configuration).toString());
             PrecisionStore store = store(configuration);
             if (!store.isEnabled()) {
+                LegacyCompensationInterlock.release(configuration);
+                CoreXYAgent.install(CoreXYAgent.getStartupInstrumentation(), legacyConfiguration(configuration).toString());
                 startupStatus = "CoreXY 原生模块已就绪，自动补偿未启用。";
                 return;
             }
+            LegacyCompensationInterlock.expectSavedProfile(configuration);
+            LegacyCompensationInterlock.suspendForProfile(configuration);
             OpenPnpCalibrationMachine backend = new OpenPnpCalibrationMachine(configuration);
             PrecisionProfile profile = store.loadProfile(backend.fingerprint());
             if (profile == null) {
                 throw new IllegalStateException("启用标志存在，但没有完整的补偿档案。");
             }
             activateProfile(configuration, profile, backend);
-            startupStatus = profile.fixedMarkers == null ? "已加载通过独立验证的补偿档案；Home 后生效。"
-                    : "已预载 5 点补偿方案；Home 完成前自动修正视觉基准，并执行本次启动校验。";
+            startupStatus = (profile.fixedMarkers == null ? "已加载通过独立验证的补偿档案；Home 后生效。"
+                    : "已预载 5 点补偿方案；Home 完成前自动修正视觉基准，并执行本次启动校验。")
+                    + " 原插件补偿已自动停用。";
         }
         catch (Exception failure) {
             startupStatus = "CoreXY 补偿未加载：" + failure.getMessage();
+            if (LegacyCompensationInterlock.isExclusive()) {
+                configuration.getMachine().getMotionPlanner().unhome();
+                if (configuration.getMachine() instanceof org.openpnp.machine.reference.ReferenceMachine) {
+                    ((org.openpnp.machine.reference.ReferenceMachine) configuration.getMachine()).setHomed(false);
+                }
+            }
             Logger.warn(failure, startupStatus);
         }
     }
@@ -129,6 +139,11 @@ public final class CoreXYIntegration {
             OpenPnpCalibrationMachine backend) throws Exception {
         profile.validate(backend.fingerprint());
         AbstractMotionPlanner planner = (AbstractMotionPlanner) configuration.getMachine().getMotionPlanner();
+        LegacyCompensationInterlock.suspendForProfile(configuration);
+        ((ReferenceControllerAxis) configuration.getMachine().getAxis(profile.axisX))
+                .setBacklashCompensationMethod(BacklashCompensationMethod.None);
+        ((ReferenceControllerAxis) configuration.getMachine().getAxis(profile.axisY))
+                .setBacklashCompensationMethod(BacklashCompensationMethod.None);
         PrecisionRuntime.activate(planner, profile.model, profile.axisX, profile.axisY,
                 profile.settlingMillis, .25, 1);
         org.openpnp.corexy.precision.ToolPointRuntime.setModels(profile.toolModels);
@@ -270,6 +285,7 @@ public final class CoreXYIntegration {
         storeProperties(legacy, properties);
         CoreXYAgent.install(CoreXYAgent.getStartupInstrumentation(), legacy.toString());
         configuration.save();
+        LegacyCompensationInterlock.release(configuration);
         startupStatus = "CoreXY 补偿已停用，轴设置已恢复。";
         if (homeFailure != null) {
             throw new IllegalStateException("补偿已停用；Home 或控制器恢复未完成，请检查连接后重新 Home。", homeFailure);
@@ -322,7 +338,7 @@ public final class CoreXYIntegration {
         if (WORKFLOW.get()) {
             throw new IllegalStateException("请等待当前 CoreXY 校准完成后再打开工具箱。");
         }
-        if (PrecisionRuntime.isActive()) {
+        if (LegacyCompensationInterlock.isExclusive() || store(configuration).isEnabled()) {
             throw new IllegalStateException("请先停用自动补偿，再打开原插件调参器。");
         }
         installLegacyTools(configuration);
