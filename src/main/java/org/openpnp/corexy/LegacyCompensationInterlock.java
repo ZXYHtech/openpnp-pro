@@ -53,8 +53,8 @@ public final class LegacyCompensationInterlock {
                 && configuration.getScripting().getScriptsDirectory() != null
                 && CoreXYIntegration.store(configuration).isEnabled();
         if (isExclusive() || saved) {
-            throw new IllegalStateException("实验版 CoreXY 校准或补偿正在使用：原插件补偿已停用，"
-                    + "不能加载旧补偿或试运行参数。请先在实验功能中停用补偿。");
+            throw new IllegalStateException("CoreXY 校准或补偿正在使用：原插件补偿已停用，"
+                    + "不能加载旧补偿或试运行参数。请先在机器菜单的自动精度校准中停用补偿。");
         }
     }
 
@@ -71,7 +71,7 @@ public final class LegacyCompensationInterlock {
     public static void assertProductionAllowed() {
         if (committed && exclusiveConfiguration == Configuration.get()
                 && calibration == null && !PrecisionRuntime.isActive() && !RESTORING.get()) {
-            throw new IllegalStateException("实验版补偿尚未成功加载；原插件保持停用，请检查档案或在实验功能中停用补偿。");
+            throw new IllegalStateException("精度补偿尚未成功加载；原插件保持停用，请检查档案或在机器菜单的自动精度校准中停用补偿。");
         }
     }
 

@@ -23,7 +23,7 @@ public final class PrecisionProfile {
     public void validate(String currentFingerprint) {
         if (homeReference != null && (homeReference.length != 2
                 || !Double.isFinite(homeReference[0]) || !Double.isFinite(homeReference[1]))) {
-            throw new IllegalArgumentException("Home 参考数据无效，请重新完整验证。");
+            throw new IllegalArgumentException("Home 参考数据无效，请重新5点精度验证。");
         }
         if (fixedMarkers != null) {
             fixedMarkers.validate();
@@ -44,9 +44,8 @@ public final class PrecisionProfile {
                 || !Double.isFinite(target) || target <= 0 || model == null || baseline == null || corrected == null
                 || corrected.count < 8 || baseline.count < 8 || !Double.isFinite(corrected.p95)
                 || !Double.isFinite(corrected.rms) || !Double.isFinite(corrected.maximum)
-                || corrected.p95 >= baseline.p95 - Math.max(noise * 2, baseline.p95 * .08)
-                || corrected.rms >= baseline.rms || corrected.maximum > baseline.maximum + noise * 2
-                || noise * 3 >= target || temperatureActuator == null
+                || !PrecisionAcceptance.reasons(baseline, corrected, noise).isEmpty()
+                || temperatureActuator == null
                 || (model.getLayers().contains(PrecisionModel.Layer.THERMAL_DRIFT) && temperatureActuator.isEmpty())) {
             throw new IllegalArgumentException("补偿档案无效、机器配置已变化或独立验证不合格。");
         }

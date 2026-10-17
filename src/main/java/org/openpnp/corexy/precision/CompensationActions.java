@@ -48,12 +48,10 @@ public final class CompensationActions {
         }
         try {
             if (activationFailure != null) { throw activationFailure; }
-            Path report = !profile.modelDatumMarkerId.isEmpty() && profile.homeReference == null
-                    ? FixedMarkerLifecycle.verifyNow(configuration, progress, cancelled)
-                    : FixedMarkerLifecycle.homeOnly(configuration, progress, cancelled);
+            Path report = FixedMarkerLifecycle.homeOnly(configuration, progress, cancelled);
             configuration.saveMachineConfiguration();
             store.setEnabled(true);
-            CoreXYIntegration.setStartupStatus("新补偿已启用并保存 · Home 基准检查通过，完整验证可手动执行。");
+            CoreXYIntegration.setStartupStatus("新补偿已启用并保存 · Home 基准检查通过，5点精度验证可手动执行。");
             return report;
         }
         catch (Exception failure) {

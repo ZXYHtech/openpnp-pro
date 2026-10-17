@@ -227,7 +227,7 @@ final class PrecisionHistoryHtml {
 
     private String stabilitySummary() {
         if (fullChecks.isEmpty()) {
-            return "尚无正式 5 点校验数据。完成首次校准并启用后，软件启动、连接机器和 Home 流程会生成校验记录。";
+            return "尚无正式 5 点校验数据。首次校准包含独立五点实测；以后只有从机器菜单手动运行5点精度验证才生成五点记录，普通复位只检查 Home。";
         }
         StartupVerificationReport latest = fullChecks.get(fullChecks.size() - 1);
         String text = "最近一次完整校验：" + escape(time(latest.createdAt)) + "，"

@@ -43,13 +43,14 @@ public final class CalibrationResultPresentation {
 
     public static void waiting(JPanel panel) {
         render(panel, "等待测量结果", "完成校准或 Home 校验后显示实测结果", null, null, 0, false, false,
-                "先检查并保存五个点位，再开始校准。没有测量数据时不判断精度。", "尚无本次结果");
+                "Home 自动读取，记录四个临时点位后开始校准。没有测量数据时不判断精度。", "尚无本次结果");
     }
 
     public static boolean profile(JPanel panel, PrecisionProfile profile, boolean enabled) {
         if (Boolean.TRUE.equals(panel.getClientProperty("result.transient"))) { return false; }
-        boolean good = meetsTarget(profile.corrected, profile.target, true);
-        render(panel, good ? "已保存方案达到设定目标" : "已保存方案的精度还不理想",
+        boolean good = profile.corrected != null && profile.baseline != null
+                && profile.corrected.p95 < profile.baseline.p95 && profile.corrected.rms < profile.baseline.rms;
+        render(panel, good ? "已保存补偿有效" : "已保存方案的精度还不理想",
                 enabled ? "补偿已启用 · 已保存" : "补偿当前停用 · 保存方案仍保留",
                 profile.corrected, profile.baseline, profile.target, good, !good,
                 good ? "需要使用时先完成 Home 校验；更改点位、照明或机械状态后重新检查。" : accuracySteps(),
@@ -67,7 +68,7 @@ public final class CalibrationResultPresentation {
                     && !("home".equals(check.kind) && check.passed)) {
                 if (check.passed && !configuration.getMachine().isHomed()) {
                     render(panel, "等待本次 Home 校验", "方案已保存；当前尚未完成 Home", null, null,
-                            profile.target, false, false, "执行 Home 并重新验证，通过后再使用补偿。",
+                            profile.target, false, false, "执行 从机器菜单运行5点精度验证，通过后再使用补偿。",
                             "上次完整校验 · " + time(check.completedAt) + " · 不代表当前已就绪");
                     return;
                 }
@@ -78,15 +79,16 @@ public final class CalibrationResultPresentation {
     }
 
     public static void verification(JPanel panel, StartupVerificationReport check, PrecisionProfile profile, boolean enabled) {
-        boolean good = meetsTarget(check.metrics, check.target, check.passed);
+        boolean good = check.passed && !check.cancelled && check.metrics != null;
         String title = check.cancelled ? "本次校验已取消" : !check.passed ? "这次校验没有通过"
-                : good ? "本次校验达到设定目标" : "校验稳定，但精度还不够好";
-        String next = check.cancelled ? "确认机器状态后，可点击“Home 并重新验证”。取消不代表验证通过。"
+                : good ? "补偿有效 · 5点精度验证通过" : "本次没有完整精度结果";
+        String next = check.cancelled ? "确认机器状态后，可点击“从机器菜单运行5点精度验证”。取消不代表验证通过。"
                 : good ? "在相同工作条件下使用；更改点位、速度或机械状态后重新验证。" : accuracySteps();
         render(panel, title, (enabled ? "补偿已启用" : "补偿未启用") + " · "
-                + (check.passed ? "稳定性检查通过" : "验证未通过，请先排查"),
-                "home".equals(check.kind) ? null : check.metrics, null, check.target, good, !good && !check.cancelled,
-                escape(check.outcome) + "<br>" + next,
+                + (check.passed ? "相较未补偿基线有改善" : "验证未通过，请先排查"),
+                "home".equals(check.kind) ? null : check.metrics, check.baseline == null ? profile.baseline : check.baseline, check.target, good, !good && !check.cancelled,
+                escape(check.outcome).replace("\n", "<br>") + "<br>"
+                        + escape(String.join("；", check.notes)) + "<br>" + next,
                 ("home".equals(check.kind) ? "最近 Home 检查 · " : "最近五点校验 · ")
                         + time(check.completedAt) + " · 历史方案 P95 "
                         + String.format(Locale.ROOT, "%.4f mm", profile.corrected.p95));
@@ -95,8 +97,8 @@ public final class CalibrationResultPresentation {
     public static void report(JPanel panel, CalibrationController.Report report) {
         panel.putClientProperty("result.transient", true);
         double target = report.request == null ? .05 : report.request.target;
-        boolean good = !report.simulation && meetsTarget(report.correctedFinal, target, report.targetReached);
-        render(panel, report.simulation ? "离线演练结果" : good ? "本次校准达到设定目标" : "这次补偿效果不理想",
+        boolean good = !report.simulation && report.chosen != null && report.correctedFinal != null;
+        render(panel, report.simulation ? "离线演练结果" : good ? "本次校准有效改善精度" : "这次补偿效果不理想",
                 report.simulation ? "模拟数据 · 不代表实机精度" : report.enabled ? "新方案已启用" : "本次候选未启用 · 请核对下方运行状态",
                 report.correctedFinal, report.baselineFinal, target, good, !good && !report.simulation,
                 escape(report.outcome) + "<br>" + (good ? "下次启动先完成 Home 校验。" : accuracySteps()),
@@ -109,7 +111,7 @@ public final class CalibrationResultPresentation {
         render(panel, cancelled ? "操作已取消" : "这次没有完成，先别急着重试",
                 "本次操作未通过 · 当前补偿状态见下方状态栏", null, null, 0, false, !cancelled,
                 escape(failure.getMessage()) + "<br>" + (cancelled
-                        ? "确认机器已停止，再选择 Home 复验或重新校准。" : failureSteps(failure.getMessage())),
+                        ? "确认机器已停止，再选择 5点精度验证或重新校准。" : failureSteps(failure.getMessage())),
                 "当前操作 · " + time(System.currentTimeMillis()) + " · 不展示旧成绩冒充本次结果");
     }
 
@@ -119,16 +121,16 @@ public final class CalibrationResultPresentation {
             return "1. 返回点位页检查坐标和可用行程。<br>2. 调整点位或采样行程；不要关闭软限位。<br>3. 确认路径可达后重新校准。";
         }
         if (text.contains("marker") || text.contains("噪声") || text.contains("圆形")) {
-            return "1. 查看 marker 画面，检查圆形完整、直径、光照和对焦。<br>2. 位置未变则 Home 并重新验证；点位移动过则重新记录并校准。";
+            return "1. 查看 marker 画面，检查圆形完整、直径、光照和对焦。<br>2. 位置未变则 从机器菜单运行5点精度验证；点位移动过则重新记录并校准。";
         }
         if (text.contains("Home") || text.contains("基准") || text.contains("收敛")) {
-            return "1. 检查 Home 标记、固定状态和圆心识别。<br>2. Home 并重新验证；若重复不收敛，检查皮带、同步轮和导轨，再重新校准。";
+            return "1. 检查 Home 标记、固定状态和圆心识别。<br>2. 从机器菜单运行5点精度验证；若重复不收敛，检查皮带、同步轮和导轨，再重新校准。";
         }
         return "1. 查看原始数据和错误原因，先恢复连接或机器状态。<br>2. 状态恢复后执行 Home 复验；持续失败时检查机械与视觉，再重新校准。";
     }
 
     private static String accuracySteps() {
-        return "1. 先检查 marker、照明、对焦和固定状态。<br>2. 条件未变：Home 并重新验证，判断是否为偶发漂移。"
+        return "1. 先检查 marker、照明、对焦和固定状态。<br>2. 条件未变：从机器菜单运行5点精度验证，判断是否为偶发漂移。"
                 + "<br>3. 仍不理想：查看最差点与方向；检查皮带/同步轮/导轨，重新校准后再验收。";
     }
 
@@ -177,14 +179,20 @@ public final class CalibrationResultPresentation {
             body.add(cards, BorderLayout.NORTH);
         }
         String measured = metrics == null ? "本次没有完整精度结果" : String.format(Locale.ROOT,
-                "%d 次观测 · P95 目标 %.3f mm：%s · 最大值%s目标", metrics.count, target,
+                "%d 次观测 · P95 目标 %.3f mm：%s（目标仅作提示）· 最大值%s目标", metrics.count, target,
                 metrics.p95 <= target ? "已达到" : "未达到", metrics.maximum <= target ? "不超过" : "超过");
         if (baseline != null && metrics != null && baseline.rms > 0) {
-            measured += String.format(Locale.ROOT, " · RMS 变化 %+.1f%%", (metrics.rms / baseline.rms - 1) * 100);
+            measured += String.format(Locale.ROOT,
+                    "<br>保存的未补偿基线：RMS %.4f / P95 %.4f / 最大 %.4f mm · RMS 变化 %+.1f%%",
+                    baseline.rms, baseline.p95, baseline.maximum, (metrics.rms / baseline.rms - 1) * 100);
         }
-        JLabel detail = label("<html><center>" + escape(source) + "<br>" + measured
-                + "<br><br><b>下一步</b><br>" + next + "</center></html>", 14, Color.WHITE);
-        body.add(detail, BorderLayout.CENTER);
+        JLabel detail = label("<html><div style='width:680px;text-align:center'>" + escape(source) + "<br>" + measured
+                + "<br><br><b>结果与下一步</b><br>" + next + "</div></html>", 14, Color.WHITE);
+        javax.swing.JScrollPane details = new javax.swing.JScrollPane(detail);
+        details.setBorder(null);
+        details.setOpaque(false);
+        details.getViewport().setOpaque(false);
+        body.add(details, BorderLayout.CENTER);
         panel.add(body, BorderLayout.CENTER);
         Object[] actions = (Object[]) panel.getClientProperty("result.actions");
         if (actions != null) {
@@ -194,7 +202,7 @@ public final class CalibrationResultPresentation {
             points.addActionListener(event -> ((JTabbedPane) actions[0]).setSelectedIndex(0));
             buttons.add(points);
             JButton retry = ((JButton) actions[1]).isEnabled() ? (JButton) actions[1] : (JButton) actions[2];
-            addAction(buttons, "Home 并重新验证", retry);
+            addAction(buttons, retry == actions[1] ? "重试5点精度验证" : "启用保存方案并检查 Home", retry);
             addAction(buttons, "重新校准", (JButton) actions[3]);
             addAction(buttons, "查看原始数据", (JButton) actions[4]);
             panel.add(buttons, BorderLayout.SOUTH);

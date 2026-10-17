@@ -70,8 +70,8 @@ public final class CalibrationController {
                 report.previousMetrics = PrecisionMetrics.evaluate(report.previousObservations, null);
             }
             report.noise = machine.measureNoise();
-            if (report.noise * 3 >= request.target) {
-                report.outcome = "测量噪声过大：改善照明、对焦和 marker 后重试；保持原方案。";
+            if (!Double.isFinite(report.noise) || report.noise < 0) {
+                report.outcome = "测量噪声数据无效：检查相机后重试；保持原方案。";
                 return report;
             }
             report.notes.addAll(machine.optimizeControllerAndTools(request));
@@ -110,10 +110,8 @@ public final class CalibrationController {
                 report.finalAttempts.add(corrected);
                 collect(machine, plan.finalCheck, corrected, progress, 80, 96);
                 PrecisionMetrics metrics = PrecisionMetrics.evaluate(corrected, null);
-                double improvement = Math.max(report.noise * 2, report.baselineFinal.p95 * .08);
-                if (metrics.p95 < report.baselineFinal.p95 - improvement
-                        && metrics.rms < report.baselineFinal.rms
-                        && metrics.maximum <= report.baselineFinal.maximum + report.noise * 2
+                List<String> reasons = PrecisionAcceptance.reasons(report.baselineFinal, metrics, report.noise);
+                if (reasons.isEmpty()
                         && (report.previousMetrics == null
                             || (metrics.p95 <= report.previousMetrics.p95 + report.noise * 2
                                 && metrics.maximum <= report.previousMetrics.maximum + report.noise * 2))
@@ -131,6 +129,10 @@ public final class CalibrationController {
                     }
                     return report;
                 }
+                if (reasons.isEmpty()) {
+                    reasons.add("虽优于未补偿基线，但比已启用方案或 Home 点表现更差，保留原方案。");
+                }
+                report.notes.add("候选未启用：" + String.join("；", reasons));
                 machine.apply(null, request.settleMillis);
             }
             report.outcome = "拟合结果未通过补偿后的第三组实测，已回滚。";

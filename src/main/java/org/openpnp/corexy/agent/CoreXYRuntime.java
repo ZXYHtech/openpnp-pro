@@ -516,7 +516,7 @@ public final class CoreXYRuntime {
         requireNeutralLegacy();
         config = null;
         STATES.clear();
-        lastError = "旧插件补偿已由实验版自动停用。";
+        lastError = "旧插件补偿已由自动精度校准停用。";
     }
 
     static void setError(Throwable error) {

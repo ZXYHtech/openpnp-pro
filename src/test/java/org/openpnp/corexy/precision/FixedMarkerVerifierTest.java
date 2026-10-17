@@ -76,6 +76,42 @@ class FixedMarkerVerifierTest {
     }
 
     @Test
+    void worseThanHistoricalCompensationButBetterThanBaselinePassesAboveGoal() throws Exception {
+        PrecisionProfile profile = profile();
+        profile.baseline = new com.google.gson.Gson().fromJson(
+                "{\"count\":34,\"rms\":0.116486,\"p95\":0.175947,\"maximum\":0.188451}", PrecisionMetrics.class);
+        StartupVerificationReport report = new StartupVerificationReport();
+        FixedMarkerVerifier.Backend measured = new FixedMarkerVerifier.Backend() {
+            @Override public PrecisionSample observe(CalibrationPlan.Path path) {
+                return sample(path.id, path.x, path.y, .06, 0);
+            }
+            @Override public void subtractDatum(double x, double y) { fail("Verification does not refit or shift the datum."); }
+        };
+        new FixedMarkerVerifier().verify(measured, profile, report, (p, m) -> {}, () -> false);
+        assertTrue(report.passed);
+        assertTrue(report.metrics.p95 > profile.target);
+        assertSame(profile.baseline, report.baseline);
+        assertTrue(report.notes.stream().anyMatch(note -> note.contains("最差路径")));
+    }
+
+    @Test
+    void acquisitionFailureNamesTheMarkerAndPathWithoutClaimingZeroError() {
+        PrecisionProfile profile = profile();
+        StartupVerificationReport report = new StartupVerificationReport();
+        FixedMarkerVerifier.Backend failed = new FixedMarkerVerifier.Backend() {
+            @Override public PrecisionSample observe(CalibrationPlan.Path path) { throw new IllegalStateException("未找到完整圆形"); }
+            @Override public void subtractDatum(double x, double y) { }
+        };
+        Exception failure = assertThrows(IllegalStateException.class,
+                () -> new FixedMarkerVerifier().verify(failed, profile, report, (p, m) -> {}, () -> false));
+        assertTrue(failure.getMessage().contains("home"));
+        assertTrue(failure.getMessage().contains("路径"));
+        assertTrue(failure.getMessage().contains("未找到完整圆形"));
+        assertNull(report.metrics);
+        assertFalse(report.passed);
+    }
+
+    @Test
     void excessiveHomeDriftDoesNotWriteCoordinateOffsets() {
         PrecisionProfile profile = profile();
         PhysicalReferences plant = new PhysicalReferences(profile);
@@ -139,6 +175,8 @@ class FixedMarkerVerifierTest {
         java.util.List<PrecisionSample> samples = new java.util.ArrayList<>();
         for (int n = 0; n < 20; n++) { samples.add(sample("baseline-" + n, 100, 100, .004, -.001)); }
         profile.corrected = PrecisionMetrics.evaluate(samples, null);
+        profile.baseline = PrecisionMetrics.evaluate(samples.stream()
+                .map(sample -> sample.residual(-.01, 0)).collect(java.util.stream.Collectors.toList()), null);
         return profile;
     }
 

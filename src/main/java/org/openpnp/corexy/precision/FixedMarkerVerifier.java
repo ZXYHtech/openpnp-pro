@@ -119,20 +119,32 @@ public final class FixedMarkerVerifier {
             CalibrationPlan.Path path = paths.get(index);
             progress.update(25 + index * 70 / paths.size(), "新补偿已启用 · " + path.markerId
                     + " · 独立路径 " + (index + 1) + "/" + paths.size() + " · 移动、静止、识别圆心");
-            report.samples.add(backend.observe(paths.get(index)));
+            try {
+                report.samples.add(backend.observe(path));
+            }
+            catch (CancellationException cancelled) { throw cancelled; }
+            catch (Exception failure) {
+                throw new IllegalStateException("点位 " + path.markerId + "，路径 " + path.id
+                        + " 采集失败：" + failure.getMessage(), failure);
+            }
         }
         report.metrics = PrecisionMetrics.evaluate(report.samples, null);
-        double allowance = Math.max(report.noise * 3, .002);
-        // Recheck stability against the measured solution; a relative improvement never proves the absolute target.
-        report.passed = report.metrics.p95 <= Math.max(profile.target, profile.corrected.p95 + allowance)
-                && report.metrics.maximum <= Math.max(profile.target, profile.corrected.maximum) + allowance
-                && report.metrics.p95 <= profile.corrected.p95 + allowance
-                && report.metrics.rms <= profile.corrected.rms + allowance
-                && report.metrics.maximum <= profile.corrected.maximum + allowance;
-        report.outcome = report.passed ? "Home 基准已修正，5 个固定 marker 校验通过。"
-                : "固定 marker 校验未通过，禁止继续生产；原补偿方案和本次原始数据已保留。";
+        report.baseline = profile.baseline;
+        report.rejectionReasons = PrecisionAcceptance.reasons(profile.baseline, report.metrics,
+                Math.max(profile.noise, report.noise));
+        report.passed = report.rejectionReasons.isEmpty();
+        report.outcome = report.passed ? "5点精度验证通过：相较保存的未补偿基线有可分辨的改善。"
+                : "5点精度验证未通过：" + String.join("\n", report.rejectionReasons);
+        report.notes.add("比较基准是校准时保存的未补偿实测数据；本次没有重新测量未补偿状态。目标精度只作提示，不决定启用。");
+        PrecisionSample worst = report.samples.stream().max(java.util.Comparator.comparingDouble(
+                sample -> Math.hypot(sample.correctionX, sample.correctionY))).orElse(null);
+        if (worst != null) {
+            report.notes.add(String.format(java.util.Locale.ROOT,
+                    "最差路径 %s；坐标 X %.3f / Y %.3f mm，电机方向 A %d / B %d，误差 X %+.5f / Y %+.5f mm。",
+                    worst.path, worst.x, worst.y, worst.stateA, worst.stateB, worst.correctionX, worst.correctionY));
+        }
         if (report.passed && report.metrics.p95 > profile.target) {
-            report.notes.add("本次校验与已保存方案一致，但 P95 尚未达到设置的目标；稳定性通过不代表目标精度达标。");
+            report.notes.add("补偿有效，但 P95 尚未达到设置的目标；可以继续使用，有需要时再优化。");
         }
         progress.update(100, report.outcome);
         if (!report.passed) {

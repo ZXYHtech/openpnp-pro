@@ -73,7 +73,8 @@ class CoreXYPrecisionTest {
         noisy.imageNoise = .04;
         CalibrationController.Report noiseReport = new CalibrationController().run(noisy,
                 new CalibrationRequest(), (p, m) -> { });
-        assertNull(noiseReport.evaluation);
+        assertNotNull(noiseReport.evaluation, "Noise is compared with the measured improvement, not the desired goal.");
+        assertNull(noiseReport.chosen);
         assertTrue(noisy.finished);
         assertFalse(noisy.kept);
         DigitalTwinMachine machine = new DigitalTwinMachine(2);

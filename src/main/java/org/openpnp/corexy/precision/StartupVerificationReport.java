@@ -15,6 +15,9 @@ public final class StartupVerificationReport {
     public double beforeHomeResidual, afterHomeResidual;
     public int homeIterations;
     public PrecisionMetrics metrics;
+    /** Historical uncompensated calibration baseline; not a new uncorrected run. */
+    public PrecisionMetrics baseline;
+    public List<String> rejectionReasons = new ArrayList<>();
     public List<PrecisionSample> homeSamples = new ArrayList<>();
     public List<PrecisionSample> samples = new ArrayList<>();
     public List<String> notes = new ArrayList<>();

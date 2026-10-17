@@ -145,7 +145,7 @@ public final class FixedMarkerGuidePanel extends JPanel {
             String title = stage == 0 ? "① 固定 Home 基准与 4 个覆盖点" : stage == 1
                     ? "② 对齐第 " + (marker + 1) + " 点，记录相机位置" : stage == 2
                     ? "③ 自动校准、独立评估、启用通过方案" : stage == 3
-                    ? "普通复位：仅检查 Home 视觉基准" : "手动完整验证：Home 与四个覆盖点";
+                    ? "普通复位：仅检查 Home 视觉基准" : "手动5点精度验证：Home 与四个覆盖点";
             g.drawString(title, 16, 27);
             g.setFont(getFont().deriveFont(12f));
             g.drawString(stage == 3 ? "补偿参数先加载；视觉归一属于 Home 完成前步骤" : (positions == null ? "示意布局；Home 位置以实际录入坐标为准" : "按录入坐标显示：X 向右，Y 向上；等比例布局"), 16, height - 19);

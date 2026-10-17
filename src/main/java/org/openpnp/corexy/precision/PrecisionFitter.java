@@ -118,12 +118,9 @@ public final class PrecisionFitter {
                     PrecisionMetrics metrics = PrecisionMetrics.evaluate(training, model);
                     if (best == null || metrics.rms < best.training.rms) {
                         PrecisionMetrics heldOut = PrecisionMetrics.evaluate(validation, model);
-                        double minimumImprovement = Math.max(noise * 2, baseline.p95 * .08);
-                        boolean accepted = noise * 3 < target && heldOut.p95 < baseline.p95 - minimumImprovement
-                                && heldOut.rms < baseline.rms && heldOut.maximum <= baseline.maximum + noise * 2;
-                        String reason = accepted ? "独立路径误差降低且最大偏差未退化"
-                                : noise * 3 >= target ? "测量噪声不足以验证目标精度"
-                                : "改善未超过噪声阈值，或最差误差发生退化";
+                        java.util.List<String> reasons = PrecisionAcceptance.reasons(baseline, heldOut, noise);
+                        boolean accepted = reasons.isEmpty();
+                        String reason = accepted ? "独立路径误差降低且最大偏差未退化" : String.join("；", reasons);
                         best = new Candidate(model, metrics, heldOut, accepted, reason);
                     }
                 }

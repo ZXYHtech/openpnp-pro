@@ -314,12 +314,11 @@ class FixedMarkerLifecycleTest {
     }
 
     @Test
-    void oldModelRequiresExplicitMigrationThenOnlyHomeAfterRestart() throws Exception {
+    void oldModelTransfersHomeReferenceOnceWithoutFullVerificationThenOnlyHomeAfterRestart() throws Exception {
         profile.modelDatumMarkerId = "M3";
-        IllegalStateException missing = assertThrows(IllegalStateException.class, machine::home);
-        assertTrue(missing.getMessage().contains("完整验证"));
-        assertEquals(0, backend.observations, "Never automatically visit an old removable model datum.");
-        FixedMarkerLifecycle.verifyNow(Configuration.get(), (p, message) -> {}, () -> false);
+        machine.home();
+        assertEquals(0, backend.fullChecks, "Legacy transfer must not force a five-point verification.");
+        assertTrue(backend.rawObserved, "Preserve the old model datum before recording its Home signature.");
         assertNotNull(profile.homeReference);
         profile = CoreXYIntegration.store(Configuration.get()).loadProfile(profile.fingerprint);
         assertNotNull(profile.homeReference, "The signature must survive restart.");
@@ -337,31 +336,37 @@ class FixedMarkerLifecycleTest {
     }
 
     @Test
-    void failedFullVerificationCannotBeHiddenByAnOrdinaryHome() throws Exception {
+    void failedOptionalVerificationStaysInHistoryButDoesNotForceAnotherFullCheck() throws Exception {
         backend.badResidual = true;
         assertThrows(IllegalStateException.class,
                 () -> FixedMarkerLifecycle.verifyNow(Configuration.get(), (p, message) -> {}, () -> false));
+        int fullChecks = backend.fullChecks;
         FixedMarkerLifecycle.install(Configuration.get(), profile, backend, false);
-        assertThrows(IllegalStateException.class, machine::home);
-        assertFalse(machine.isHomed());
-        assertThrows(IllegalStateException.class, () -> FixedMarkerLifecycle.assertReady(profile));
+        machine.home();
+        assertTrue(machine.isHomed());
+        assertEquals(fullChecks, backend.fullChecks);
+        assertFalse(reports().get(0).passed, "Failed historical evidence is preserved.");
+        assertDoesNotThrow(() -> FixedMarkerLifecycle.assertReady(profile));
         backend.badResidual = false;
         FixedMarkerLifecycle.verifyNow(Configuration.get(), (p, message) -> {}, () -> false);
         assertTrue(machine.isHomed());
     }
 
     @Test
-    void failedLegacyStartupVerificationStillBlocksAfterUpgrade() throws Exception {
+    void oldStartupFailureDoesNotForceFullValidationAfterUpgrade() throws Exception {
         backend.badResidual = true;
         assertThrows(IllegalStateException.class,
                 () -> FixedMarkerLifecycle.verifyNow(Configuration.get(), (p, message) -> {}, () -> false));
         StartupVerificationReport legacy = reports().get(0);
         legacy.kind = "startup";
         CoreXYIntegration.store(Configuration.get()).saveVerification(legacy);
+        int fullChecks = backend.fullChecks;
         FixedMarkerLifecycle.install(Configuration.get(), profile, backend, false);
-        assertThrows(IllegalStateException.class, machine::home);
-        assertFalse(machine.isHomed());
-        assertThrows(IllegalStateException.class, () -> FixedMarkerLifecycle.assertReady(profile));
+        machine.home();
+        assertTrue(machine.isHomed());
+        assertEquals(fullChecks, backend.fullChecks);
+        assertFalse(reports().get(0).passed, "Failed historical evidence is preserved.");
+        assertDoesNotThrow(() -> FixedMarkerLifecycle.assertReady(profile));
     }
 
     @Test

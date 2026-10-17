@@ -660,7 +660,6 @@ public class MainFrame extends JFrame {
         experimentalFeaturesMenu.add(new JMenuItem(motionPerformanceCenterAction));
         experimentalFeaturesMenu.add(new JMenuItem(flyingVisionCenterAction));
         experimentalFeaturesMenu.add(new JMenuItem(cameraDiagnosticsAction));
-        experimentalFeaturesMenu.add(new JMenuItem(coreXYPrecisionAction));
         experimentalFeaturesMenu.add(new JMenuItem(safetyWorkbenchAction));
         experimentalFeaturesMenu.setVisible(
                 ExperimentalMotionCenterDialog.isExperimentalModeEnabled());
@@ -802,6 +801,7 @@ public class MainFrame extends JFrame {
         panelMachine.add(machineControlsPanel, BorderLayout.SOUTH);
 
         mnCommands.add(new JMenuItem(machineControlsPanel.homeAction));
+        mnCommands.add(new JMenuItem(coreXYPrecisionAction));
         mnCommands.add(new JMenuItem(machineControlsPanel.fullVerificationAction));
         mnCommands.add(new JMenuItem(machineControlsPanel.startStopMachineAction));
 
@@ -1205,7 +1205,6 @@ public class MainFrame extends JFrame {
         toolbar.addSeparator(new Dimension(14, 1));
         toolbar.add(createCommandButton(machineControlsPanel.startStopMachineAction, true));
         toolbar.add(createCommandButton(machineControlsPanel.homeAction, true));
-        toolbar.add(createCommandButton(machineControlsPanel.fullVerificationAction, true));
         toolbar.add(createCommandButton(topPickAction, true));
         toolbar.addSeparator(new Dimension(14, 1));
         toolbar.add(createCommandButton(jobPanel.startPauseResumeJobAction, true));

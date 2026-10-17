@@ -39,6 +39,7 @@ import org.openpnp.corexy.precision.PrecisionMetrics;
 import org.openpnp.corexy.precision.PrecisionProfile;
 import org.openpnp.corexy.precision.PrecisionRuntime;
 import org.openpnp.corexy.precision.CompensationActions;
+import org.openpnp.corexy.precision.StartupVerificationReport;
 import org.openpnp.model.Configuration;
 import org.openpnp.model.LengthUnit;
 import org.openpnp.model.Location;
@@ -68,7 +69,7 @@ public final class FixedMarkerDialog extends JDialog {
     private final JSpinner planeZ = number(0, -10000, 10000, .1);
     private final JSpinner homeOffset = number(1, .001, 5, .1);
     private final JSpinner homeRadius = number(2, .001, 10, .1);
-    private final JCheckBox autoVerify = new JCheckBox("普通复位只检查 Home；完整验证由按钮手动启动", false);
+    private final JCheckBox autoVerify = new JCheckBox("普通复位只检查 Home；5点精度验证由按钮手动启动", false);
     private final JButton record = new JButton("记录覆盖点的相机位置 → 下一点");
     private final JButton move = new JButton("移动到所选 marker 查看");
     private final JButton enable = new JButton("启用保存方案并校验");
@@ -78,7 +79,7 @@ public final class FixedMarkerDialog extends JDialog {
     private final CalibrationCelebrationPanel celebration = new CalibrationCelebrationPanel();
     private final JButton save = new JButton("保存 Home 与四个覆盖点");
     private final JButton start = new JButton("自动校准并启用通过方案");
-    private final JButton verify = new JButton("完整验证（Home + 四个临时点）");
+    private final JButton verify = new JButton("5点精度验证（Home + 四个临时点）");
     private final JButton simulation = new JButton("离线演练");
     private final JButton stop = new JButton("取消并恢复");
     private final JButton history = new JButton("打开校准与校验历史");
@@ -92,11 +93,12 @@ public final class FixedMarkerDialog extends JDialog {
     private int settleMillis = 300;
     private Path reportDirectory;
     private CalibrationRequest currentRequest;
+    private long verificationStarted;
     private final String[] markerIds = {"home", "marker-2", "marker-3", "marker-4", "marker-5"};
     private final String[] markerNames = {"Home 视觉基准", "覆盖点 2", "覆盖点 3", "覆盖点 4", "覆盖点 5"};
 
     public FixedMarkerDialog(JDialog owner, Configuration configuration) throws Exception {
-        super(owner, "Home + 四个临时 marker · 校准与完整验证", false);
+        super(owner, "Home + 四个临时 marker · 校准与5点精度验证", false);
         this.configuration = configuration;
         setDefaultCloseOperation(DO_NOTHING_ON_CLOSE);
         setMinimumSize(new Dimension(900, 650));
@@ -105,7 +107,7 @@ public final class FixedMarkerDialog extends JDialog {
         JPanel preparation = new JPanel(new BorderLayout(16, 16));
         preparation.setBorder(BorderFactory.createEmptyBorder(18, 18, 18, 18));
         preparation.add(new JLabel("<html><b>Home 自动读取，只需添加 4 个覆盖点。</b> 校准时四点保持固定、清晰、与 Home 同平面。"
-                + "<br>补偿校准通过后四点可移除；Home 基准需保留。手动完整验证前，请按保存的位置放回四点。</html>"), BorderLayout.NORTH);
+                + "<br>补偿校准通过后四点可移除；Home 基准需保留。手动5点精度验证前，请按保存的位置放回四点。</html>"), BorderLayout.NORTH);
         preparation.add(guide, BorderLayout.WEST);
         JPanel input = new JPanel(new BorderLayout(8, 10));
         table.setRowHeight(28);
@@ -137,7 +139,7 @@ public final class FixedMarkerDialog extends JDialog {
         input.add(parameters, BorderLayout.SOUTH);
         preparation.add(input, BorderLayout.CENTER);
         preparation.add(new JLabel("<html>① 自动读取机器 Home → ② 对齐并记录四个临时点 → ③ 自动校准并独立评估。"
-                + "<br>普通复位只检查 Home；四个覆盖点校准后可移除，完整验证或重新校准时再放回。"
+                + "<br>普通复位只检查 Home；四个覆盖点校准后可移除，5点精度验证或重新校准时再放回。"
                 + "<br>坐标可手工修订。相机录入用于重复定位；绝对尺寸精度需要经过标定的标准坐标。</html>"), BorderLayout.SOUTH);
         JScrollPane preparationScroll = new JScrollPane(preparation);
         preparationScroll.setBorder(BorderFactory.createEmptyBorder());
@@ -268,7 +270,7 @@ public final class FixedMarkerDialog extends JDialog {
     private void switchCompensation(boolean selected) {
         if (!begin(false)) { return; }
         showLive();
-        live.update(selected ? "启用保存方案并检查 Home；旧方案首次转换需完整验证" : "正在 Home 清除补偿偏移，随后停用并保留方案");
+        live.update(selected ? "启用保存方案并检查 Home；旧方案首次转换 Home 基准" : "正在 Home 清除补偿偏移，随后停用并保留方案");
         UiUtils.submitUiMachineTask(() -> {
             if (selected) { return CompensationActions.enable(configuration, listener(""), cancelled::get); }
             CoreXYIntegration.disable(configuration);
@@ -329,21 +331,21 @@ public final class FixedMarkerDialog extends JDialog {
     /** Entry beside the Home button: show prerequisites before the operator starts motion. */
     public void showFullVerification() throws Exception {
         PrecisionProfile profile = CoreXYIntegration.store(configuration).loadForRestore();
-        StringBuilder text = new StringBuilder("完整误差验证\n\n普通复位只检查 Home。完整验证使用已保存方案的五点坐标，包含不同方向与行程的误差测量。\n"
-                + "请放回四个临时 marker，保持原位置与高度，并清空吸嘴；准备好后点击下方‘完整验证’。\n");
+        StringBuilder text = new StringBuilder("5点精度验证\n\n普通复位只检查 Home。5点精度验证使用已保存方案的五点坐标，包含不同方向与行程的误差测量。\n"
+                + "请放回四个临时 marker，保持原位置与高度，并清空吸嘴；准备好后点击下方‘5点精度验证’。\n");
         if (profile != null && profile.fixedMarkers != null) {
             for (FixedMarkerSetup.Marker marker : profile.fixedMarkers.markers) {
                 text.append(String.format(Locale.ROOT, "\n%s：X %.4f，Y %.4f mm", marker.name, marker.x, marker.y));
             }
             if (!profile.modelDatumMarkerId.isEmpty() && profile.homeReference == null) {
-                text.append("\n\n此旧方案需一次完整验证建立 Home 参考。通过并保存后，普通复位不再依赖四个临时点。");
+                text.append("\n\n此旧方案首次复位时转换 Home 基准，需要保留原模型基准点；保存后复位仅检查 Home。");
             }
         }
         else { text.append("\n尚无保存方案，请先完成校准。"); }
         results.setText(text.toString());
         results.setCaretPosition(0);
         tabs.setSelectedIndex(1);
-        state.setText("完整验证前，请按保存坐标放回四个临时 marker，并清空吸嘴；点击完整验证开始。");
+        state.setText("5点精度验证前，请按保存坐标放回四个临时 marker，并清空吸嘴；点击5点精度验证开始。");
         setVisible(true);
         verify.requestFocusInWindow();
     }
@@ -539,21 +541,61 @@ public final class FixedMarkerDialog extends JDialog {
             return;
         }
         guide.setGuide(4, 0);
-        state.setText("完整验证：请确认四个临时 marker 已放回保存位置；将执行 Home 与五点误差测量。");
+        verificationStarted = System.currentTimeMillis();
+        state.setText("5点精度验证：请确认四个临时 marker 已放回保存位置；将执行 Home 与五点误差测量。");
         showLive();
         try {
             UiUtils.submitUiMachineTask(() -> CoreXYIntegration.verifyFixedMarkers(configuration, listener(""), cancelled::get), directory -> {
-                reportDirectory = directory;
-                results.setText("本次 5 点校验已完成。\n\n" + CoreXYIntegration.getStartupStatus()
-                        + "\n\n校验使用已启用方案中的固定点。\n报告与原始观测：" + directory
-                        + "\n\n点击“打开校准与校验历史”查看历次校准、方案和校验数据。");
                 finish();
-                tabs.setSelectedIndex(3);
-            }, this::showFailure);
+                try { showVerificationReport(directory); }
+                catch (Exception failure) { showFailure(failure); }
+            }, this::showVerificationFailure);
         }
         catch (Exception failure) {
-            showFailure(failure);
+            showVerificationFailure(failure);
         }
+    }
+
+    private void showVerificationReport(Path directory) throws Exception {
+        StartupVerificationReport check = CoreXYIntegration.store(configuration).loadVerification(directory);
+        PrecisionProfile profile = CoreXYIntegration.store(configuration).loadForRestore();
+        reportDirectory = directory;
+        StringBuilder text = new StringBuilder("5点精度验证结果\n\n").append(check.outcome).append("\n\n");
+        appendMetrics(text, "校准时保存的未补偿基线", check.baseline);
+        appendMetrics(text, "本次补偿后实测", check.metrics);
+        text.append("目标 P95 ").append(check.target).append(" mm（仅作提示，不决定启用）\n");
+        for (String note : check.notes) { text.append("\n• ").append(note); }
+        text.append("\n\n下一步：").append(check.passed ? "可继续使用；觉得不准时再从机器菜单运行5点精度验证。"
+                : "检查上述最差点的固定位置、照明和对焦；点位变动后重新校准，效果退化可停用补偿。处理后可手动重试。");
+        text.append("\n报告与原始观测：").append(directory);
+        results.setText(text.toString());
+        results.setCaretPosition(0);
+        state.setText(check.passed ? "5点精度验证通过" : "5点精度验证未通过，原因与数据见结果页");
+        celebration.putClientProperty("result.transient", true);
+        if (profile != null) {
+            CalibrationResultPresentation.verification(celebration, check, profile,
+                    PrecisionRuntime.isActive() && CoreXYIntegration.store(configuration).isEnabled());
+        }
+        report.setEnabled(true);
+        tabs.setSelectedIndex(3);
+    }
+
+    private void showVerificationFailure(Throwable failure) {
+        finish();
+        try {
+            java.util.List<Path> history = CoreXYIntegration.store(configuration).listVerificationDirectories();
+            if (!history.isEmpty()) {
+                Path latest = history.get(history.size() - 1);
+                StartupVerificationReport check = CoreXYIntegration.store(configuration).loadVerification(latest);
+                if (check.createdAt >= verificationStarted && "manual".equals(check.kind)) {
+                    showVerificationReport(latest);
+                    return;
+                }
+            }
+        }
+        catch (Exception readFailure) { failure.addSuppressed(readFailure); }
+        results.setText("5点精度验证未完成：" + failure.getMessage());
+        showFailure(failure);
     }
 
     private CalibrationController.Progress listener(String prefix) {
@@ -679,7 +721,7 @@ public final class FixedMarkerDialog extends JDialog {
         text.append("\n\n校准、补偿方案与原始 CSV：").append(reportDirectory);
         if (report.enabled) {
             text.append("\n以后启动软件，补偿会在 Home 前预载；Home 的视觉步骤修正第 1 点复位偏移。");
-            text.append("普通复位只检查 Home；四个覆盖点可移除，完整验证时按保存位置放回。");
+            text.append("普通复位只检查 Home；四个覆盖点可移除，5点精度验证时按保存位置放回。");
         }
         results.setText(text.toString());
         results.setCaretPosition(0);

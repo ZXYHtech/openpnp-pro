@@ -435,7 +435,7 @@ public class MachineControlsPanel extends JPanel {
     }
     public HomeAction homeAction = new HomeAction();
 
-    public Action fullVerificationAction = new AbstractAction("完整验证…") {
+    public Action fullVerificationAction = new AbstractAction("5点精度验证…") {
         {
             putValue(SHORT_DESCRIPTION, "手动检查 Home 和四个临时 marker 的补偿误差；普通复位只检查 Home");
         }

@@ -29,7 +29,7 @@ class CalibrationResultPresentationTest {
     }
 
     @Test
-    void stableButAboveTargetIsNotCelebrated() throws Exception {
+    void improvementAboveTargetIsAcceptedWithAnExplicitGoalNotice() throws Exception {
         SwingUtilities.invokeAndWait(() -> {
             CalibrationCelebrationPanel panel = new CalibrationCelebrationPanel();
             StartupVerificationReport report = new StartupVerificationReport();
@@ -37,10 +37,10 @@ class CalibrationResultPresentationTest {
             report.target = .05;
             report.metrics = metrics(.06);
             CalibrationResultPresentation.verification(panel, report, profile(), true);
-            assertEquals(false, panel.getClientProperty("result.success"));
-            assertEquals(true, panel.getClientProperty("result.unhappy"));
-            assertTrue(text(panel).contains("校验稳定，但精度还不够好"));
-            assertTrue(text(panel).contains("Home 并重新验证"));
+            assertEquals(true, panel.getClientProperty("result.success"));
+            assertEquals(false, panel.getClientProperty("result.unhappy"));
+            assertTrue(text(panel).contains("补偿有效"));
+            assertTrue(text(panel).contains("未达到（目标仅作提示）"));
         });
     }
 

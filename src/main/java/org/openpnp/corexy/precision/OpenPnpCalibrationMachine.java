@@ -601,7 +601,7 @@ public final class OpenPnpCalibrationMachine implements CalibrationMachine {
             registerBoard(notes);
         }
         if (settings.fixedMarkers != null) {
-            notes.add("使用机器 Home 与四个临时覆盖点；校准后覆盖点可移除，完整验证时按保存位置放回。Home 基准需保留。");
+            notes.add("使用机器 Home 与四个临时覆盖点；校准后覆盖点可移除，5点精度验证时按保存位置放回。Home 基准需保留。");
             notes.add("5 点只能评估覆盖区的低阶空间误差；不能证明未采样位置的高频误差已消除。");
         }
         return notes;
@@ -1042,6 +1042,17 @@ public final class OpenPnpCalibrationMachine implements CalibrationMachine {
             if (!camera.isReachable(view) || !planner.isValidLocation(camera, camera.toRaw(camera.toHeadLocation(view)))) {
                 throw new IllegalStateException("Home 基准拍摄位置不可达。");
             }
+        }
+        if (!profile.modelDatumMarkerId.isEmpty() && profile.homeReference == null) {
+            FixedMarkerSetup.Marker datum = profile.fixedMarkers.marker(profile.modelDatumMarkerId);
+            java.util.List<CalibrationPlan.Path> migration = new java.util.ArrayList<>();
+            for (int sa : new int[] {-1, 1}) {
+                for (int sb : new int[] {-1, 1}) {
+                    migration.add(new CalibrationPlan.Path("model-datum-migration", datum.id, datum.x, datum.y,
+                            24, 18, .6, 1, sa, sb, 2, profile.settlingMillis));
+                }
+            }
+            validatePlan(new CalibrationPlan(migration));
         }
         camera.actuateLightBeforeCapture();
     }
