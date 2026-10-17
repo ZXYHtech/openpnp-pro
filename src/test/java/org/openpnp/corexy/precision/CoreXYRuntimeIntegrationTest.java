@@ -257,6 +257,90 @@ class CoreXYRuntimeIntegrationTest {
     }
 
     @Test
+    void productionAllowsBothEdgeNozzlesAfterTheirHeadOffsetsAreAppliedExactlyOnce() throws Exception {
+        activateProduction(-.12, .02);
+        ReferenceNozzle left = nozzle("N1", -10.856018607776528, -41.49334392872871);
+        ReferenceNozzle right = nozzle("N2", 10.993631164249075, -41.83277061752746);
+        AxesLocation leftTarget = left.toRaw(left.toHeadLocation(new Location(LengthUnit.Millimeters,
+                -10.227, 244.751, 0, 0)));
+        assertEquals(.629018607776528, leftTarget.getCoordinate(x), 1e-9);
+        plan(left, location(100, 100), leftTarget);
+        assertEquals(.509018607776528, motions().getLast().getLocation1().getCoordinate(x), 1e-9);
+        assertEquals(-.12, PrecisionRuntime.activeOffset(planner).getCoordinate(x), 1e-9,
+                "Edge correction must not be clipped or disabled.");
+        // The right tool tip is outside the axis range, but its controller coordinate is inside it.
+        AxesLocation rightTarget = right.toRaw(right.toHeadLocation(new Location(LengthUnit.Millimeters,
+                299.6 + right.getHeadOffsets().getX(), 200, 0, 0)));
+        assertEquals(299.6, rightTarget.getCoordinate(x), 1e-9);
+        plan(right, leftTarget, rightTarget);
+        assertEquals(299.48, motions().getLast().getLocation1().getCoordinate(x), 1e-9);
+        // Pure non-XY motion at an edge must retain its correction without re-entering a hidden margin.
+        PrecisionRuntime.Plan unchanged = PrecisionRuntime.beforePlan(planner, right, .5, rightTarget, rightTarget);
+        assertEquals(-.12, unchanged.proposedOffset.getCoordinate(x), 1e-9);
+    }
+
+    @Test
+    void productionRejectsTrueLowAndHighCrossingsWithToolAxisAndAmountBeforeEnqueue() throws Exception {
+        ReferenceNozzle nozzle = nozzle("N2", 11, -42);
+        for (double sign : new double[] {-1, 1}) {
+            activateProduction(sign * .12, 0);
+            double endpoint = sign < 0 ? .05 : 299.95;
+            java.lang.reflect.InvocationTargetException rejected = assertThrows(java.lang.reflect.InvocationTargetException.class,
+                    () -> plan(nozzle, location(100, 100), location(endpoint, 100)));
+            assertTrue(rejected.getCause().getMessage().contains("N2"));
+            assertTrue(rejected.getCause().getMessage().contains("补偿终点"));
+            assertTrue(rejected.getCause().getMessage().contains("0.07000 mm"));
+            assertEquals(0, motions().size());
+            assertTrue(PrecisionRuntime.activeOffset(planner).matches(AxesLocation.zero));
+        }
+    }
+
+    @Test
+    void productionUsesNativeAxisResolutionAtTheBoundary() throws Exception {
+        x.setResolution(.0125);
+        activateProduction(-.001, 0);
+        assertTrue(planner.isValidLocation(camera, location(-.001, 100)));
+        plan(100, 100, 0, 100);
+        assertTrue(x.coordinatesMatch(new Length(-.001, LengthUnit.Millimeters),
+                motions().getLast().getLocation1().getLengthCoordinate(x)),
+                "Native planning may omit a sub-resolution correction, but must not falsely reject the boundary.");
+        assertEquals(-.001, PrecisionRuntime.activeOffset(planner).getCoordinate(x), 1e-9);
+        assertFalse(planner.isValidLocation(camera, location(-.02, 100)));
+    }
+
+    @Test
+    void previousOffsetSegmentCannotCrossLimitEvenWhenFinalCorrectionWouldBeInside() throws Exception {
+        PrecisionModel model = new PrecisionModel(EnumSet.of(PrecisionModel.Layer.FIXED_STATE),
+                new double[] {0, 300, 0, 300, .5, 1000, 24, 0}, 12, 6, 2, 2, .2);
+        // Directional layer has one feature per motor, reversing from positive to negative flips X correction.
+        model.setCoefficients(new double[] {.1, 0}, new double[] {0, 0});
+        PrecisionRuntime.activate(planner, model, x.getId(), y.getId(), 0, .25);
+        plan(200, 100, 250, 100);
+        assertEquals(.1, PrecisionRuntime.activeOffset(planner).getCoordinate(x), 1e-9);
+        // A target near the upper limit while moving in negative A makes the final correction inward.
+        java.lang.reflect.InvocationTargetException rejected = assertThrows(java.lang.reflect.InvocationTargetException.class,
+                () -> plan(250, 200, 299.95, 100));
+        assertTrue(rejected.getCause().getMessage().contains("主运动终点"));
+        assertEquals(0, motions().size());
+        assertEquals(.1, PrecisionRuntime.activeOffset(planner).getCoordinate(x), 1e-9);
+    }
+
+    private ReferenceNozzle nozzle(String name, double offsetX, double offsetY) throws Exception {
+        ReferenceNozzle nozzle = new ReferenceNozzle();
+        nozzle.setName(name);
+        nozzle.setAxisX(x);
+        nozzle.setAxisY(y);
+        nozzle.setHeadOffsets(new Location(LengthUnit.Millimeters, offsetX, offsetY, 0, 0));
+        head.addNozzle(nozzle);
+        return nozzle;
+    }
+
+    private void activateProduction(double dx, double dy) {
+        activate(dx, dy);
+        PrecisionRuntime.activate(planner, PrecisionRuntime.getModel(), x.getId(), y.getId(), 0, .25);
+    }
+
+    @Test
     void nativePlannerKeepsLogicalCoordinatesAndDoesNotAccumulateOffsets() throws Exception {
         activate(.03, -.02);
         plan(100, 100, 120, 100);
@@ -535,11 +619,14 @@ class CoreXYRuntimeIntegrationTest {
         PrecisionRuntime.activate(planner, model, x.getId(), y.getId(), 0, .25, 1);
     }
     private void plan(double cx, double cy, double tx, double ty) throws Exception {
+        plan(camera, location(cx, cy), location(tx, ty));
+    }
+    private void plan(HeadMountable tool, AxesLocation current, AxesLocation target) throws Exception {
         motions().clear();
         Method method = AbstractMotionPlanner.class.getDeclaredMethod("createBacklashCompensatedMotion",
                 HeadMountable.class, double.class, AxesLocation.class, AxesLocation.class, Motion.MotionOption[].class);
         method.setAccessible(true);
-        method.invoke(planner, camera, .5, location(cx, cy), location(tx, ty), new Motion.MotionOption[0]);
+        method.invoke(planner, tool, .5, current, target, new Motion.MotionOption[0]);
     }
     @SuppressWarnings("unchecked")
     private LinkedList<Motion> motions() throws Exception {

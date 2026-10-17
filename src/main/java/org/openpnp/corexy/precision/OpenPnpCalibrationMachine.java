@@ -542,7 +542,7 @@ public final class OpenPnpCalibrationMachine implements CalibrationMachine {
             // Runtime and calibration must use the same production acceleration settings.
             x.setAccelerationPerSecond2(originalAccelerationX);
             y.setAccelerationPerSecond2(originalAccelerationY);
-            PrecisionRuntime.activate(planner, model, x.getId(), y.getId(), settling, .25, 1);
+            PrecisionRuntime.activate(planner, model, x.getId(), y.getId(), settling, .25);
             if (model.getLayers().contains(PrecisionModel.Layer.THERMAL_DRIFT)) {
                 PrecisionRuntime.setTemperatureSource(() -> readTemperature(request.temperatureActuator));
                 PrecisionRuntime.setTemperature(readTemperature(request.temperatureActuator));

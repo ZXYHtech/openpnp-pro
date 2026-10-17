@@ -145,7 +145,7 @@ public final class CoreXYIntegration {
         ((ReferenceControllerAxis) configuration.getMachine().getAxis(profile.axisY))
                 .setBacklashCompensationMethod(BacklashCompensationMethod.None);
         PrecisionRuntime.activate(planner, profile.model, profile.axisX, profile.axisY,
-                profile.settlingMillis, .25, 1);
+                profile.settlingMillis, .25);
         org.openpnp.corexy.precision.ToolPointRuntime.setModels(profile.toolModels);
         if (profile.model.getLayers().contains(org.openpnp.corexy.precision.PrecisionModel.Layer.THERMAL_DRIFT)) {
             PrecisionRuntime.setTemperatureSource(() -> backend.readTemperature(profile.temperatureActuator));

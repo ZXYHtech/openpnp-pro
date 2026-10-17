@@ -34,7 +34,7 @@ public final class PrecisionRuntime {
     private static volatile long temperatureTimestamp;
     private static volatile int settleMillis;
     private static volatile double speedFactor = .25;
-    private static volatile double margin = 1;
+    private static volatile double margin;
 
     private static final class State {
         ReversalState a = new ReversalState(), b = new ReversalState();
@@ -89,6 +89,12 @@ public final class PrecisionRuntime {
     }
 
     private PrecisionRuntime() { }
+
+    /** Production uses the machine's configured travel, including calibrated edge tool stations. */
+    public static void activate(AbstractMotionPlanner planner, PrecisionModel candidate,
+            String axisX, String axisY, int settling, double finalSpeed) {
+        activate(planner, candidate, axisX, axisY, settling, finalSpeed, 0);
+    }
 
     public static synchronized void activate(AbstractMotionPlanner planner, PrecisionModel candidate,
             String axisX, String axisY, int settling, double finalSpeed, double softMargin) {
@@ -234,11 +240,9 @@ public final class PrecisionRuntime {
                 a.getDirection(), b.getDirection(), 0, 0);
         double[] correction = selected.predict(query, a.getValue(), b.getValue());
         AxesLocation proposed = new AxesLocation(x, correction[0]).put(new AxesLocation(y, correction[1]));
-        if (!planner.isValidLocation(hm, current.add(s.offset))) {
-            throw new IllegalStateException("Physical start position violates a soft limit.");
-        }
-        validate(planner, hm, target.add(s.offset), x, y);
-        validate(planner, hm, target.add(proposed), x, y);
+        validatePhysical(planner, hm, current.add(s.offset), "运动起点");
+        validate(planner, hm, target.add(s.offset), x, y, "主运动终点");
+        validate(planner, hm, target.add(proposed), x, y, "补偿终点");
         Plan plan = new Plan(current.add(s.offset), target.add(s.offset), s.offset, proposed, a, b, true);
         plan.xySpeed = xySpeed;
         plan.xyAcceleration = acceleration;
@@ -256,7 +260,7 @@ public final class PrecisionRuntime {
             return stockEnd;
             }
         AxesLocation end = stockEnd.subtract(plan.previousOffset).add(plan.proposedOffset);
-        validate(planner, hm, end, planner.getMachine().getAxis(xId), planner.getMachine().getAxis(yId));
+        validate(planner, hm, end, planner.getMachine().getAxis(xId), planner.getMachine().getAxis(yId), "最终路径终点");
         if (!plan.previousOffset.matches(plan.proposedOffset) || !plan.proposedOffset.matches(plan.previousOffset)) {
             CoreXYRuntime.appendPrecisionMotion(planner, hm, Math.min(speed, speedFactor), stockEnd,
                     end, Motion.optionFlags(options));
@@ -450,18 +454,47 @@ public final class PrecisionRuntime {
             } }
         }
     }
-    private static void validate(AbstractMotionPlanner planner, HeadMountable hm, AxesLocation location, Axis x, Axis y) {
-        if (!planner.isValidLocation(hm, location)) { throw new IllegalStateException("Compensated path violates a soft limit.");
+    private static void validatePhysical(AbstractMotionPlanner planner, HeadMountable hm,
+            AxesLocation location, String stage) {
+        if (planner.isValidLocation(hm, location)) { return; }
+        // location is already in controller coordinates: nozzle offsets/runout must not be applied again.
+        for (ControllerAxis axis : location.getControllerAxes()) {
+            if (!(axis instanceof ReferenceControllerAxis) || axis.getType() == Axis.Type.Rotation) { continue; }
+            ReferenceControllerAxis ref = (ReferenceControllerAxis) axis;
+            org.openpnp.model.Length coordinate = location.getLengthCoordinate(ref).convertToUnits(LengthUnit.Millimeters);
+            for (boolean low : new boolean[] {true, false}) {
+                boolean enabled = low ? ref.isSoftLimitLowEnabled() : ref.isSoftLimitHighEnabled();
+                org.openpnp.model.Length limit = (low ? ref.getSoftLimitLow() : ref.getSoftLimitHigh())
+                        .convertToUnits(LengthUnit.Millimeters);
+                double excess = low ? limit.getValue() - coordinate.getValue() : coordinate.getValue() - limit.getValue();
+                if (enabled && excess > 0 && !ref.coordinatesMatch(limit, coordinate)) {
+                    throw new IllegalStateException(String.format(java.util.Locale.ROOT,
+                            "%s · %s：%s 轴实际坐标 %.5f mm 超过软限位%s %.5f mm，超出 %.5f mm。请检查换嘴/目标坐标与吸嘴偏置；补偿未被截断。",
+                            hm == null ? "运动工具" : hm.getName(), stage, ref.getName(), coordinate.getValue(),
+                            low ? "下限" : "上限", limit.getValue(), excess));
+                }
             }
+        }
+        throw new IllegalStateException((hm == null ? "运动工具" : hm.getName()) + " · " + stage
+                + "：补偿后的实际轴位置不满足机器限位，请检查轴配置。坐标：" + location);
+    }
+
+    private static void validate(AbstractMotionPlanner planner, HeadMountable hm, AxesLocation location,
+            Axis x, Axis y, String stage) {
+        validatePhysical(planner, hm, location, stage);
         // A Home fiducial may define the coordinate origin itself. Only the
         // optional production margin is relaxed; physical axis limits still apply.
         double effectiveMargin = state(planner).visualHoming ? 0 : margin;
+        // No second floating-point comparison at zero margin: preserve native axis-resolution semantics.
+        if (effectiveMargin == 0) { return; }
         for (Axis axis : new Axis[] {x, y}) { if (axis instanceof ReferenceControllerAxis) {
             ReferenceControllerAxis a = (ReferenceControllerAxis) axis;
             double coordinate = location.getCoordinate(axis);
             if ((a.isSoftLimitLowEnabled() && coordinate < a.getSoftLimitLow().convertToUnits(LengthUnit.Millimeters).getValue() + effectiveMargin)
                     || (a.isSoftLimitHighEnabled() && coordinate > a.getSoftLimitHigh().convertToUnits(LengthUnit.Millimeters).getValue() - effectiveMargin)) {
-                throw new IllegalStateException("Compensated path enters a soft-limit margin.");
+                throw new IllegalStateException(String.format(java.util.Locale.ROOT,
+                        "%s · %s：%s 轴实际坐标 %.5f mm 进入显式设置的 %.3f mm 预留边距；机器软限位仍有效。",
+                        hm == null ? "运动工具" : hm.getName(), stage, a.getName(), coordinate, effectiveMargin));
             }
         } }
     }
