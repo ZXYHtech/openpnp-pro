@@ -14,6 +14,8 @@ public final class CalibrationPlan {
         public final int settleMillis;
         public boolean homeStart;
         public boolean direct;
+        // A fitted path records its actual conditioning distance; NaN uses the requested distance.
+        public double conditioningTravel = Double.NaN;
 
         Path(String id, double x, double y, double a, double b, double speed,
                 double accelerationFactor, int signA, int signB, int pieces, int settling) {
@@ -40,6 +42,9 @@ public final class CalibrationPlan {
         public double[][] points(double conditioning) {
             if (homeStart || direct) {
                 return new double[][] {{x, y}};
+            }
+            if (Double.isFinite(conditioningTravel)) {
+                conditioning = conditioningTravel;
             }
             double dx = (signA * a + signB * b) / 2;
             double dy = (signA * a - signB * b) / 2;

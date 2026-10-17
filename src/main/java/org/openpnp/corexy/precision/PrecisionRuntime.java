@@ -173,6 +173,18 @@ public final class PrecisionRuntime {
                 || !planner.isHomed()) {
             return new Plan(current, target, new AxesLocation(), new AxesLocation(), s.a, s.b, false);
         }
+        if (ModelReferencedDatum.isRawStage()) {
+            if (!s.offset.matches(AxesLocation.zero)) {
+                throw new IllegalStateException("Raw datum sampling requires a neutral compensation offset.");
+            }
+            ReversalState a = s.a.copy(), b = s.b.copy();
+            AxesLocation delta = current.motionSegmentTo(target);
+            double dx = delta.getCoordinate(planner.getMachine().getAxis(xId));
+            double dy = delta.getCoordinate(planner.getMachine().getAxis(yId));
+            a.advance(dx + dy, selected.getTransitionA());
+            b.advance(dx - dy, selected.getTransitionB());
+            return new Plan(current, target, s.offset, s.offset, a, b, false);
+        }
         try {
             if (productionGuard != null) {
                 productionGuard.check();
@@ -236,7 +248,12 @@ public final class PrecisionRuntime {
 
     public static AxesLocation afterPlan(AbstractMotionPlanner planner, HeadMountable hm, double speed,
             MotionOption[] options, AxesLocation stockEnd, Plan plan) {
-        if (!plan.applied) { return stockEnd;
+        if (!plan.applied) {
+            if (ModelReferencedDatum.isRawStage() && model != null && owner == planner) {
+                state(planner).a = plan.a;
+                state(planner).b = plan.b;
+            }
+            return stockEnd;
             }
         AxesLocation end = stockEnd.subtract(plan.previousOffset).add(plan.proposedOffset);
         validate(planner, hm, end, planner.getMachine().getAxis(xId), planner.getMachine().getAxis(yId));

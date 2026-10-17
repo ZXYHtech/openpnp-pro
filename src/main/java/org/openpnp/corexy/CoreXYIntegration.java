@@ -102,7 +102,7 @@ public final class CoreXYIntegration {
             }
             activateProfile(configuration, profile, backend);
             startupStatus = (profile.fixedMarkers == null ? "已加载通过独立验证的补偿档案；Home 后生效。"
-                    : "已预载 5 点补偿方案；Home 完成前自动修正视觉基准，并执行本次启动校验。")
+                    : "已预载补偿方案；普通复位只检查 Home，完整工作区验证请手动启动。")
                     + " 原插件补偿已自动停用。";
         }
         catch (Exception failure) {
@@ -176,7 +176,7 @@ public final class CoreXYIntegration {
                 PrecisionProfile profile = backend.profile(report);
                 profile.calibrationDirectory = directory.toString();
                 store.saveProfile(profile, false);
-                configuration.save();
+                configuration.saveMachineConfiguration();
                 store.setEnabled(true);
                 report.enabled = true;
                 report.outcome = measuredOutcome;
@@ -199,7 +199,7 @@ public final class CoreXYIntegration {
             try {
                 backend.finish(false, null, report.settlingMillis);
                 store.restore(previous);
-                configuration.save();
+                configuration.saveMachineConfiguration();
             }
             catch (Exception rollbackFailure) {
                 persistenceFailure.addSuppressed(rollbackFailure);
@@ -284,7 +284,7 @@ public final class CoreXYIntegration {
         properties.setProperty("dry-run", "false");
         storeProperties(legacy, properties);
         CoreXYAgent.install(CoreXYAgent.getStartupInstrumentation(), legacy.toString());
-        configuration.save();
+        configuration.saveMachineConfiguration();
         LegacyCompensationInterlock.release(configuration);
         startupStatus = "CoreXY 补偿已停用，轴设置已恢复。";
         if (homeFailure != null) {

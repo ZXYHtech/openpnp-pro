@@ -5,7 +5,7 @@ import java.util.HashSet;
 import java.util.List;
 import java.util.Set;
 
-/** Five permanent, individually named references, including the visual Home datum. */
+/** Permanent machine Home plus four removable calibration references. Coordinates remain in the profile. */
 public final class FixedMarkerSetup {
     public static final class Marker {
         public String id, name;
@@ -32,7 +32,9 @@ public final class FixedMarkerSetup {
     public double maximumHomeOffset = 1;
     public double homeSearchRadius = 2;
     public int settleMillis = 300;
-    public boolean verifyOnStartup = true;
+    /** Legacy serialized setting, retained for compatibility; startup now always checks Home only. */
+    @Deprecated
+    public boolean verifyOnStartup = false;
 
     public void validate() {
         if (schema != 1 || markers == null || markers.size() != 5 || homeIndex < 0 || homeIndex >= 5) {

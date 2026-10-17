@@ -50,7 +50,9 @@ public final class FixedMarkerVerifier {
             if (report.noise * 3 >= profile.target) {
                 throw new IllegalStateException("Home marker 测量不稳定，请检查照明、对焦和固定状态。");
             }
-            double residual = Math.hypot(metrics.meanX, metrics.meanY);
+            double dx = metrics.meanX - (profile.homeReference == null ? 0 : profile.homeReference[0]);
+            double dy = metrics.meanY - (profile.homeReference == null ? 0 : profile.homeReference[1]);
+            double residual = Math.hypot(dx, dy);
             report.homeIterations = iteration + 1;
             report.afterHomeResidual = residual;
             if (iteration == 0) {
@@ -58,30 +60,65 @@ public final class FixedMarkerVerifier {
                 report.rawHomeY = metrics.meanY;
                 report.beforeHomeResidual = residual;
             }
-            if (residual <= Math.min(profile.target, Math.max(.002, report.noise * 3))) {
+            // Model-referenced profiles use this corner marker only for coarse registration.
+            // Tiny reversals here can sit inside mechanical deadband; the opposing approaches
+            // that follow establish the precise datum against the frozen model.
+            double tolerance = profile.modelDatumMarkerId.isEmpty() || profile.homeReference != null
+                    ? Math.min(profile.target, Math.max(.002, report.noise * 3)) : profile.target;
+            if (residual <= tolerance) {
                 return;
             }
-            accumulatedX += metrics.meanX;
-            accumulatedY += metrics.meanY;
+            accumulatedX += dx;
+            accumulatedY += dy;
             if (Math.hypot(accumulatedX, accumulatedY) > setup.maximumHomeOffset) {
                 throw new IllegalStateException("Home 漂移超出设置的修正上限；保持原档案并停止复位。");
             }
             if (iteration == 3) {
                 throw new IllegalStateException("Home marker 坐标修正未收敛，请重新校准。");
             }
-            backend.subtractDatum(metrics.meanX, metrics.meanY);
-            report.homeCorrectionX -= metrics.meanX;
-            report.homeCorrectionY -= metrics.meanY;
+            backend.subtractDatum(dx, dy);
+            report.homeCorrectionX -= dx;
+            report.homeCorrectionY -= dy;
         }
+    }
+
+    /** Keep the established model datum while transferring its Home signature to durable storage. */
+    public double[] captureHomeReference(Backend backend, PrecisionProfile profile,
+            StartupVerificationReport report, BooleanSupplier guard) throws Exception {
+        FixedMarkerSetup.Marker home = profile.fixedMarkers.homeMarker();
+        List<PrecisionSample> frames = new ArrayList<>();
+        for (int frame = 0; frame < 5; frame++) {
+            cancelled(guard);
+            CalibrationPlan.Path path = new CalibrationPlan.Path("home-reference-" + frame,
+                    home.x, home.y, 0, 0, .35, 1, 0, 0, 1, profile.settlingMillis);
+            path.markerId = home.id;
+            path.direct = true;
+            PrecisionSample sample = backend.observe(path);
+            frames.add(sample);
+            report.homeSamples.add(sample);
+        }
+        PrecisionMetrics metrics = PrecisionMetrics.evaluate(frames, null);
+        double variance = 0;
+        for (PrecisionSample sample : frames) {
+            variance += Math.pow(sample.correctionX - metrics.meanX, 2)
+                    + Math.pow(sample.correctionY - metrics.meanY, 2);
+        }
+        if (3 * Math.sqrt(variance / (frames.size() * 2)) >= profile.target) {
+            throw new IllegalStateException("Home 参考采样不稳定，未保存快速复位基准。");
+        }
+        return new double[] {metrics.meanX, metrics.meanY};
     }
 
     public void verify(Backend backend, PrecisionProfile profile, StartupVerificationReport report,
             CalibrationController.Progress progress, BooleanSupplier guard) throws Exception {
         FixedMarkerSetup setup = profile.fixedMarkers;
-        List<CalibrationPlan.Path> paths = verificationPaths(setup, profile.settlingMillis);
+        List<CalibrationPlan.Path> paths = profile.modelDatumMarkerId.isEmpty()
+                ? verificationPaths(setup, profile.settlingMillis) : ModelReferencedDatum.verificationPaths(profile);
         for (int index = 0; index < paths.size(); index++) {
             cancelled(guard);
-            progress.update(25 + index * 70 / paths.size(), "校验固定 marker " + (index + 1) + "/" + paths.size());
+            CalibrationPlan.Path path = paths.get(index);
+            progress.update(25 + index * 70 / paths.size(), "新补偿已启用 · " + path.markerId
+                    + " · 独立路径 " + (index + 1) + "/" + paths.size() + " · 移动、静止、识别圆心");
             report.samples.add(backend.observe(paths.get(index)));
         }
         report.metrics = PrecisionMetrics.evaluate(report.samples, null);

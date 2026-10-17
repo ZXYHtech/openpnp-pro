@@ -378,7 +378,10 @@ public class JogControlsPanel extends JPanel {
         homeButton.setIcon(Icons.home);
         homeButton.setHideActionText(true);
         homeButton.setToolTipText(Translations.getString("JogControlsPanel.homeButton.toolTipText")); //$NON-NLS-1$ //$NON-NLS-2$
-        panelControls.add(homeButton, "2, 2"); //$NON-NLS-1$
+        JPanel homeControls = new JPanel(new java.awt.FlowLayout(java.awt.FlowLayout.LEFT, 3, 0));
+        homeControls.add(homeButton);
+        homeControls.add(new JButton(machineControlsPanel.fullVerificationAction));
+        panelControls.add(homeControls, "2, 2, 5, 1");
 
         JLabel lblXy = new JLabel("X/Y"); //$NON-NLS-1$
         lblXy.setFont(new Font("Lucida Grande", Font.PLAIN, 22)); //$NON-NLS-1$

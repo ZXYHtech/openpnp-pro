@@ -429,7 +429,8 @@ public abstract class AbstractBroadcastingCamera extends AbstractSettlingCamera 
             lastPreviewLoopDurationNanos = System.nanoTime() - loopStartedNanos;
             try {
                 synchronized(captureNotifier) {
-                    long waitNanos = computePreviewWaitNanos(fps,
+                    long waitNanos = computePreviewWaitNanos(org.openpnp.util.CameraPreviewDemand.isRequested(this)
+                            ? Math.max(8, fps) : fps,
                             System.nanoTime() - loopStartedNanos);
                     if (waitNanos < 0) {
                         captureNotifier.wait();
@@ -453,6 +454,7 @@ public abstract class AbstractBroadcastingCamera extends AbstractSettlingCamera 
     }
 
     public boolean isPreviewSuspended() {
-        return (suspendPreviewInTasks && Configuration.get().getMachine().isBusy());
+        return (suspendPreviewInTasks && Configuration.get().getMachine().isBusy()
+                && !org.openpnp.util.CameraPreviewDemand.isRequested(this));
     }
 }

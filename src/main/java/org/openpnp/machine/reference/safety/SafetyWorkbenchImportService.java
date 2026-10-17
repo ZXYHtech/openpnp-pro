@@ -296,7 +296,7 @@ public final class SafetyWorkbenchImportService {
         Location axesHome = axesHome(machine);
         if (isUsable(axesHome)) {
             upsert(model, ObjectType.HOME_POINT, "machine:axes-home",
-                    "机器 Home（轴定义）", axesHome, summary);
+                    "轴 Home 坐标（控制器定义）", axesHome, summary);
         }
         int points = axesHome == null ? 0 : 1;
         for (Head head : machine.getHeads()) {
@@ -304,7 +304,7 @@ public final class SafetyWorkbenchImportService {
                 Location home = ((AbstractHead) head).getHomingFiducialLocation();
                 if (isUsable(home)) {
                     upsert(model, ObjectType.HOME_POINT, "head:" + head.getId() + ":home",
-                            head.getName() + " · Home 基准", home, summary);
+                            head.getName() + " · 视觉 Home 基准", home, summary);
                     points++;
                 }
             }

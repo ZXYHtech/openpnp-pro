@@ -85,7 +85,7 @@ public final class CalibrationController {
             report.evaluation = new PrecisionFitter().evaluate(report.training, report.validation,
                     report.noise, request.target, request.maximumOffset,
                     request.spatial && request.fixedMarkers == null ? (request.gridSize + 1) / 2 : 2,
-                    request.spatial && request.fixedMarkers == null ? (request.gridSize + 1) / 2 : 2, request.conditioningTravel);
+                    request.spatial && request.fixedMarkers == null ? (request.gridSize + 1) / 2 : 2, machine.conditioningLimit(request));
             report.notes.addAll(report.evaluation.unavailable);
             if (report.evaluation.selected == null) {
                 report.outcome = "没有方案通过独立评估，已保持原配置。";

@@ -802,6 +802,7 @@ public class MainFrame extends JFrame {
         panelMachine.add(machineControlsPanel, BorderLayout.SOUTH);
 
         mnCommands.add(new JMenuItem(machineControlsPanel.homeAction));
+        mnCommands.add(new JMenuItem(machineControlsPanel.fullVerificationAction));
         mnCommands.add(new JMenuItem(machineControlsPanel.startStopMachineAction));
 
         int[] ctrl_shift_mask = {KeyEvent.CTRL_DOWN_MASK, KeyEvent.CTRL_DOWN_MASK | KeyEvent.SHIFT_DOWN_MASK};
@@ -1204,6 +1205,7 @@ public class MainFrame extends JFrame {
         toolbar.addSeparator(new Dimension(14, 1));
         toolbar.add(createCommandButton(machineControlsPanel.startStopMachineAction, true));
         toolbar.add(createCommandButton(machineControlsPanel.homeAction, true));
+        toolbar.add(createCommandButton(machineControlsPanel.fullVerificationAction, true));
         toolbar.add(createCommandButton(topPickAction, true));
         toolbar.addSeparator(new Dimension(14, 1));
         toolbar.add(createCommandButton(jobPanel.startPauseResumeJobAction, true));

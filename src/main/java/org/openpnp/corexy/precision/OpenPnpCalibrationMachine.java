@@ -68,6 +68,7 @@ public final class OpenPnpCalibrationMachine implements CalibrationMachine {
     private boolean originalPlannerCompensation;
     private org.openpnp.corexy.LegacyCompensationInterlock.Session legacySession;
     private final List<PrecisionSample> priorObservations = new ArrayList<>();
+    private final Map<String, CalibrationPlan.Path> fittedPaths = new LinkedHashMap<>();
     private java.util.function.BooleanSupplier cancellation = () -> false;
 
     @Override
@@ -82,10 +83,23 @@ public final class OpenPnpCalibrationMachine implements CalibrationMachine {
 
     @Override
     public List<String> preparationNotes() {
-        if (legacySession == null) { return java.util.Collections.emptyList(); }
-        Path backup = legacySession.getBackupDirectory();
-        return java.util.Collections.singletonList("已自动停用原插件 Agent、试运行及旧规划器补偿；"
-                + (backup == null ? "旧方案原本已停用。" : "原始参数备份：" + backup));
+        List<String> notes = new ArrayList<>();
+        if (legacySession != null) {
+            Path backup = legacySession.getBackupDirectory();
+            notes.add("已自动停用原插件 Agent、试运行及旧规划器补偿；"
+                    + (backup == null ? "旧方案原本已停用。" : "原始参数备份：" + backup));
+        }
+        if (!fittedPaths.isEmpty()) {
+            double shortest = Double.POSITIVE_INFINITY;
+            for (CalibrationPlan.Path path : fittedPaths.values()) {
+                shortest = Math.min(shortest, path.conditioningTravel);
+            }
+            notes.add(String.format(java.util.Locale.ROOT,
+                    "已按 X/Y 软限位和补偿余量调整 %d 条边缘 marker 路径；最短预行程 %.3f mm。"
+                    + "采样 CSV 使用实际 A/B 行程，marker 坐标及换向方向保持不变。",
+                    fittedPaths.size(), shortest));
+        }
+        return notes;
     }
 
     private void checkCancelled() {
@@ -253,6 +267,7 @@ public final class OpenPnpCalibrationMachine implements CalibrationMachine {
         }
         settings.validate();
         request = settings;
+        fittedPaths.clear();
         validatePlan(plan);
         originalSettings = PrecisionRuntime.settings();
         originalPlannerCompensation = planner instanceof org.openpnp.corexy.CoreXYAdvancedMotionPlanner
@@ -316,7 +331,8 @@ public final class OpenPnpCalibrationMachine implements CalibrationMachine {
         List<CalibrationPlan.Path> paths = new ArrayList<>(plan.training);
         paths.addAll(plan.validation);
         paths.addAll(plan.finalCheck);
-        for (CalibrationPlan.Path path : paths) {
+        for (CalibrationPlan.Path planned : paths) {
+            CalibrationPlan.Path path = safeFixedPath(planned);
             for (double[] point : path.points(settings.conditioningTravel)) {
                 Location target = location(point[0], point[1], settings.planeZ);
                 boolean fixedHome = settings.fixedMarkers != null
@@ -325,7 +341,9 @@ public final class OpenPnpCalibrationMachine implements CalibrationMachine {
                 if (fixedHome) { target = homeViewingLocation(settings); }
                 AxesLocation raw = camera.toRaw(camera.toHeadLocation(target));
                 if (!camera.isReachable(target) || !planner.isValidLocation(camera, raw)) {
-                    throw new IllegalStateException("校准路径超出软限位：" + path.id);
+                    throw new IllegalStateException(String.format(java.util.Locale.ROOT,
+                            "校准路径超出软限位：%s；目标 X=%.3f Y=%.3f mm，原始轴 X=%.3f Y=%.3f mm。",
+                            path.id, target.getX(), target.getY(), raw.getCoordinate(x), raw.getCoordinate(y)));
                 }
                 for (ReferenceControllerAxis axis : new ReferenceControllerAxis[] {x, y}) {
                     double coordinate = raw.getCoordinate(axis);
@@ -337,6 +355,33 @@ public final class OpenPnpCalibrationMachine implements CalibrationMachine {
                 }
             }
         }
+    }
+
+    @Override
+    public double conditioningLimit(CalibrationRequest settings) {
+        double limit = settings.conditioningTravel;
+        for (CalibrationPlan.Path path : fittedPaths.values()) {
+            limit = Math.min(limit, path.conditioningTravel);
+        }
+        return limit;
+    }
+
+    /** Geometry only. The same fitted path is preflighted and executed, including startup checks. */
+    CalibrationPlan.Path safeFixedPath(CalibrationPlan.Path path) throws Exception {
+        if (request.fixedMarkers == null || path.homeStart || path.direct) {
+            return path;
+        }
+        AxesLocation zero = camera.toRaw(camera.toHeadLocation(location(0, 0, request.planeZ)));
+        double margin = request.maximumOffset + 1 + 1e-6;
+        CalibrationPlan.Path fitted = FixedMarkerTravel.fit(path, request.conditioningTravel,
+                x.getSoftLimitLow().convertToUnits(LengthUnit.Millimeters).getValue() + margin - zero.getCoordinate(x),
+                x.getSoftLimitHigh().convertToUnits(LengthUnit.Millimeters).getValue() - margin - zero.getCoordinate(x),
+                y.getSoftLimitLow().convertToUnits(LengthUnit.Millimeters).getValue() + margin - zero.getCoordinate(y),
+                y.getSoftLimitHigh().convertToUnits(LengthUnit.Millimeters).getValue() - margin - zero.getCoordinate(y));
+        if (fitted != path) {
+            fittedPaths.put(path.id, fitted);
+        }
+        return fitted;
     }
 
     @Override
@@ -366,6 +411,7 @@ public final class OpenPnpCalibrationMachine implements CalibrationMachine {
     @Override
     public PrecisionSample observe(CalibrationPlan.Path path) throws Exception {
         checkCancelled();
+        path = safeFixedPath(path);
         if (path.homeStart) {
             machine.home();
             if (request.fixedMarkers != null) {
@@ -398,7 +444,7 @@ public final class OpenPnpCalibrationMachine implements CalibrationMachine {
             }
         }
         camera.waitForCompletion(CompletionType.WaitForStillstand);
-        if (!PrecisionRuntime.isActive() && request.settleMillis > 0) {
+        if ((!PrecisionRuntime.isActive() || ModelReferencedDatum.isRawStage()) && request.settleMillis > 0) {
             Thread.sleep(request.settleMillis);
         }
         if (verificationOnly) {
@@ -444,7 +490,7 @@ public final class OpenPnpCalibrationMachine implements CalibrationMachine {
     }
 
     private Location detect(Location expected) throws Exception {
-        java.awt.image.BufferedImage image = camera.capture();
+        java.awt.image.BufferedImage image = MarkerFrameCapture.capture(camera);
         org.openpnp.model.Point pixel = VisionUtils.getLocationPixels(camera, camera, expected);
         Location upp = camera.getUnitsPerPixelAtZ().convertToUnits(LengthUnit.Millimeters);
         double scale = Math.sqrt(Math.abs(upp.getX() * upp.getY()));
@@ -453,10 +499,39 @@ public final class OpenPnpCalibrationMachine implements CalibrationMachine {
         }
         double search = request.fixedMarkers == null ? Math.max(request.markerDiameter * 2, request.maximumOffset * 3)
                 : Math.max(request.markerDiameter * 2, request.fixedMarkers.homeSearchRadius);
-        MarkerDetector.Detection detection = detector.detect(image, pixel.getX(), pixel.getY(),
-                request.markerDiameter / scale, Math.min(Math.min(image.getWidth(), image.getHeight()) * .35,
-                        search / scale));
-        return VisionUtils.getPixelLocation(camera, camera, detection.x, detection.y).convertToUnits(LengthUnit.Millimeters);
+        double radius = Math.min(Math.min(image.getWidth(), image.getHeight()) * .35, search / scale);
+        try {
+            MarkerDetector.Detection detection = detector.detect(image, pixel.getX(), pixel.getY(),
+                    request.markerDiameter / scale, radius);
+            return VisionUtils.getPixelLocation(camera, camera, detection.x, detection.y).convertToUnits(LengthUnit.Millimeters);
+        }
+        catch (MarkerDetectionException failure) {
+            // Preserve the exact rejected frame, before rollback homes and changes the camera view.
+            try {
+                Path directory = CoreXYIntegration.store(configuration).getRoot().resolve("diagnostics")
+                        .resolve("marker-" + System.currentTimeMillis() + "-" + java.util.UUID.randomUUID());
+                Files.createDirectories(directory);
+                javax.imageio.ImageIO.write(image, "png", directory.resolve("frame.png").toFile());
+                Properties detail = new Properties();
+                detail.setProperty("expected.location", expected.toString());
+                detail.setProperty("camera.location", camera.getLocation().toString());
+                detail.setProperty("expected.pixel", pixel.toString());
+                detail.setProperty("expected.diameter.pixels", Double.toString(request.markerDiameter / scale));
+                detail.setProperty("search.radius.pixels", Double.toString(radius));
+                detail.setProperty("units.per.pixel", upp.toString());
+                detail.setProperty("legacy.enabled", Boolean.toString(CoreXYRuntime.isLegacyEnabled()));
+                detail.setProperty("precision.enabled", Boolean.toString(PrecisionRuntime.isActive()));
+                detail.setProperty("failure", failure.getMessage());
+                try (java.io.Writer writer = Files.newBufferedWriter(directory.resolve("capture.properties"), StandardCharsets.UTF_8)) {
+                    detail.store(writer, "Rejected marker frame");
+                }
+                throw new MarkerDetectionException(failure.getMessage() + " [" + directory + "]", failure);
+            }
+            catch (java.io.IOException diagnosticFailure) {
+                failure.addSuppressed(diagnosticFailure);
+                throw failure;
+            }
+        }
     }
 
     @Override
@@ -526,7 +601,7 @@ public final class OpenPnpCalibrationMachine implements CalibrationMachine {
             registerBoard(notes);
         }
         if (settings.fixedMarkers != null) {
-            notes.add("使用 5 个永久固定 marker；Home 点为每次复位的视觉坐标基准，不改变其余点的相对位置。");
+            notes.add("使用机器 Home 与四个临时覆盖点；校准后覆盖点可移除，完整验证时按保存位置放回。Home 基准需保留。");
             notes.add("5 点只能评估覆盖区的低阶空间误差；不能证明未采样位置的高频误差已消除。");
         }
         return notes;
@@ -928,6 +1003,10 @@ public final class OpenPnpCalibrationMachine implements CalibrationMachine {
 
     /** Read-only measurement setup, also usable before machine.setHomed(true) in the Home tail. */
     public void prepareVerification(PrecisionProfile profile) throws Exception {
+        prepareVerification(profile, true);
+    }
+
+    public void prepareVerification(PrecisionProfile profile, boolean full) throws Exception {
         profile.validate(fingerprint());
         if (profile.fixedMarkers == null || !machine.isEnabled() || !planner.isHomed()) {
             throw new IllegalStateException("需要已连接、完成机械寻零并已保存的 5 marker 补偿方案。");
@@ -953,7 +1032,17 @@ public final class OpenPnpCalibrationMachine implements CalibrationMachine {
         verificationOnly = true;
         originalAccelerationX = x.getAccelerationPerSecond2();
         originalAccelerationY = y.getAccelerationPerSecond2();
-        validatePlan(new CalibrationPlan(FixedMarkerVerifier.verificationPaths(profile.fixedMarkers, profile.settlingMillis)));
+        if (full) {
+            validatePlan(new CalibrationPlan(profile.modelDatumMarkerId.isEmpty()
+                    ? FixedMarkerVerifier.verificationPaths(profile.fixedMarkers, profile.settlingMillis)
+                    : ModelReferencedDatum.verificationPaths(profile)));
+        }
+        else {
+            Location view = homeViewingLocation(request);
+            if (!camera.isReachable(view) || !planner.isValidLocation(camera, camera.toRaw(camera.toHeadLocation(view)))) {
+                throw new IllegalStateException("Home 基准拍摄位置不可达。");
+            }
+        }
         camera.actuateLightBeforeCapture();
     }
 
@@ -965,6 +1054,32 @@ public final class OpenPnpCalibrationMachine implements CalibrationMachine {
             camera.actuateLightAfterCapture();
             verificationOnly = false;
         }
+    }
+
+    /** Inspect an existing marker at safe Z; never changes the calibrated point or compensation. */
+    public void viewFixedMarker(FixedMarkerSetup setup, int index) throws Exception {
+        setup.validate();
+        if (!machine.isEnabled() || !machine.isHomed() || index < 0 || index >= setup.markers.size()) {
+            throw new IllegalStateException("请先连接机器并完成 Home，再移动查看固定 marker。");
+        }
+        for (Head head : machine.getHeads()) {
+            for (Nozzle nozzle : head.getNozzles()) {
+                if (nozzle.getPart() != null) {
+                    throw new IllegalStateException("请先移除吸嘴上的元件，再移动查看 marker。");
+                }
+            }
+        }
+        FixedMarkerSetup.Marker marker = setup.markers.get(index);
+        Location target = index == setup.homeIndex ? homeViewingLocation(setup.toRequest())
+                : location(marker.x, marker.y, setup.planeZ);
+        AxesLocation raw = camera.toRaw(camera.toHeadLocation(target));
+        if (!camera.isReachable(target) || !planner.isValidLocation(camera, raw)) {
+            throw new IllegalStateException("marker 拍摄位置超出机器软限位。");
+        }
+        camera.actuateLightBeforeCapture();
+        MovableUtils.moveToLocationAtSafeZ(camera, target, .35 * machine.getSpeed());
+        camera.waitForCompletion(CompletionType.WaitForStillstand);
+        // Keep illumination on while the operator inspects the live view.
     }
 
     public void subtractDatum(double measuredX, double measuredY) throws Exception {
@@ -979,7 +1094,10 @@ public final class OpenPnpCalibrationMachine implements CalibrationMachine {
     private void alignCalibrationDatum() throws Exception {
         PrecisionProfile provisional = new PrecisionProfile();
         provisional.fixedMarkers = request.fixedMarkers;
-        provisional.noise = noise;
+        // Preparation can re-home before measureNoise() runs. Use the same optical
+        // resolution floor here so that this stage does not demand fictitious precision.
+        Location scale = camera.getUnitsPerPixelAtZ().convertToUnits(LengthUnit.Millimeters);
+        provisional.noise = Math.max(noise, Math.max(Math.abs(scale.getX()), Math.abs(scale.getY())) * .1);
         provisional.target = request.target;
         provisional.settlingMillis = request.settleMillis;
         FixedMarkerVerifier.Backend adapter = new FixedMarkerVerifier.Backend() {

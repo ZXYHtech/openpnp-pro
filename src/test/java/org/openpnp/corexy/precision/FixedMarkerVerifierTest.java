@@ -28,6 +28,39 @@ class FixedMarkerVerifierTest {
     }
 
     @Test
+    void opticalNoiseFloorAvoidsChasingSubResolutionHomeResiduals() throws Exception {
+        PrecisionProfile profile = profile();
+        profile.noise = .029577 * .1;
+        PhysicalReferences plant = new PhysicalReferences(profile);
+        plant.driftX = .006;
+        StartupVerificationReport report = new StartupVerificationReport();
+        new FixedMarkerVerifier().alignHome(plant, profile, report, (p, m) -> {}, () -> false);
+        assertEquals(0, plant.datumWrites);
+        assertTrue(report.afterHomeResidual < profile.noise * 3);
+        plant.driftX = .1;
+        plant.ignoreDatumWrites = true;
+        assertThrows(IllegalStateException.class, () -> new FixedMarkerVerifier().alignHome(plant, profile,
+                new StartupVerificationReport(), (p, m) -> {}, () -> false));
+    }
+
+    @Test
+    void savedHomeSignatureIsPreservedWhileOnlyNewDriftIsRemoved() throws Exception {
+        PrecisionProfile profile = profile();
+        profile.homeReference = new double[] {.035, -.072};
+        PhysicalReferences plant = new PhysicalReferences(profile);
+        plant.driftX = .135;
+        plant.driftY = -.122;
+        StartupVerificationReport report = new StartupVerificationReport();
+        new FixedMarkerVerifier().alignHome(plant, profile, report, (p, m) -> {}, () -> false);
+        assertEquals(.035, plant.driftX, .001);
+        assertEquals(-.072, plant.driftY, .001);
+        assertEquals(-.1, report.homeCorrectionX, .001);
+        assertEquals(.05, report.homeCorrectionY, .001);
+        assertTrue(report.afterHomeResidual < .002);
+        assertTrue(report.samples.isEmpty());
+    }
+
+    @Test
     void aChangedNonHomeMarkerFailsEvenWhenHomeDatumLooksPerfect() throws Exception {
         PrecisionProfile profile = profile();
         PhysicalReferences plant = new PhysicalReferences(profile);

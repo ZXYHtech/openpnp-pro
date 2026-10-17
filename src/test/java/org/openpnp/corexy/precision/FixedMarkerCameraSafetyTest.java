@@ -208,7 +208,7 @@ class FixedMarkerCameraSafetyTest {
     }
 
     @Test
-    void aConditioningExcursionNearTheBoundaryIsRejectedEvenWhenTheMarkerEndpointIsSafe() throws Exception {
+    void aConditioningExcursionIsFittedWithoutChangingTheMarkerOrDirection() throws Exception {
         FixedMarkerSetup setup = settings();
         FixedMarkerSetup.Marker marker = setup.markers.get(1);
         marker.x = 48;
@@ -218,9 +218,15 @@ class FixedMarkerCameraSafetyTest {
                 marker.x, marker.y, 1, 1, .35, 1, -1, -1, 1, 0);
         assertEquals(1, path.points(request.conditioningTravel)[0][0], 1e-9);
         assertTrue(marker.x > 1 + request.maximumOffset);
-        IllegalStateException rejection = assertThrows(IllegalStateException.class,
-                () -> backend.validatePlan(new CalibrationPlan(Collections.singletonList(path))));
-        assertTrue(rejection.getMessage().contains("安全余量"));
+        backend.validatePlan(new CalibrationPlan(Collections.singletonList(path)));
+        CalibrationPlan.Path fitted = backend.safeFixedPath(path);
+        assertEquals(path.x, fitted.x);
+        assertEquals(path.a, fitted.a);
+        assertEquals(path.signA, fitted.signA);
+        assertTrue(fitted.conditioningTravel < request.conditioningTravel);
+        for (double[] point : fitted.points(request.conditioningTravel)) {
+            assertTrue(point[0] >= 1 + request.maximumOffset);
+        }
     }
 
     @Test
@@ -231,6 +237,29 @@ class FixedMarkerCameraSafetyTest {
         x.setSoftLimitLowEnabled(true);
         x.setSoftLimitHigh(new Length(2, LengthUnit.Millimeters));
         assertThrows(IllegalStateException.class, () -> homeView(request));
+    }
+
+    @Test
+    void actualMachinePlanMapsCameraOffsetsAndRightUpperHomeWithoutAnyPhysicalOperations() throws Exception {
+        x.setSoftLimitHigh(new Length(452, LengthUnit.Millimeters));
+        y.setSoftLimitHigh(new Length(454, LengthUnit.Millimeters));
+        FixedMarkerSetup setup = FixedMarkerTravelTest.actualSetup();
+        CalibrationRequest request = setup.toRequest();
+        setRequest(request);
+        backend.validatePlan(new CalibrationPlan(request));
+        backend.validatePlan(new CalibrationPlan(CalibrationPlan.fixedVerification(setup, 300)));
+        assertTrue(raw(homeView(request)).getCoordinate(x) > 430);
+        assertTrue(raw(homeView(request)).getCoordinate(y) > 330);
+        camera.setHeadOffsets(new Location(LengthUnit.Millimeters, 4, -3, 8, 0));
+        backend.validatePlan(new CalibrationPlan(request));
+        for (AxesLocation checked : planner.checked) {
+            assertTrue(checked.getCoordinate(x) >= 0 && checked.getCoordinate(x) <= 452);
+            assertTrue(checked.getCoordinate(y) >= 0 && checked.getCoordinate(y) <= 454);
+        }
+        assertFalse(backend.preparationNotes().isEmpty());
+        assertTrue(backend.conditioningLimit(request) >= 3);
+        assertTrue(backend.conditioningLimit(request) < 18,
+                "Model transitions must fit the actual edge-marker conditioning stroke.");
     }
 
     private AxesLocation raw(Location location) throws Exception {

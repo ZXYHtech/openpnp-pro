@@ -179,6 +179,7 @@ public class MachineControlsPanel extends JPanel {
         }
         boolean enabled = Configuration.get().getMachine().isEnabled();
         homeAction.setEnabled(enabled);
+        fullVerificationAction.setEnabled(enabled);
         jogControlsPanel.setEnabled(enabled);
         targetCameraAction.setEnabled(enabled && selectedTool != camera);
         targetToolAction.setEnabled(enabled && selectedTool == camera);
@@ -433,6 +434,19 @@ public class MachineControlsPanel extends JPanel {
         }
     }
     public HomeAction homeAction = new HomeAction();
+
+    public Action fullVerificationAction = new AbstractAction("完整验证…") {
+        {
+            putValue(SHORT_DESCRIPTION, "手动检查 Home 和四个临时 marker 的补偿误差；普通复位只检查 Home");
+        }
+        @Override public void actionPerformed(ActionEvent event) {
+            UiUtils.messageBoxOnException(() -> {
+                org.openpnp.corexy.ui.FixedMarkerDialog dialog =
+                        new org.openpnp.corexy.ui.FixedMarkerDialog(null, Configuration.get());
+                dialog.showFullVerification();
+            });
+        }
+    };
 
     @SuppressWarnings("serial")
     public Action targetToolAction = new AbstractAction(null, Icons.centerTool) {

@@ -22,11 +22,18 @@ public final class SettlingOptimizer {
         for (int delay : new int[] {0, 25, 75, 150, 300, 600, 1000}) {
             List<Double> errors = new ArrayList<>();
             for (int repeat = 0; repeat < 8; repeat++) {
-                double[] value = valid(probe.measure(delay));
-                errors.add(Math.hypot(value[0] - center[0], value[1] - center[1]));
+                try {
+                    double[] value = valid(probe.measure(delay));
+                    errors.add(Math.hypot(value[0] - center[0], value[1] - center[1]));
+                }
+                catch (MarkerDetectionException unusableShortDelayFrame) {
+                    // A deliberately short delay can return an in-flight/blurred frame.
+                    // Reject this candidate; motion, limits and reference failures still abort.
+                    break;
+                }
             }
             java.util.Collections.sort(errors);
-            if (errors.get(7) <= tolerance) {
+            if (errors.size() == 8 && errors.get(7) <= tolerance) {
                 return delay;
             }
         }

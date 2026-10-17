@@ -30,7 +30,7 @@ class FixedMarkerUiTest {
         SwingUtilities.invokeAndWait(() -> {
             FixedMarkerGuidePanel panel = new FixedMarkerGuidePanel();
             panel.setSize(430, 280);
-            int[] x = {40, 390, 390, 40, 215}, y = {222, 222, 62, 62, 142};
+            int[] x = {390, 40, 40, 390, 215}, y = {62, 62, 222, 222, 142};
             int green = new Color(85, 211, 179).getRGB();
             int orange = new Color(238, 152, 39).getRGB();
             BufferedImage image = render(panel);
@@ -70,6 +70,13 @@ class FixedMarkerUiTest {
         saved.maximumOffset = .3;
         saved.settleMillis = 450;
         saved.verifyOnStartup = false;
+        org.openpnp.machine.reference.ReferenceMachine machine = new org.openpnp.machine.reference.ReferenceMachine();
+        Configuration.get().setMachine(machine);
+        org.openpnp.machine.reference.ReferenceHead head = new org.openpnp.machine.reference.ReferenceHead();
+        machine.addHead(head);
+        head.setVisualHomingMethod(org.openpnp.spi.base.AbstractHead.VisualHomingMethod.ResetToFiducialLocation);
+        head.setHomingFiducialLocation(new org.openpnp.model.Location(org.openpnp.model.LengthUnit.Millimeters,
+                saved.homeMarker().x, saved.homeMarker().y, 0, 0));
         CoreXYIntegration.store(Configuration.get()).saveFixedMarkers(saved);
         final FixedMarkerDialog[] dialog = {null};
         try {
@@ -79,7 +86,8 @@ class FixedMarkerUiTest {
                     JTable table = (JTable) field(dialog[0], "table");
                     assertEquals(5, table.getRowCount());
                     assertFalse(table.isCellEditable(0, 0));
-                    assertTrue(table.isCellEditable(0, 2));
+                    assertFalse(table.isCellEditable(0, 2));
+                    assertTrue(table.isCellEditable(1, 2));
                     assertTrue(((JButton) field(dialog[0], "start")).isEnabled());
                     FixedMarkerSetup actual = read(dialog[0]);
                     assertEquals("ref-3", actual.homeMarker().id);
@@ -121,7 +129,7 @@ class FixedMarkerUiTest {
                 assertFalse(((JButton) field(dialog, "start")).isEnabled(), "All five coordinates are needed before calibration.");
                 FixedMarkerDialog initial = dialog;
                 InvocationTargetException failure = assertThrows(InvocationTargetException.class, () -> read(initial));
-                assertTrue(failure.getCause().getMessage().contains("第 1"));
+                assertTrue(failure.getCause().getMessage().contains("Home"));
                 dialog.addNotify();
                 dialog.validate();
                 JTable table = (JTable) field(dialog, "table");
@@ -284,6 +292,26 @@ class FixedMarkerUiTest {
             setup.markers.add(new FixedMarkerSetup.Marker("ref-" + i, "固定点 " + i, points[i][0], points[i][1]));
         }
         return setup;
+    }
+
+    @Test
+    void recordedLayoutPlacesHomeInTheRightUpperCornerAndKeepsPhysicalAspectRatio() throws Exception {
+        FixedMarkerGuidePanel panel = new FixedMarkerGuidePanel();
+        panel.setMarkerPositions(new double[][] {{434.94, 335.92}, {18.12, 292.49},
+                {43.90, 150.63}, {401.41, 86.33}, {234.18, 148.60}});
+        int[][] pixels = panel.markerPixels(40, 390, 62, 222);
+        for (int i = 1; i < 5; i++) {
+            assertTrue(pixels[0][0] > pixels[0][i]);
+            assertTrue(pixels[1][0] < pixels[1][i]);
+        }
+        double scaleX = (pixels[0][0] - pixels[0][1]) / (434.94 - 18.12);
+        double scaleY = (pixels[1][3] - pixels[1][0]) / (335.92 - 86.33);
+        assertEquals(scaleX, scaleY, .005);
+        panel.setSize(430, 280);
+        String preview = System.getProperty("corexy.fixed.layout.preview");
+        if (preview != null) {
+            javax.imageio.ImageIO.write(render(panel), "png", new java.io.File(preview));
+        }
     }
 
     private static BufferedImage render(FixedMarkerGuidePanel panel) {

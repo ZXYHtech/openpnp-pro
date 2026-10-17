@@ -1109,9 +1109,10 @@ public class SafetyWorkbenchDialog extends JDialog {
         panel.setBorder(BorderFactory.createTitledBorder(
                 "原生控制面板（同步动作、速度与步距）"));
 
-        JPanel system = new JPanel(new GridLayout(1, 3, 5, 5));
+        JPanel system = new JPanel(new GridLayout(1, 4, 5, 5));
         system.add(nativeActionButton(controls.startStopMachineAction, "机器启动 / 停止"));
         system.add(nativeActionButton(controls.homeAction, "机器回零"));
+        system.add(nativeActionButton(controls.fullVerificationAction, "完整验证…"));
         JButton copy = new JButton(controls.copyDroAction);
         copy.setToolTipText("复制原生控制面板当前坐标");
         system.add(copy);

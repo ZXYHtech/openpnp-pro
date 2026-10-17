@@ -17,6 +17,10 @@ public interface CalibrationMachine {
     }
     default void validatePlan(CalibrationPlan plan) throws Exception {
     }
+    /** Fitting must not assume a saturated reversal longer than the shortest executed conditioner. */
+    default double conditioningLimit(CalibrationRequest request) {
+        return request.conditioningTravel;
+    }
     double measureNoise() throws Exception;
     PrecisionSample observe(CalibrationPlan.Path path) throws Exception;
     void apply(PrecisionModel model, int settling) throws Exception;

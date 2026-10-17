@@ -10,10 +10,56 @@ import java.awt.RenderingHints;
 import javax.swing.JPanel;
 import javax.swing.Timer;
 
-/** Offline, DPI-independent guidance for the five permanent visual references. */
+/** Offline, DPI-independent guidance for Home and four removable calibration references. */
 public final class FixedMarkerGuidePanel extends JPanel {
     private final Timer timer;
     private int frame, stage, marker;
+    private double[][] positions;
+
+    public void setMarkerPositions(double[][] coordinates) {
+        positions = null;
+        if (coordinates != null && coordinates.length == 5) {
+            double[][] copy = new double[5][2];
+            boolean valid = true;
+            for (int i = 0; i < 5; i++) {
+                if (coordinates[i] == null || coordinates[i].length < 2
+                        || !Double.isFinite(coordinates[i][0]) || !Double.isFinite(coordinates[i][1])) {
+                    valid = false;
+                    break;
+                }
+                copy[i] = coordinates[i].clone();
+            }
+            if (valid) {
+                positions = copy;
+            }
+        }
+        repaint();
+    }
+
+    // X increases rightward and Y upward, as in the workbench top view.
+    int[][] markerPixels(int left, int right, int top, int bottom) {
+        int[] xs = {right, left, left, right, (left + right) / 2};
+        int[] ys = {top, top, bottom, bottom, (top + bottom) / 2};
+        if (positions != null) {
+            double minX = Double.POSITIVE_INFINITY, maxX = Double.NEGATIVE_INFINITY;
+            double minY = Double.POSITIVE_INFINITY, maxY = Double.NEGATIVE_INFINITY;
+            for (double[] point : positions) {
+                minX = Math.min(minX, point[0]);
+                maxX = Math.max(maxX, point[0]);
+                minY = Math.min(minY, point[1]);
+                maxY = Math.max(maxY, point[1]);
+            }
+            if (maxX > minX && maxY > minY) {
+                double scale = Math.min((right - left) / (maxX - minX), (bottom - top) / (maxY - minY));
+                double centerX = (minX + maxX) / 2, centerY = (minY + maxY) / 2;
+                for (int i = 0; i < 5; i++) {
+                    xs[i] = (left + right) / 2 + (int) Math.round((positions[i][0] - centerX) * scale);
+                    ys[i] = (top + bottom) / 2 - (int) Math.round((positions[i][1] - centerY) * scale);
+                }
+            }
+        }
+        return new int[][] {xs, ys};
+    }
 
     public FixedMarkerGuidePanel() {
         setPreferredSize(new Dimension(430, 280));
@@ -24,9 +70,9 @@ public final class FixedMarkerGuidePanel extends JPanel {
         });
     }
 
-    /** 0: placement; 1: record selected marker; 2: automatic calibration; 3: Home then checks. */
+    /** 0: placement; 1: recording; 2: calibration; 3: Home only; 4: manual full verification. */
     public void setGuide(int stage, int marker) {
-        if (stage < 0 || stage > 3 || marker < 0 || marker > 4) {
+        if (stage < 0 || stage > 4 || marker < 0 || marker > 4) {
             throw new IllegalArgumentException("引导阶段或 marker 编号无效。");
         }
         this.stage = stage;
@@ -63,15 +109,15 @@ public final class FixedMarkerGuidePanel extends JPanel {
             int left = 40, right = width - 40, top = 62, bottom = height - 58;
             g.setColor(new Color(227, 233, 244));
             g.fillRoundRect(left - 14, top - 14, right - left + 28, bottom - top + 28, 12, 12);
-            int[] xs = {left, right, right, left, (left + right) / 2};
-            int[] ys = {bottom, bottom, top, top, (top + bottom) / 2};
-            int active = stage >= 2 ? frame / 35 % 5 : marker;
+            int[][] pixels = markerPixels(left, right, top, bottom);
+            int[] xs = pixels[0], ys = pixels[1];
+            int active = stage == 3 ? 0 : stage >= 2 ? frame / 35 % 5 : marker;
             g.setFont(getFont().deriveFont(Font.BOLD, 12f));
             for (int i = 0; i < 5; i++) {
                 g.setColor(i == 0 ? new Color(238, 152, 39) : new Color(37, 46, 65));
                 g.fillOval(xs[i] - 6, ys[i] - 6, 12, 12);
                 g.drawString(i == 0 ? "1 · Home" : Integer.toString(i + 1), xs[i] - (i == 0 ? 10 : 4),
-                        ys[i] + (i == 2 || i == 3 ? 22 : -12));
+                        ys[i] + (ys[i] < (top + bottom) / 2 ? 22 : -12));
             }
             if (stage == 0) {
                 double phase = frame % 75 / 75.0;
@@ -98,10 +144,11 @@ public final class FixedMarkerGuidePanel extends JPanel {
             g.setFont(getFont().deriveFont(Font.BOLD, width < 390 ? 12f : 14f));
             String title = stage == 0 ? "① 固定 Home 基准与 4 个覆盖点" : stage == 1
                     ? "② 对齐第 " + (marker + 1) + " 点，记录相机位置" : stage == 2
-                    ? "③ 自动校准、独立评估、启用通过方案" : "每次启动：Home 视觉归一 → 5 点校验";
+                    ? "③ 自动校准、独立评估、启用通过方案" : stage == 3
+                    ? "普通复位：仅检查 Home 视觉基准" : "手动完整验证：Home 与四个覆盖点";
             g.drawString(title, 16, 27);
             g.setFont(getFont().deriveFont(12f));
-            g.drawString(stage == 3 ? "补偿参数先加载；视觉归一属于 Home 完成前步骤" : "示意布局；固定点须相机可见，并留足安全预行程", 16, height - 19);
+            g.drawString(stage == 3 ? "补偿参数先加载；视觉归一属于 Home 完成前步骤" : (positions == null ? "示意布局；Home 位置以实际录入坐标为准" : "按录入坐标显示：X 向右，Y 向上；等比例布局"), 16, height - 19);
         }
         finally {
             g.dispose();

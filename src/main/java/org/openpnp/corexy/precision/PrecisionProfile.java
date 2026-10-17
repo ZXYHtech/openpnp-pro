@@ -15,10 +15,23 @@ public final class PrecisionProfile {
     public FixedMarkerSetup fixedMarkers;
     public double referenceOffsetX, referenceOffsetY;
     public String solutionId = "", calibrationDirectory = "";
+    /** Empty preserves the original Home-marker datum and verification recipe. */
+    public String modelDatumMarkerId = "";
+    /** Compensated Home signature measured after a successful legacy model-datum verification. */
+    public double[] homeReference;
 
     public void validate(String currentFingerprint) {
+        if (homeReference != null && (homeReference.length != 2
+                || !Double.isFinite(homeReference[0]) || !Double.isFinite(homeReference[1]))) {
+            throw new IllegalArgumentException("Home 参考数据无效，请重新完整验证。");
+        }
         if (fixedMarkers != null) {
             fixedMarkers.validate();
+        }
+        if (modelDatumMarkerId == null || (!modelDatumMarkerId.isEmpty()
+                && (fixedMarkers == null || fixedMarkers.markers.stream()
+                    .noneMatch(marker -> marker.id.equals(modelDatumMarkerId))))) {
+            throw new IllegalArgumentException("模型基准 marker 不在已保存的固定点中。");
         }
         if (!Double.isFinite(referenceOffsetX) || !Double.isFinite(referenceOffsetY)
                 || solutionId == null || (!solutionId.isEmpty() && !solutionId.matches("[A-Za-z0-9_-]{1,96}"))

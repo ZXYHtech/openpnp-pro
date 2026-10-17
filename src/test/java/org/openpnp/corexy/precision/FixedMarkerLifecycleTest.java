@@ -44,6 +44,7 @@ class FixedMarkerLifecycleTest {
     ReferenceControllerAxis x, y;
     PrecisionProfile profile;
     FakeMeasurement backend;
+    final List<String> homeEvents = new ArrayList<>();
 
     @BeforeEach
     void fixture() throws Exception {
@@ -91,7 +92,7 @@ class FixedMarkerLifecycleTest {
     }
 
     @Test
-    void firstHomeUsesLoadedCompensationBeforePublishingHomedAndChecksAllFiveMarkers() throws Exception {
+    void firstHomeUsesLoadedCompensationBeforePublishingHomedAndChecksOnlyHome() throws Exception {
         assertFalse(machine.isHomed());
         assertTrue(PrecisionRuntime.isActive());
         assertThrows(IllegalStateException.class, () -> FixedMarkerLifecycle.assertReady(profile));
@@ -102,14 +103,14 @@ class FixedMarkerLifecycleTest {
         assertEquals(List.of(false), backend.machineHomedAtPrepare);
         assertEquals(List.of(true), backend.plannerHomedAtPrepare);
         assertTrue(backend.compensationObserved);
-        assertEquals(18, backend.fullChecks);
-        assertEquals(5, backend.checkedMarkers.size());
+        assertEquals(0, backend.fullChecks);
+        assertEquals(0, backend.checkedMarkers.size());
         assertDoesNotThrow(() -> FixedMarkerLifecycle.assertReady(profile));
         StartupVerificationReport report = reports().get(0);
         assertTrue(report.passed);
-        assertEquals("startup", report.kind);
+        assertEquals("home", report.kind);
         assertEquals(profile.solutionId, report.profileId);
-        assertEquals(18, report.samples.size());
+        assertEquals(0, report.samples.size());
         assertEquals(10, report.homeSamples.size());
         assertEquals(.08, report.rawHomeX, 1e-9);
         assertEquals(-.04, report.rawHomeY, 1e-9);
@@ -123,11 +124,11 @@ class FixedMarkerLifecycleTest {
         backend.driftY = .02;
         machine.home();
         assertEquals(2, driver.homes);
-        assertEquals(18, backend.fullChecks);
+        assertEquals(0, backend.fullChecks);
         assertEquals(2, backend.prepares);
         List<StartupVerificationReport> reports = reports();
         assertEquals(2, reports.size());
-        StartupVerificationReport second = reports.stream().filter(r -> r.kind.equals("home")).findFirst().orElseThrow();
+        StartupVerificationReport second = reports.stream().filter(r -> r.rawHomeX < 0).findFirst().orElseThrow();
         assertTrue(second.passed);
         assertTrue(second.samples.isEmpty());
         assertEquals(10, second.homeSamples.size());
@@ -137,8 +138,39 @@ class FixedMarkerLifecycleTest {
     }
 
     @Test
+    void modelReferencedHomeUsesOpposingApproachesToResolveSmallCornerResidual() throws Exception {
+        profile.modelDatumMarkerId = "M3";
+        backend.driftX = -.01;
+        backend.driftY = -.003;
+        FixedMarkerLifecycle.verifyNow(Configuration.get(), (p, message) -> {}, () -> false);
+        StartupVerificationReport report = reports().get(0);
+        assertTrue(report.passed);
+        assertEquals(1, report.homeIterations, "Coarse Home must not chase tiny reversal deadband.");
+        assertEquals(18, report.homeSamples.size(), "Five coarse frames, two four-direction rounds, and five saved Home-reference frames.");
+        assertEquals(0, report.afterHomeResidual, 1e-9, "Precise model datum still converges strictly.");
+        assertEquals(34, report.samples.size(), "Independent acceptance criteria remain unchanged.");
+    }
+
+    @Test
+    void modelDatumAllowsConvergingSmallResidualWithoutRelaxingTolerance() throws Exception {
+        profile.modelDatumMarkerId = "M3";
+        StartupVerificationReport report = new StartupVerificationReport();
+        FixedMarkerVerifier.Backend slowResponse = new FixedMarkerVerifier.Backend() {
+            double drift = .04;
+            @Override public PrecisionSample observe(CalibrationPlan.Path path) {
+                return sample(path.id, path.x, path.y, .02 + drift, -.01);
+            }
+            @Override public void subtractDatum(double dx, double dy) { drift -= dx * .5; }
+        };
+        ModelReferencedDatum.align(slowResponse, profile, report, (p, message) -> {}, () -> false);
+        assertEquals(20, report.homeSamples.size());
+        assertEquals(.0025, report.afterHomeResidual, 1e-9);
+        assertTrue(report.afterHomeResidual <= profile.noise * 3);
+    }
+
+    @Test
     void failedStartupLeavesMachineUnhomedAndKeepsRawFailureEvidence() throws Exception {
-        backend.badResidual = true;
+        backend.driftX = 2;
         assertThrows(IllegalStateException.class, machine::home);
         assertFalse(machine.isHomed());
         assertFalse(planner.isHomed());
@@ -147,7 +179,7 @@ class FixedMarkerLifecycleTest {
         assertThrows(IllegalStateException.class, () -> FixedMarkerLifecycle.assertReady(profile));
         StartupVerificationReport report = reports().get(0);
         assertFalse(report.passed);
-        assertEquals(18, report.samples.size());
+        assertEquals(0, report.samples.size());
         assertEquals("fixed-lifecycle-solution", report.profileId);
         assertEquals(1, backend.finishes);
         assertWorkflowReleased();
@@ -156,7 +188,7 @@ class FixedMarkerLifecycleTest {
     @Test
     void manualRetryHomesAndChecksAgainWithoutRecursingOrKeepingTheGlobalLock() throws Exception {
         backend.badResidual = true;
-        assertThrows(IllegalStateException.class, machine::home);
+        assertThrows(IllegalStateException.class, () -> FixedMarkerLifecycle.verifyNow(Configuration.get(), (p, message) -> {}, () -> false));
         backend.badResidual = false;
         Path saved = FixedMarkerLifecycle.verifyNow(Configuration.get(), (p, message) -> {}, () -> false);
         assertTrue(Files.isRegularFile(saved.resolve("report.json")));
@@ -192,7 +224,7 @@ class FixedMarkerLifecycleTest {
         assertThrows(Exception.class, machine::home);
         assertFalse(machine.isHomed());
         assertFalse(planner.isHomed());
-        assertEquals(18, backend.fullChecks);
+        assertEquals(0, backend.fullChecks);
         assertEquals(1, backend.finishes);
         assertThrows(IllegalStateException.class, () -> FixedMarkerLifecycle.assertReady(profile));
         assertTrue(CoreXYIntegration.getStartupStatus().contains("无法保存校验数据"));
@@ -227,9 +259,109 @@ class FixedMarkerLifecycleTest {
         }
         machine.home();
         assertEquals(1, backend.prepares);
-        assertEquals(18, backend.fullChecks);
-        assertEquals("startup", reports().get(0).kind);
+        assertEquals(0, backend.fullChecks);
+        assertEquals("home", reports().get(0).kind);
         assertDoesNotThrow(() -> FixedMarkerLifecycle.assertReady(profile));
+    }
+
+    @Test
+    void homeDrainsPendingMovesBeforeDriverHomeAndWaitsForParkBeforeReturning() throws Exception {
+        enablePark();
+        homeEvents.clear();
+        machine.home();
+        assertEquals("wait", homeEvents.get(0), "Pending moves must drain before compensation reset and G28.");
+        assertTrue(homeEvents.indexOf("driverHome") > 0);
+        assertTrue(homeEvents.lastIndexOf("wait") > homeEvents.indexOf("park"), "Home must not leave Park queued.");
+    }
+
+    @Test
+    void modelReferencedHomeMeasuresRawThenChecksThirtyFourCompensatedPaths() throws Exception {
+        profile.modelDatumMarkerId = "M3";
+        FixedMarkerLifecycle.verifyNow(Configuration.get(), (p, message) -> {}, () -> false);
+        assertTrue(machine.isHomed());
+        assertFalse(ModelReferencedDatum.isRawStage());
+        assertEquals(34, backend.fullChecks);
+        StartupVerificationReport result = reports().get(0);
+        assertTrue(result.passed);
+        assertEquals(19, result.homeSamples.size());
+        assertEquals(34, result.samples.size());
+        assertTrue(backend.rawObserved);
+        assertTrue(backend.compensationObserved);
+        assertDoesNotThrow(() -> FixedMarkerLifecycle.assertReady(profile));
+    }
+
+    @Test
+    void cancelledRawDatumRestoresCompensationButDoesNotPublishHome() throws Exception {
+        profile.modelDatumMarkerId = "M3";
+        assertThrows(CancellationException.class, () -> FixedMarkerLifecycle.verifyNow(Configuration.get(),
+                (p, message) -> {}, () -> backend.observations >= 11));
+        assertFalse(machine.isHomed());
+        assertTrue(PrecisionRuntime.isActive());
+        assertFalse(ModelReferencedDatum.isRawStage());
+        assertEquals(0, backend.fullChecks);
+        assertFalse(reports().get(0).passed);
+        assertWorkflowReleased();
+    }
+
+    @Test
+    void removedCoverageMarkersAndOldStartupFlagNeverTriggerWorkspaceMeasurements() throws Exception {
+        profile.fixedMarkers.verifyOnStartup = true;
+        backend.badResidual = true;
+        machine.home();
+        assertEquals(0, backend.fullChecks);
+        assertTrue(machine.isHomed());
+        assertDoesNotThrow(() -> FixedMarkerLifecycle.assertReady(profile));
+    }
+
+    @Test
+    void oldModelRequiresExplicitMigrationThenOnlyHomeAfterRestart() throws Exception {
+        profile.modelDatumMarkerId = "M3";
+        IllegalStateException missing = assertThrows(IllegalStateException.class, machine::home);
+        assertTrue(missing.getMessage().contains("完整验证"));
+        assertEquals(0, backend.observations, "Never automatically visit an old removable model datum.");
+        FixedMarkerLifecycle.verifyNow(Configuration.get(), (p, message) -> {}, () -> false);
+        assertNotNull(profile.homeReference);
+        profile = CoreXYIntegration.store(Configuration.get()).loadProfile(profile.fingerprint);
+        assertNotNull(profile.homeReference, "The signature must survive restart.");
+        planner.unhome();
+        PrecisionRuntime.activate(planner, profile.model, x.getId(), y.getId(), 0, .25, 1);
+        FixedMarkerLifecycle.install(Configuration.get(), profile, backend, false);
+        int fullChecks = backend.fullChecks;
+        backend.badResidual = true;
+        backend.driftX = .03;
+        backend.driftY = -.02;
+        machine.home();
+        assertEquals(fullChecks, backend.fullChecks);
+        assertTrue(machine.isHomed());
+        assertDoesNotThrow(() -> FixedMarkerLifecycle.assertReady(profile));
+    }
+
+    @Test
+    void failedFullVerificationCannotBeHiddenByAnOrdinaryHome() throws Exception {
+        backend.badResidual = true;
+        assertThrows(IllegalStateException.class,
+                () -> FixedMarkerLifecycle.verifyNow(Configuration.get(), (p, message) -> {}, () -> false));
+        FixedMarkerLifecycle.install(Configuration.get(), profile, backend, false);
+        assertThrows(IllegalStateException.class, machine::home);
+        assertFalse(machine.isHomed());
+        assertThrows(IllegalStateException.class, () -> FixedMarkerLifecycle.assertReady(profile));
+        backend.badResidual = false;
+        FixedMarkerLifecycle.verifyNow(Configuration.get(), (p, message) -> {}, () -> false);
+        assertTrue(machine.isHomed());
+    }
+
+    @Test
+    void failedLegacyStartupVerificationStillBlocksAfterUpgrade() throws Exception {
+        backend.badResidual = true;
+        assertThrows(IllegalStateException.class,
+                () -> FixedMarkerLifecycle.verifyNow(Configuration.get(), (p, message) -> {}, () -> false));
+        StartupVerificationReport legacy = reports().get(0);
+        legacy.kind = "startup";
+        CoreXYIntegration.store(Configuration.get()).saveVerification(legacy);
+        FixedMarkerLifecycle.install(Configuration.get(), profile, backend, false);
+        assertThrows(IllegalStateException.class, machine::home);
+        assertFalse(machine.isHomed());
+        assertThrows(IllegalStateException.class, () -> FixedMarkerLifecycle.assertReady(profile));
     }
 
     @Test
@@ -261,15 +393,15 @@ class FixedMarkerLifecycleTest {
         enablePark();
         machine.home();
         assertEquals(1, camera.parks);
-        assertEquals(18, backend.fullChecks);
+        assertEquals(0, backend.fullChecks);
         backend.driftX = -.03;
         backend.driftY = .02;
         machine.home();
         assertEquals(2, camera.parks);
-        assertEquals(18, backend.fullChecks);
+        assertEquals(0, backend.fullChecks);
         Path manual = FixedMarkerLifecycle.verifyNow(Configuration.get(), (p, message) -> {}, () -> false);
         assertEquals(3, camera.parks);
-        assertEquals(36, backend.fullChecks);
+        assertEquals(18, backend.fullChecks);
         assertEquals(List.of(false, false, false), backend.machineHomedAtPrepare);
         assertEquals(List.of(1, 2, 3), camera.completedChecksAtPark);
         assertEquals("manual", CoreXYIntegration.store(Configuration.get()).loadVerification(manual).kind);
@@ -412,7 +544,7 @@ class FixedMarkerLifecycleTest {
 
     private final class FakeMeasurement implements FixedMarkerLifecycle.Measurement {
         int prepares, finishes, observations, fullChecks;
-        boolean badResidual, failPreparation, compensationObserved, measuring;
+        boolean badResidual, failPreparation, compensationObserved, measuring, rawObserved;
         double driftX = .08, driftY = -.04;
         final List<Boolean> machineHomedAtPrepare = new ArrayList<>();
         final List<Boolean> plannerHomedAtPrepare = new ArrayList<>();
@@ -436,10 +568,19 @@ class FixedMarkerLifecycleTest {
             assertFalse(cancellation.getAsBoolean());
             observations++;
             AxesLocation planned = planner.probe(camera, path.x, path.y);
+            if (ModelReferencedDatum.isRawStage()) {
+                rawObserved = true;
+                assertEquals(path.x, planned.getCoordinate(x), 1e-9);
+                assertEquals(path.y, planned.getCoordinate(y), 1e-9);
+                assertTrue(PrecisionRuntime.activeOffset(planner).matches(AxesLocation.zero));
+                return sample(path.id, path.x, path.y,
+                        driftX + (path.id.startsWith("model-datum-") ? .02 : 0),
+                        driftY + (path.id.startsWith("model-datum-") ? -.01 : 0));
+            }
             assertEquals(path.x + .02, planned.getCoordinate(x), 1e-9);
             assertEquals(path.y - .01, planned.getCoordinate(y), 1e-9);
             compensationObserved = true;
-            if (path.id.startsWith("verify-")) {
+            if (path.id.startsWith("verify-") || path.id.startsWith("coupled-check-")) {
                 fullChecks++;
                 checkedMarkers.add(path.markerId);
                 return sample(path.id, path.x, path.y, badResidual ? .2 : .004, 0);
@@ -467,6 +608,7 @@ class FixedMarkerLifecycleTest {
         final List<Integer> completedChecksAtPark = new ArrayList<>();
 
         @Override public void moveTo(Location location, double speed, Motion.MotionOption... options) throws Exception {
+            homeEvents.add("park");
             Location millimeters = location.convertToUnits(LengthUnit.Millimeters);
             assertEquals(150, millimeters.getX(), 1e-9);
             assertEquals(140, millimeters.getY(), 1e-9);
@@ -486,6 +628,10 @@ class FixedMarkerLifecycleTest {
     }
 
     private final class ProbePlanner extends ReferenceAdvancedMotionPlanner {
+        @Override public void waitForCompletion(HeadMountable hm, org.openpnp.spi.MotionPlanner.CompletionType type) throws Exception {
+            homeEvents.add("wait");
+            super.waitForCompletion(hm, type);
+        }
         AxesLocation probe(HeadMountable hm, double px, double py) throws Exception {
             AxesLocation target = new AxesLocation(x, px).put(new AxesLocation(y, py));
             AxesLocation planned = createBacklashCompensatedMotion(hm, .35,
@@ -497,10 +643,11 @@ class FixedMarkerLifecycleTest {
         }
     }
 
-    private static final class CountingNullDriver extends NullDriver {
+    private final class CountingNullDriver extends NullDriver {
         int homes;
         Runnable afterHome = () -> {};
         @Override public void home(Machine machine) throws Exception {
+            homeEvents.add("driverHome");
             homes++;
             super.home(machine);
             afterHome.run();

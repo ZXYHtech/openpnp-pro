@@ -36,6 +36,9 @@ import org.openpnp.corexy.precision.DigitalTwinMachine;
 import org.openpnp.corexy.precision.FixedMarkerSetup;
 import org.openpnp.corexy.precision.OpenPnpCalibrationMachine;
 import org.openpnp.corexy.precision.PrecisionMetrics;
+import org.openpnp.corexy.precision.PrecisionProfile;
+import org.openpnp.corexy.precision.PrecisionRuntime;
+import org.openpnp.corexy.precision.CompensationActions;
 import org.openpnp.model.Configuration;
 import org.openpnp.model.LengthUnit;
 import org.openpnp.model.Location;
@@ -51,7 +54,7 @@ public final class FixedMarkerDialog extends JDialog {
             new String[] {"固定点", "用途", "X（mm）", "Y（mm）"}, 5) {
         @Override
         public boolean isCellEditable(int row, int column) {
-            return column >= 2;
+            return row > 0 && column >= 2;
         }
         @Override
         public Class<?> getColumnClass(int column) {
@@ -65,16 +68,22 @@ public final class FixedMarkerDialog extends JDialog {
     private final JSpinner planeZ = number(0, -10000, 10000, .1);
     private final JSpinner homeOffset = number(1, .001, 5, .1);
     private final JSpinner homeRadius = number(2, .001, 10, .1);
-    private final JCheckBox autoVerify = new JCheckBox("每次启动，在首次 Home 中自动校验 5 点", true);
-    private final JButton record = new JButton("记录顶部相机当前位置 → 下一点");
-    private final JButton save = new JButton("保存这 5 个固定点");
+    private final JCheckBox autoVerify = new JCheckBox("普通复位只检查 Home；完整验证由按钮手动启动", false);
+    private final JButton record = new JButton("记录覆盖点的相机位置 → 下一点");
+    private final JButton move = new JButton("移动到所选 marker 查看");
+    private final JButton enable = new JButton("启用保存方案并校验");
+    private final JButton disable = new JButton("停用补偿（保留方案）");
+    private final JLabel compensation = new JLabel();
+    private final CalibrationLivePanel live = new CalibrationLivePanel();
+    private final CalibrationCelebrationPanel celebration = new CalibrationCelebrationPanel();
+    private final JButton save = new JButton("保存 Home 与四个覆盖点");
     private final JButton start = new JButton("自动校准并启用通过方案");
-    private final JButton verify = new JButton("Home 并校验已启用方案");
+    private final JButton verify = new JButton("完整验证（Home + 四个临时点）");
     private final JButton simulation = new JButton("离线演练");
     private final JButton stop = new JButton("取消并恢复");
     private final JButton history = new JButton("打开校准与校验历史");
     private final JButton report = new JButton("打开本次原始数据");
-    private final JLabel state = new JLabel("先完成首次机械 Home，再依次对齐和记录这 5 个固定点。");
+    private final JLabel state = new JLabel("Home 自动读取；完成复位后，只需对齐并记录四个覆盖点。");
     private final JProgressBar progress = new JProgressBar(0, 100);
     private final JTextArea results = new JTextArea();
     private final JTabbedPane tabs = new JTabbedPane();
@@ -87,7 +96,7 @@ public final class FixedMarkerDialog extends JDialog {
     private final String[] markerNames = {"Home 视觉基准", "覆盖点 2", "覆盖点 3", "覆盖点 4", "覆盖点 5"};
 
     public FixedMarkerDialog(JDialog owner, Configuration configuration) throws Exception {
-        super(owner, "5 个固定 marker · 自动补偿与 Home 校验", false);
+        super(owner, "Home + 四个临时 marker · 校准与完整验证", false);
         this.configuration = configuration;
         setDefaultCloseOperation(DO_NOTHING_ON_CLOSE);
         setMinimumSize(new Dimension(900, 650));
@@ -95,8 +104,8 @@ public final class FixedMarkerDialog extends JDialog {
         setLocationRelativeTo(owner);
         JPanel preparation = new JPanel(new BorderLayout(16, 16));
         preparation.setBorder(BorderFactory.createEmptyBorder(18, 18, 18, 18));
-        preparation.add(new JLabel("<html><b>固定安装一次，后续自动使用。</b> 第 1 点是 Home 视觉基准；其余 4 点分布在工作区。"
-                + "<br>Home 点须顶部相机可见且安全可达；其余点留足换向预行程。全部 marker 保持固定、清晰、同平面。</html>"), BorderLayout.NORTH);
+        preparation.add(new JLabel("<html><b>Home 自动读取，只需添加 4 个覆盖点。</b> 校准时四点保持固定、清晰、与 Home 同平面。"
+                + "<br>补偿校准通过后四点可移除；Home 基准需保留。手动完整验证前，请按保存的位置放回四点。</html>"), BorderLayout.NORTH);
         preparation.add(guide, BorderLayout.WEST);
         JPanel input = new JPanel(new BorderLayout(8, 10));
         table.setRowHeight(28);
@@ -105,11 +114,14 @@ public final class FixedMarkerDialog extends JDialog {
         table.putClientProperty("terminateEditOnFocusLost", Boolean.TRUE);
         for (int row = 0; row < 5; row++) {
             coordinates.setValueAt("第 " + (row + 1) + " 点", row, 0);
-            coordinates.setValueAt(row == 0 ? "Home 视觉基准" : "工作区覆盖", row, 1);
+            coordinates.setValueAt(row == 0 ? "Home 自动读取（只读）" : "临时覆盖点 " + row, row, 1);
         }
         JPanel coordinatePanel = new JPanel(new BorderLayout(8, 8));
         coordinatePanel.add(new JScrollPane(table), BorderLayout.CENTER);
-        coordinatePanel.add(record, BorderLayout.SOUTH);
+        JPanel pointActions = new JPanel(new GridLayout(0, 1, 0, 6));
+        pointActions.add(record);
+        pointActions.add(move);
+        coordinatePanel.add(pointActions, BorderLayout.SOUTH);
         record.setToolTipText("将顶部相机准心对齐所选固定 marker 的中心，再记录；此按钮只读取位置。");
         input.add(coordinatePanel, BorderLayout.CENTER);
         JPanel settings = new JPanel(new GridLayout(0, 2, 8, 10));
@@ -124,15 +136,22 @@ public final class FixedMarkerDialog extends JDialog {
         parameters.add(autoVerify, BorderLayout.SOUTH);
         input.add(parameters, BorderLayout.SOUTH);
         preparation.add(input, BorderLayout.CENTER);
-        preparation.add(new JLabel("<html>① 完成首次机械 Home → ② 逐点对齐、记录 → ③ 自动校准。补偿会在独立评估通过后启用。"
-                + "<br>以后启动先加载补偿；Home 完成前用第 1 点校正复位偏移，再校验 5 点。改点位或移动 marker 后需要重新校准。"
+        preparation.add(new JLabel("<html>① 自动读取机器 Home → ② 对齐并记录四个临时点 → ③ 自动校准并独立评估。"
+                + "<br>普通复位只检查 Home；四个覆盖点校准后可移除，完整验证或重新校准时再放回。"
                 + "<br>坐标可手工修订。相机录入用于重复定位；绝对尺寸精度需要经过标定的标准坐标。</html>"), BorderLayout.SOUTH);
-        tabs.addTab("1  固定点与开始", preparation);
+        JScrollPane preparationScroll = new JScrollPane(preparation);
+        preparationScroll.setBorder(BorderFactory.createEmptyBorder());
+        preparationScroll.getVerticalScrollBar().setUnitIncrement(16);
+        tabs.addTab("1  固定点与开始", preparationScroll);
         results.setEditable(false);
         results.setLineWrap(true);
         results.setWrapStyleWord(true);
         results.setMargin(new java.awt.Insets(14, 14, 14, 14));
         tabs.addTab("2  本次结果与历史", new JScrollPane(results));
+        tabs.addTab("3  实时画面与步骤", live);
+        JScrollPane celebrationScroll = new JScrollPane(celebration);
+        celebrationScroll.setBorder(BorderFactory.createEmptyBorder());
+        tabs.addTab("4  结果", celebrationScroll);
         add(tabs, BorderLayout.CENTER);
         JPanel footer = new JPanel(new BorderLayout(8, 8));
         footer.setBorder(BorderFactory.createEmptyBorder(10, 18, 16, 18));
@@ -142,11 +161,16 @@ public final class FixedMarkerDialog extends JDialog {
         management.add(report);
         management.add(save);
         management.add(verify);
+        JPanel switching = new JPanel(new FlowLayout(FlowLayout.RIGHT, 8, 2));
+        switching.add(compensation);
+        switching.add(enable);
+        switching.add(disable);
         JPanel calibration = new JPanel(new FlowLayout(FlowLayout.RIGHT, 8, 2));
         calibration.add(simulation);
         calibration.add(stop);
         calibration.add(start);
         actions.add(management);
+        actions.add(switching);
         actions.add(calibration);
         progress.setStringPainted(true);
         footer.add(state, BorderLayout.NORTH);
@@ -160,13 +184,18 @@ public final class FixedMarkerDialog extends JDialog {
             showSettings(existing);
             state.setText("已读取固定点设置；校验使用当前已启用方案的点位。更改点位后请重新校准。");
         }
-        table.setRowSelectionInterval(0, 0);
+        refreshMachineHome();
+        autoVerify.setVisible(false);
+        table.setRowSelectionInterval(1, 1);
         table.getSelectionModel().addListSelectionListener(event -> {
             if (!event.getValueIsAdjusting() && !running && table.getSelectedRow() >= 0) {
                 guide.setGuide(1, table.getSelectedRow());
             }
         });
         record.addActionListener(event -> recordCurrent());
+        move.addActionListener(event -> viewMarker());
+        enable.addActionListener(event -> switchCompensation(true));
+        disable.addActionListener(event -> switchCompensation(false));
         save.addActionListener(event -> UiUtils.messageBoxOnException(() -> {
             CoreXYIntegration.store(configuration).saveFixedMarkers(readSettings());
             state.setText("5 个固定点已保存。执行自动校准并通过评估后才会启用新方案。");
@@ -196,7 +225,127 @@ public final class FixedMarkerDialog extends JDialog {
             }
         });
         coordinates.addTableModelListener(event -> updateSetupReadiness());
+        CalibrationResultPresentation.attachActions(celebration, tabs, verify, enable, start, report);
         updateSetupReadiness();
+        refreshProfile(false);
+        if (PrecisionRuntime.isActive()) {
+            state.setText(CoreXYIntegration.getStartupStatus());
+            progress.setValue(100);
+        }
+    }
+
+    private void showLive() {
+        try {
+            live.connect(configuration.getMachine().getDefaultHead().getDefaultCamera());
+        }
+        catch (Exception failure) { live.update("相机画面暂不可用：" + failure.getMessage()); }
+        tabs.setSelectedComponent(live);
+    }
+
+    private void viewMarker() {
+        final FixedMarkerSetup setup;
+        try { setup = readSettings(); }
+        catch (Exception failure) {
+            UiUtils.showError(this, "固定点设置无效", failure);
+            return;
+        }
+        final int row = Math.max(0, table.getSelectedRow());
+        if (!begin()) { return; }
+        showLive();
+        String message = "安全抬 Z，移动查看 " + setup.markers.get(row).id + "；不改写点位和补偿方案";
+        state.setText(message);
+        live.update(message);
+        UiUtils.submitUiMachineTask(() -> {
+            if (!cancelled.get()) { new OpenPnpCalibrationMachine(configuration).viewFixedMarker(setup, row); }
+            return null;
+        }, value -> {
+            finish();
+            state.setText(cancelled.get() ? "查看操作已结束。" : "已到达 " + setup.markers.get(row).id + "，可在实时画面检查圆形 marker。");
+            live.update(state.getText());
+        }, this::showFailure);
+    }
+
+    private void switchCompensation(boolean selected) {
+        if (!begin(false)) { return; }
+        showLive();
+        live.update(selected ? "启用保存方案并检查 Home；旧方案首次转换需完整验证" : "正在 Home 清除补偿偏移，随后停用并保留方案");
+        UiUtils.submitUiMachineTask(() -> {
+            if (selected) { return CompensationActions.enable(configuration, listener(""), cancelled::get); }
+            CoreXYIntegration.disable(configuration);
+            return (Path) null;
+        }, directory -> {
+            reportDirectory = directory;
+            finish();
+            state.setText(CoreXYIntegration.getStartupStatus());
+            live.update(state.getText());
+            refreshProfile(selected);
+            if (selected) { tabs.setSelectedIndex(3); }
+        }, this::showFailure);
+    }
+
+    private void refreshProfile(boolean celebrate) {
+        try {
+            PrecisionProfile profile = CoreXYIntegration.store(configuration).loadForRestore();
+            boolean active = PrecisionRuntime.isActive() && CoreXYIntegration.store(configuration).isEnabled();
+            compensation.setText(active ? "● 新补偿已启用" : PrecisionRuntime.isActive() ? "● 已加载，等待校验/保存" : "○ 新补偿停用");
+            enable.setEnabled(!running && profile != null && !active);
+            disable.setEnabled(!running && (PrecisionRuntime.isActive() || CoreXYIntegration.store(configuration).isEnabled()));
+            verify.setEnabled(!running && PrecisionRuntime.isActive());
+            if (profile != null) {
+                celebration.showProfile(profile, active, celebrate);
+                if (reportDirectory == null && !profile.calibrationDirectory.isEmpty()) {
+                    reportDirectory = java.nio.file.Paths.get(profile.calibrationDirectory);
+                }
+                report.setEnabled(!running && reportDirectory != null);
+                CalibrationResultPresentation.latest(celebration, configuration, profile, active);
+            }
+        }
+        catch (Exception failure) {
+            compensation.setText("方案读取失败：" + failure.getMessage());
+            enable.setEnabled(false);
+            disable.setEnabled(!running);
+        }
+    }
+
+    @Override public void dispose() {
+        live.disconnect();
+        super.dispose();
+    }
+
+    private void refreshMachineHome() {
+        try {
+            Location home = org.openpnp.corexy.precision.MachineHomeReference.read(configuration);
+            coordinates.setValueAt(home.getX(), 0, 2);
+            coordinates.setValueAt(home.getY(), 0, 3);
+            planeZ.setValue(home.getZ());
+        }
+        catch (Exception failure) {
+            coordinates.setValueAt(null, 0, 2);
+            coordinates.setValueAt(null, 0, 3);
+            state.setText(failure.getMessage());
+        }
+    }
+
+    /** Entry beside the Home button: show prerequisites before the operator starts motion. */
+    public void showFullVerification() throws Exception {
+        PrecisionProfile profile = CoreXYIntegration.store(configuration).loadForRestore();
+        StringBuilder text = new StringBuilder("完整误差验证\n\n普通复位只检查 Home。完整验证使用已保存方案的五点坐标，包含不同方向与行程的误差测量。\n"
+                + "请放回四个临时 marker，保持原位置与高度，并清空吸嘴；准备好后点击下方‘完整验证’。\n");
+        if (profile != null && profile.fixedMarkers != null) {
+            for (FixedMarkerSetup.Marker marker : profile.fixedMarkers.markers) {
+                text.append(String.format(Locale.ROOT, "\n%s：X %.4f，Y %.4f mm", marker.name, marker.x, marker.y));
+            }
+            if (!profile.modelDatumMarkerId.isEmpty() && profile.homeReference == null) {
+                text.append("\n\n此旧方案需一次完整验证建立 Home 参考。通过并保存后，普通复位不再依赖四个临时点。");
+            }
+        }
+        else { text.append("\n尚无保存方案，请先完成校准。"); }
+        results.setText(text.toString());
+        results.setCaretPosition(0);
+        tabs.setSelectedIndex(1);
+        state.setText("完整验证前，请按保存坐标放回四个临时 marker，并清空吸嘴；点击完整验证开始。");
+        setVisible(true);
+        verify.requestFocusInWindow();
     }
 
     private void showSettings(FixedMarkerSetup setup) {
@@ -227,12 +376,16 @@ public final class FixedMarkerDialog extends JDialog {
     }
 
     private FixedMarkerSetup readSettings() {
+        final Location home;
+        try { home = org.openpnp.corexy.precision.MachineHomeReference.read(configuration); }
+        catch (Exception failure) { throw new IllegalArgumentException(failure.getMessage(), failure); }
         if (table.isEditing() && !table.getCellEditor().stopCellEditing()) {
             throw new IllegalArgumentException("请完成正在编辑的坐标；只能输入有限数字。");
         }
         FixedMarkerSetup setup = new FixedMarkerSetup();
         for (int row = 0; row < 5; row++) {
-            Object x = coordinates.getValueAt(row, 2), y = coordinates.getValueAt(row, 3);
+            Object x = row == 0 ? home.getX() : coordinates.getValueAt(row, 2);
+            Object y = row == 0 ? home.getY() : coordinates.getValueAt(row, 3);
             if (!(x instanceof Number) || !(y instanceof Number)) {
                 throw new IllegalArgumentException("请先记录或填写第 " + (row + 1) + " 个 marker 的 X/Y 坐标。");
             }
@@ -244,7 +397,7 @@ public final class FixedMarkerDialog extends JDialog {
         setup.target = value(target);
         setup.conditioningTravel = value(conditioning);
         setup.planeZ = value(planeZ);
-        setup.verifyOnStartup = autoVerify.isSelected();
+        setup.verifyOnStartup = false;
         setup.maximumOffset = maximumOffset;
         setup.settleMillis = settleMillis;
         setup.maximumHomeOffset = value(homeOffset);
@@ -257,10 +410,15 @@ public final class FixedMarkerDialog extends JDialog {
     }
 
     private void recordCurrent() {
+        if (table.getSelectedRow() == 0) {
+            refreshMachineHome();
+            table.setRowSelectionInterval(1, 1);
+            return;
+        }
         if (!begin()) {
             return;
         }
-        final int row = Math.max(0, table.getSelectedRow());
+        final int row = Math.max(1, table.getSelectedRow());
         state.setText("正在读取第 " + (row + 1) + " 点的相机位置；不会移动机器。");
         try {
             UiUtils.submitUiMachineTask(() -> {
@@ -340,8 +498,8 @@ public final class FixedMarkerDialog extends JDialog {
                 @Override
                 protected void done() {
                     try {
-                        showReport(get());
                         finish();
+                        showReport(get());
                     }
                     catch (Exception failure) {
                         showFailure(failure.getCause() == null ? failure : failure.getCause());
@@ -351,6 +509,7 @@ public final class FixedMarkerDialog extends JDialog {
         }
         else {
             try {
+                showLive();
                 UiUtils.submitUiMachineTask(() -> {
                     CoreXYIntegration.store(configuration).saveFixedMarkers(setup);
                     OpenPnpCalibrationMachine backend = new OpenPnpCalibrationMachine(configuration);
@@ -364,8 +523,8 @@ public final class FixedMarkerDialog extends JDialog {
                         throw failure;
                     }
                 }, report -> {
-                    showReport(report);
                     finish();
+                    showReport(report);
                 }, this::showFailure);
             }
             catch (Exception failure) {
@@ -379,16 +538,17 @@ public final class FixedMarkerDialog extends JDialog {
         if (!begin(false)) {
             return;
         }
-        guide.setGuide(3, 0);
-        state.setText("将执行 Home 与固定点校验；使用已启用方案的点位。");
+        guide.setGuide(4, 0);
+        state.setText("完整验证：请确认四个临时 marker 已放回保存位置；将执行 Home 与五点误差测量。");
+        showLive();
         try {
             UiUtils.submitUiMachineTask(() -> CoreXYIntegration.verifyFixedMarkers(configuration, listener(""), cancelled::get), directory -> {
                 reportDirectory = directory;
                 results.setText("本次 5 点校验已完成。\n\n" + CoreXYIntegration.getStartupStatus()
                         + "\n\n校验使用已启用方案中的固定点。\n报告与原始观测：" + directory
                         + "\n\n点击“打开校准与校验历史”查看历次校准、方案和校验数据。");
-                tabs.setSelectedIndex(1);
                 finish();
+                tabs.setSelectedIndex(3);
             }, this::showFailure);
         }
         catch (Exception failure) {
@@ -400,6 +560,7 @@ public final class FixedMarkerDialog extends JDialog {
         return (percent, message) -> SwingUtilities.invokeLater(() -> {
             progress.setValue(percent);
             state.setText(prefix + message);
+            live.update(prefix + message);
         });
     }
 
@@ -417,6 +578,7 @@ public final class FixedMarkerDialog extends JDialog {
         }
         ownsWorkflow = acquireWorkflow;
         cancelled.set(false);
+        celebration.putClientProperty("result.transient", false);
         running = true;
         currentRequest = null;
         reportDirectory = null;
@@ -433,11 +595,12 @@ public final class FixedMarkerDialog extends JDialog {
         }
         setControls(true);
         guide.setGuide(1, Math.max(0, table.getSelectedRow()));
+        refreshProfile(false);
     }
 
     private void setControls(boolean enabled) {
         for (java.awt.Component component : new java.awt.Component[] {table, diameter, target, conditioning, planeZ,
-                homeOffset, homeRadius, autoVerify, record, save, start, verify, simulation, history}) {
+                homeOffset, homeRadius, autoVerify, record, move, save, start, verify, enable, disable, simulation, history}) {
             component.setEnabled(enabled);
         }
         stop.setEnabled(!enabled);
@@ -453,14 +616,25 @@ public final class FixedMarkerDialog extends JDialog {
                 complete &= coordinate instanceof Number && Double.isFinite(((Number) coordinate).doubleValue());
             }
         }
+        double[][] positions = null;
+        if (complete) {
+            positions = new double[5][2];
+            for (int row = 0; row < 5; row++) {
+                positions[row][0] = ((Number) coordinates.getValueAt(row, 2)).doubleValue();
+                positions[row][1] = ((Number) coordinates.getValueAt(row, 3)).doubleValue();
+            }
+        }
+        guide.setMarkerPositions(positions);
         save.setEnabled(!running && complete);
         start.setEnabled(!running && complete);
+        move.setEnabled(!running && complete);
     }
 
     private void requestCancellation() {
         cancelled.set(true);
         controller.cancel();
         state.setText("取消请求已发送，采集停止并恢复完成后可以关闭窗口。");
+        live.update(state.getText());
     }
 
     private void showFailure(Throwable failure) {
@@ -470,6 +644,8 @@ public final class FixedMarkerDialog extends JDialog {
         }
         finish();
         state.setText("操作未完成：" + failure.getMessage());
+        CalibrationResultPresentation.failure(celebration, failure);
+        tabs.setSelectedIndex(3);
         if (!(failure instanceof CancellationException)) {
             UiUtils.showError(this, "5 点操作未完成", failure);
         }
@@ -503,14 +679,17 @@ public final class FixedMarkerDialog extends JDialog {
         text.append("\n\n校准、补偿方案与原始 CSV：").append(reportDirectory);
         if (report.enabled) {
             text.append("\n以后启动软件，补偿会在 Home 前预载；Home 的视觉步骤修正第 1 点复位偏移。");
-            if (report.request.fixedMarkers.verifyOnStartup) {
-                text.append("本次开启了每次启动的 5 点自动校验。");
-            }
+            text.append("普通复位只检查 Home；四个覆盖点可移除，完整验证时按保存位置放回。");
         }
         results.setText(text.toString());
         results.setCaretPosition(0);
         tabs.setSelectedIndex(1);
         state.setText(report.outcome);
+        if (report.enabled && !report.simulation) {
+            refreshProfile(true);
+        }
+        CalibrationResultPresentation.report(celebration, report);
+        tabs.setSelectedIndex(3);
     }
 
     private static void appendMetrics(StringBuilder text, String label, PrecisionMetrics metrics) {

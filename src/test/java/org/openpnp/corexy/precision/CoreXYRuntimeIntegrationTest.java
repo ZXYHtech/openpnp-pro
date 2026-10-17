@@ -78,6 +78,27 @@ class CoreXYRuntimeIntegrationTest {
     }
 
     @Test
+    void rawDatumMovesPreservePartialBeltPreloadForTheFirstCompensatedMove() throws Exception {
+        PrecisionModel model = new PrecisionModel(EnumSet.of(PrecisionModel.Layer.COMMON_BIAS,
+                PrecisionModel.Layer.CONTINUOUS_REVERSAL),
+                new double[] {0, 300, 0, 300, .5, 1000, 24, 0}, 12, 34.5, 2, 2, .2);
+        model.setCoefficients(new double[] {0, 0, .1}, new double[] {0, 0, 0});
+        PrecisionRuntime.activate(planner, model, x.getId(), y.getId(), 0, .25, 1);
+        Field flag = ModelReferencedDatum.class.getDeclaredField("RAW");
+        flag.setAccessible(true);
+        @SuppressWarnings("unchecked") ThreadLocal<Boolean> raw = (ThreadLocal<Boolean>) flag.get(null);
+        raw.set(true);
+        try {
+            plan(100, 100, 76, 124); // B -48: fully preload negative.
+            plan(76, 124, 85, 115); // B +18: retain partial reversal.
+            assertTrue(PrecisionRuntime.activeOffset(planner).matches(AxesLocation.zero));
+        }
+        finally { raw.remove(); }
+        plan(85, 115, 90, 110); // B +10 must continue from the raw +18, not mechanical Home.
+        assertEquals(.1 * (-1 + 2 * 28 / 34.5), PrecisionRuntime.activeOffset(planner).getCoordinate(x), 1e-9);
+    }
+
+    @Test
     void aFailedProfileCommitCannotLeaveCalibrationHistoryMarkedEnabled() throws Exception {
         OpenPnpCalibrationMachine backend = new OpenPnpCalibrationMachine(Configuration.get());
         CalibrationController.Report report = new CalibrationController.Report();

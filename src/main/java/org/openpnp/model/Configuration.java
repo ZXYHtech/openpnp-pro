@@ -641,6 +641,11 @@ public class Configuration extends AbstractModelObject {
         }
     }
 
+    /** Persist machine-only calibration changes without prompting to save unrelated edited boards or jobs. */
+    public synchronized void saveMachineConfiguration() throws Exception {
+        saveMachine(createBackedUpFile("machine.xml", LocalDateTime.now()));
+    }
+
     /**
      * Writes a non-destructive recovery snapshot without changing regular file locations or
      * clearing dirty flags.

@@ -525,6 +525,8 @@ public class ReferenceMachine extends AbstractMachine {
 
     @Override
     public void home() throws Exception {
+        // Drain pending Park/nozzle moves before G28 and before resetting compensation state.
+        getMotionPlanner().waitForCompletion(null, org.openpnp.spi.MotionPlanner.CompletionType.WaitForStillstand);
         if (!(getMotionPlanner() instanceof
                 org.openpnp.machine.reference.driver.AbstractMotionPlanner)) {
             homeWithoutCoreXY();
@@ -534,6 +536,8 @@ public class ReferenceMachine extends AbstractMachine {
                 (org.openpnp.machine.reference.driver.AbstractMotionPlanner) getMotionPlanner());
         try {
             homeWithoutCoreXY();
+            // Park is queued by homeWithoutCoreXY(). It must finish within this Home transaction.
+            getMotionPlanner().waitForCompletion(null, org.openpnp.spi.MotionPlanner.CompletionType.WaitForStillstand);
         }
         finally {
             org.openpnp.corexy.agent.CoreXYRuntime.endHome(
