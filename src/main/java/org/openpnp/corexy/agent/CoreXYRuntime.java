@@ -373,14 +373,9 @@ public final class CoreXYRuntime {
                         .subtract(active.getLengthCoordinate(axis)));
             }
         }
-        int settling = org.openpnp.corexy.precision.PrecisionRuntime.getSettlingMillis(planner);
-        if (settling > 0 && planner.isHomed()) {
-            try { Thread.sleep(settling); }
-            catch (InterruptedException e) {
-                Thread.currentThread().interrupt();
-                throw fail("Compensation settling was interrupted.", e);
-            }
-        }
+        // Coordinate bookkeeping runs at every production standstill. The measured
+        // camera settling delay belongs only to explicit calibration observations.
+        // Driver completion, camera settling and pick/place dwell are owned by their callers.
     }
 
     public static void reset(AbstractMotionPlanner planner, String reason) {

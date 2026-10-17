@@ -224,6 +224,44 @@ class CoreXYRuntimeIntegrationTest {
     }
 
     @Test
+    void productionStandstillNeverSleepsForOrConsumesTheOneSecondMeasurementDelay() throws Exception {
+        activateProduction(.03, -.02);
+        PrecisionRuntime.activate(planner, PrecisionRuntime.getModel(), x.getId(), y.getId(), 1000, .25);
+        plan(100, 100, 120, 100);
+        assertTimeout(java.time.Duration.ofMillis(700), () -> {
+            for (int wait = 0; wait < 5; wait++) {
+                // Each driver completion refreshes physical coordinates before bookkeeping.
+                location(120.03, 99.98).setToCoordinates();
+                CoreXYRuntime.correctReportedCoordinates(planner);
+                assertEquals(120, x.getCoordinate(), 1e-9);
+                assertEquals(100, y.getCoordinate(), 1e-9);
+            }
+        });
+        assertEquals(1000, PrecisionRuntime.getSettlingMillis(planner),
+                "An explicit camera observation still receives its calibrated wait.");
+        assertEquals(0, PrecisionRuntime.getSettlingMillis(planner),
+                "Stationary frames do not wait another second.");
+        assertEquals(.03, PrecisionRuntime.activeOffset(planner).getCoordinate(x), 1e-9);
+    }
+
+    @Test
+    void conditioningWaypointsShareOneFinalMeasurementWaitAndNextMoveRearmsIt() throws Exception {
+        activateProduction(.03, -.02);
+        PrecisionRuntime.activate(planner, PrecisionRuntime.getModel(), x.getId(), y.getId(), 1000, .25);
+        for (int step = 0; step < 3; step++) {
+            plan(100 + step * 20, 100, 120 + step * 20, 100);
+            location(120.03 + step * 20, 99.98).setToCoordinates();
+            CoreXYRuntime.correctReportedCoordinates(planner);
+        }
+        assertEquals(1000, PrecisionRuntime.getSettlingMillis(planner));
+        assertEquals(0, PrecisionRuntime.getSettlingMillis(planner));
+        plan(160, 100, 170, 100);
+        assertEquals(1000, PrecisionRuntime.getSettlingMillis(planner));
+        planner.unhome();
+        assertEquals(0, PrecisionRuntime.getSettlingMillis(planner));
+    }
+
+    @Test
     void pureZRetainsPreviousXYSpeedAndSettlingIsConsumedOnlyOnce() throws Exception {
         PrecisionModel model = new PrecisionModel(EnumSet.of(PrecisionModel.Layer.COMMON_BIAS,
                 PrecisionModel.Layer.FIXED_STATE, PrecisionModel.Layer.SPEED_ACCELERATION),

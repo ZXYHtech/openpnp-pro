@@ -327,7 +327,7 @@ public final class CoreXYWizard extends JDialog {
     private void showReport(CalibrationController.Report report) {
         StringBuilder text = new StringBuilder(report.simulation ? "离线演练结果（不能代表实机精度）\n\n" : "校准评估结果\n\n");
         text.append(report.outcome).append("\n");
-        text.append(String.format(Locale.ROOT, "测量噪声：%.4f mm；等待时间：%d ms\n", report.noise, report.settlingMillis));
+        text.append(String.format(Locale.ROOT, "测量噪声：%.4f mm；校准采样等待：%d ms（不用于生产动作）\n", report.noise, report.settlingMillis));
         if (report.previousMetrics != null) {
             text.append(metrics("此前已启用的方案", report.previousMetrics));
         }

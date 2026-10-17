@@ -444,9 +444,13 @@ public final class OpenPnpCalibrationMachine implements CalibrationMachine {
             }
         }
         camera.waitForCompletion(CompletionType.WaitForStillstand);
-        if ((!PrecisionRuntime.isActive() || ModelReferencedDatum.isRawStage()) && request.settleMillis > 0) {
-            Thread.sleep(request.settleMillis);
-        }
+        // Wait only at the measured endpoint, not at every conditioning waypoint or
+        // production standstill. Compensated stationary rereads consume no second delay.
+        int observationSettling = !PrecisionRuntime.isActive() || ModelReferencedDatum.isRawStage()
+                ? request.settleMillis : PrecisionRuntime.getSettlingMillis(planner);
+        checkCancelled();
+        if (observationSettling > 0) { Thread.sleep(observationSettling); }
+        checkCancelled();
         if (verificationOnly) {
             // Separate stationary reads so the Home noise check does not repeatedly sample a cached video frame.
             Thread.sleep(50);
@@ -595,7 +599,7 @@ public final class OpenPnpCalibrationMachine implements CalibrationMachine {
             PrecisionSample sample = observe(probe);
             return new double[] {sample.correctionX, sample.correctionY};
         }, noise, settings.target);
-        notes.add("自动选择等待时间：" + settings.settleMillis + " ms；使用原始图像，不包含相机内置 settle 延迟。");
+        notes.add("自动选择校准采样等待：" + settings.settleMillis + " ms；仅在测量终点拍照前等待，不用于正常贴片动作，不包含相机内置 settle 延迟。");
         notes.add("公共偏置相对于本次 marker 基准；未使用外部绝对长度基准时，不代表绝对坐标精度。");
         if (settings.spatial && settings.fixedMarkers == null) {
             registerBoard(notes);

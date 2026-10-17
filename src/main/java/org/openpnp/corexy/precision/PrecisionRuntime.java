@@ -277,6 +277,10 @@ public final class PrecisionRuntime {
 
     public static AxesLocation activeOffset(AbstractMotionPlanner planner) { return state(planner).offset;
         }
+    /**
+     * Consume the camera measurement delay after the final observation move.
+     * Ordinary motion completion must neither sleep for nor consume this delay.
+     */
     public static int getSettlingMillis(AbstractMotionPlanner planner) {
         State state = state(planner);
         if (model == null || owner != planner || (state.homeDepth > 0 && !state.retainHomedState)

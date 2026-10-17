@@ -7,6 +7,7 @@ public final class PrecisionProfile {
     public String controllerApplyCommand = "";
     public String previousBacklashX, previousBacklashY;
     public long createdAt;
+    /** Camera measurement settling for calibration and verification, not a production dwell. */
     public int settlingMillis;
     public double noise, target;
     public PrecisionModel model;

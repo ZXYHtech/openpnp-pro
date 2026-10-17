@@ -708,7 +708,7 @@ public final class FixedMarkerDialog extends JDialog {
     private void showReport(CalibrationController.Report report) {
         StringBuilder text = new StringBuilder(report.simulation ? "5 固定点离线演练（不代表实机精度，不启用生产补偿）\n\n" : "5 固定点自动校准结果\n\n");
         text.append(report.outcome).append('\n');
-        text.append(String.format(Locale.ROOT, "测量噪声 %.4f mm · 等待时间 %d ms\n", report.noise, report.settlingMillis));
+        text.append(String.format(Locale.ROOT, "测量噪声 %.4f mm · 校准采样等待 %d ms（不用于生产动作）\n", report.noise, report.settlingMillis));
         if (report.chosen != null) {
             text.append("选用方案：").append(CoreXYWizard.layerNames(report.chosen.getLayers())).append('\n');
             appendMetrics(text, "补偿前独立路径", report.baselineFinal);
