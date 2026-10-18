@@ -1179,20 +1179,24 @@ public class JobPanel extends JPanel {
         BottomVisionRecoveryDialog.Choice choice = BottomVisionRecoveryDialog.show(
                 getTopLevelAncestor(), part, nozzle, exception);
 
-        if (choice == BottomVisionRecoveryDialog.Choice.REPICK) {
+        if (choice == BottomVisionRecoveryDialog.Choice.REPICK
+                || choice == BottomVisionRecoveryDialog.Choice.DISCARD_AND_SKIP) {
+            boolean skip = choice == BottomVisionRecoveryDialog.Choice.DISCARD_AND_SKIP;
+            String action = skip ? "抛料并跳过" : "重新拾取";
             UiUtils.submitUiMachineTask(
-                    () -> processor.discardAndRequeueFailedAlignment(nozzle),
+                    () -> skip ? processor.discardAndSkipFailedAlignment(nozzle)
+                            : processor.discardAndRequeueFailedAlignment(nozzle),
                     requeued -> {
                         if (Boolean.TRUE.equals(requeued)) {
                             jobResume();
                         }
                         else {
-                            UiUtils.showError(getTopLevelAncestor(), "重新拾取未执行",
-                                    new Exception("当前识别失败的器件状态已改变，未丢弃或重新拾取任何器件。"));
+                            UiUtils.showError(getTopLevelAncestor(), action + "未执行",
+                                    new Exception("当前识别失败的器件状态已改变，未执行抛料、跳过或重新拾取。"));
                         }
                     },
                     failure -> UiUtils.showError(getTopLevelAncestor(),
-                            "重新拾取失败，任务保持暂停",
+                            action + "失败，任务保持暂停",
                             new Exception("未能完成旧器件的丢弃，任务保持暂停。请检查机器状态后再继续。", failure)));
         }
         else if (choice == BottomVisionRecoveryDialog.Choice.RETRY_VISION) {

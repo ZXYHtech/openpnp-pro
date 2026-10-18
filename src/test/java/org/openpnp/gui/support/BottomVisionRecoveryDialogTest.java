@@ -84,6 +84,7 @@ class BottomVisionRecoveryDialogTest {
                         }
                         assertTrue(visibleText.toString().contains("丢弃当前吸嘴上的器件"));
                         assertTrue(visibleText.toString().contains("保留当前吸嘴上的器件"));
+                        assertTrue(visibleText.toString().contains("该位号保留未贴装状态"));
                         assertFalse(visibleText.toString().contains("No results found"));
                         assertFalse(visibleText.toString().contains("Retry Vision"));
                         assertFalse(visibleText.toString().contains("Discard + Re-pick"));

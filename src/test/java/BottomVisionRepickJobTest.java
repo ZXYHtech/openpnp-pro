@@ -21,16 +21,29 @@ import org.openpnp.spi.base.AbstractMachine;
 
 class BottomVisionRepickJobTest {
     @Test
-    @SuppressWarnings("unchecked")
     void failedVisionIsDiscardedRepickedAndPlacedThroughTheNormalJobPipeline() throws Exception {
+        runRecovery(false);
+    }
+
+    @Test
+    void discardAndSkipContinuesOtherPlacementsWithoutRepickingTheFailedOne() throws Exception {
+        runRecovery(true);
+    }
+
+    @SuppressWarnings("unchecked")
+    private void runRecovery(boolean skip) throws Exception {
         Configuration.initialize();
         Machine machine = new ReferenceJobProcessorRetryTests.MachineBuilder()
                 .head("H1").nozzleTip("NT1").nozzle("N1", "NT1")
                 .topCamera("TOP").bottomCamera("BOTTOM").build();
-        Job job = new ReferenceJobProcessorRetryTests.JobBuilder()
+        ReferenceJobProcessorRetryTests.JobBuilder builder = new ReferenceJobProcessorRetryTests.JobBuilder()
                 .board("B1", 10, 10, 10, -10).packag("R0402", "NT1")
                 .part("R0402-1k", "R0402").feeder("F1", "R0402-1k", 100, 20, -5, 0)
-                .placement("R1", "R0402-1k", 10, 10, 0).build();
+                .placement("R1", "R0402-1k", 10, 10, 0);
+        if (skip) {
+            builder.placement("R2", "R0402-1k", 20, 20, 0);
+        }
+        Job job = builder.build();
         ((ReferenceJobProcessorRetryTests.TestFeeder) machine.getFeederByName("F1")).setPartCount(10);
         ReferenceBottomVision vision = mock(ReferenceBottomVision.class);
         when(vision.isEnabled()).thenReturn(true);
@@ -63,14 +76,15 @@ class BottomVisionRepickJobTest {
                 catch (JobProcessorException failure) {
                     assertFalse(recovered, "Only the first recognition may fail");
                     assertTrue(processor.canRecoverFailedAlignment(nozzle));
-                    assertTrue(processor.discardAndRequeueFailedAlignment(nozzle));
+                    assertTrue(skip ? processor.discardAndSkipFailedAlignment(nozzle)
+                            : processor.discardAndRequeueFailedAlignment(nozzle));
                     recovered = true;
                 }
             }
             assertTrue(recovered);
-            assertTrue(finished, "Re-pick must finish the original placement");
+            assertTrue(finished, "Recovery must allow the task to finish");
             assertEquals(2, ((ReferenceJobProcessorRetryTests.TestNozzle) nozzle).getPickCount());
-            assertEquals(0, job.getActivePlacements(job.getRootPanelLocation()));
+            assertEquals(skip ? 1 : 0, job.getActivePlacements(job.getRootPanelLocation()));
             assertNull(nozzle.getPart());
         }
         finally {

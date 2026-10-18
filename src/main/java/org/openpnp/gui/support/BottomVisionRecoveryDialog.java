@@ -26,6 +26,7 @@ public final class BottomVisionRecoveryDialog {
     public enum Choice {
         REPICK("重新拾取器件"),
         RETRY_VISION("重试视觉识别"),
+        DISCARD_AND_SKIP("抛料并跳过"),
         KEEP_PAUSED("保持暂停"),
         ABORT("终止贴片任务");
 
@@ -62,6 +63,8 @@ public final class BottomVisionRecoveryDialog {
         content.add(description("重新拾取器件", "丢弃当前吸嘴上的器件，从飞达重新取料并再次识别。"
                 + "其他吸嘴先完成当前周期，该器件随后自动重新拾取。"));
         content.add(description("重试视觉识别", "保留当前吸嘴上的器件，仅重新执行底部视觉识别，不重新取料。"));
+        content.add(description("抛料并跳过", "丢弃当前吸嘴上的器件，跳过该贴片位并继续其他贴装，不重新取料。"
+                + "该位号保留未贴装状态，便于后续补贴。"));
         content.add(description("保持暂停", "暂不执行动作，可先检查器件是否吸附牢固、供料和相机图像。"));
         content.add(description("终止贴片任务", "结束当前任务，按正常终止流程处理吸嘴上剩余的器件。"));
         content.add(Box.createVerticalStrut(8));

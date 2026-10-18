@@ -109,6 +109,34 @@ class BottomVisionRecoveryTest {
     }
 
     @Test
+    void discardAndSkipMarksErrorWithoutRequeuingOrMarkingPlaced() throws Exception {
+        assertThrows(JobProcessorException.class, processor::next);
+        assertFalse(processor.discardAndSkipFailedAlignment(otherNozzle));
+        assertTrue(processor.discardAndSkipFailedAlignment(failedNozzle));
+        assertNull(carried.get());
+        assertEquals(Status.Errored, failed.jobPlacement.getStatus());
+        assertTrue(failed.jobPlacement.getError().getMessage().contains("尚未贴装"));
+        assertNull(failed.alignmentOffsets);
+        assertEquals(Status.Processing, other.jobPlacement.getStatus());
+        assertFalse(processor.discardAndSkipFailedAlignment(failedNozzle));
+        assertFalse(processor.discardAndRequeueFailedAlignment(failedNozzle));
+        verify(failedNozzle, times(1)).place();
+        verify(otherNozzle, never()).place();
+        assertTrue(processor.next());
+        verify(vision).findOffsets(any(), any(), any(), eq(otherNozzle));
+    }
+
+    @Test
+    void failedDiscardCannotSkipThePlacement() throws Exception {
+        assertThrows(JobProcessorException.class, processor::next);
+        doThrow(new Exception("Discard actuator failed")).when(failedNozzle).place();
+        assertThrows(JobProcessorException.class, () -> processor.discardAndSkipFailedAlignment(failedNozzle));
+        assertEquals(Status.Processing, failed.jobPlacement.getStatus());
+        assertNull(failed.jobPlacement.getError());
+        assertTrue(processor.canRecoverFailedAlignment(failedNozzle));
+    }
+
+    @Test
     void discardFailureKeepsThePlacementPausedAndRecoverable() throws Exception {
         assertThrows(JobProcessorException.class, processor::next);
         doThrow(new Exception("Discard actuator failed")).when(failedNozzle).place();

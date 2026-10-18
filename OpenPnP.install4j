@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <install4j version="10.0.5" transformSequenceNumber="10">
   <directoryPresets config="./.github/OpenPnP-Developer-ID-Application.p12" />
-  <application name="OpenPnP Pro" applicationId="7361-2056-4119-2601" mediaDir="./installers" mediaFilePattern="${compiler:sys.fullName}-${compiler:sys.platform}-${compiler:mediaFileVersion}" shortName="openpnp-pro" publisher="OpenPnP Pro" publisherWeb="http://openpnp.org" version="2.6P3-beta56" allPathsRelative="true" macVolumeId="2f75d25b539292d5" javaMinVersion="11">
+  <application name="OpenPnP Pro" applicationId="7361-2056-4119-2601" mediaDir="./installers" mediaFilePattern="${compiler:sys.fullName}-${compiler:sys.platform}-${compiler:mediaFileVersion}" shortName="openpnp-pro" publisher="OpenPnP Pro" publisherWeb="http://openpnp.org" version="2.6P3-beta57" allPathsRelative="true" macVolumeId="2f75d25b539292d5" javaMinVersion="11">
     <variables>
       <variable name="native_path" />
       <variable name="mediaFileVersion" value="${compiler:sys.version}" />
@@ -76,7 +76,7 @@
       <splashScreen bitmapFile="./logo/OpenPnP-logo.iconset/icon_128x128.png" />
       <java mainClass="org.openpnp.Main" vmParameters="-Xms64m -Xmx1536m -XX:+UseG1GC -XX:MaxGCPauseMillis=100 --add-opens=java.base/java.lang=ALL-UNNAMED --add-opens=java.desktop/java.awt=ALL-UNNAMED --add-opens=java.desktop/java.awt.color=ALL-UNNAMED">
         <classPath>
-          <archive location="openpnp-gui-2.6P3-beta56.jar" failOnError="false" />
+          <archive location="openpnp-gui-2.6P3-beta57.jar" failOnError="false" />
           <scanDirectory location="lib" failOnError="false" />
         </classPath>
         <nativeLibraryDirectories>

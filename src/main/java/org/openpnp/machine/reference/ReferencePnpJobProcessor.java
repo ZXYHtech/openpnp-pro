@@ -262,6 +262,17 @@ public class ReferencePnpJobProcessor extends AbstractPnpJobProcessor {
      */
     public synchronized boolean discardAndRequeueFailedAlignment(Nozzle nozzle)
             throws JobProcessorException {
+        return discardFailedAlignment(nozzle, true);
+    }
+
+    /** Discard and skip this placement for this run, leaving it unplaced for later repair. */
+    public synchronized boolean discardAndSkipFailedAlignment(Nozzle nozzle)
+            throws JobProcessorException {
+        return discardFailedAlignment(nozzle, false);
+    }
+
+    private boolean discardFailedAlignment(Nozzle nozzle, boolean requeue)
+            throws JobProcessorException {
         PlannedPlacement failedPlacement = getFailedAlignment(nozzle);
         if (failedPlacement == null) {
             return false;
@@ -271,7 +282,13 @@ public class ReferencePnpJobProcessor extends AbstractPnpJobProcessor {
         }
 
         discard(nozzle);
-        failedPlacement.jobPlacement.setStatus(Status.Pending);
+        if (requeue) {
+            failedPlacement.jobPlacement.setStatus(Status.Pending);
+        }
+        else {
+            failedPlacement.jobPlacement.setError(new JobProcessorException(nozzle,
+                    "底部视觉识别失败，已按操作员选择抛料并跳过。该位号尚未贴装，可在后续补贴。"));
+        }
         failedPlacement.alignmentOffsets = null;
         ((Align) currentStep).failedPlacement = null;
         return true;
