@@ -265,6 +265,29 @@ public class ReferencePnpJobProcessor extends AbstractPnpJobProcessor {
         return discardFailedAlignment(nozzle, true);
     }
 
+    /** Re-pick immediately through the normal pick pipeline, without any discard operation. */
+    public synchronized boolean repickFailedAlignment(Nozzle nozzle) throws JobProcessorException {
+        PlannedPlacement failed = getFailedAlignment(nozzle);
+        if (failed == null) {
+            return false;
+        }
+        if (nozzle.getPart() != null && nozzle.getPart() != failed.jobPlacement.getPlacement().getPart()) {
+            throw new JobProcessorException(nozzle, "吸嘴上的器件已经改变，未重新拾取。请保持暂停并检查机器状态。");
+        }
+        try {
+            nozzle.clearPartForRepick();
+        }
+        catch (Exception failure) {
+            throw new JobProcessorException(nozzle, failure);
+        }
+        failed.alignmentOffsets = null;
+        // Keep this Align step and its other nozzles intact. A failed pick stays recoverable;
+        // only a successful pick clears the recovery token before normal vision resumes.
+        new Pick(java.util.Collections.singletonList(failed), false).stepImpl(failed);
+        ((Align) currentStep).failedPlacement = null;
+        return true;
+    }
+
     /** Discard and skip this placement for this run, leaving it unplaced for later repair. */
     public synchronized boolean discardAndSkipFailedAlignment(Nozzle nozzle)
             throws JobProcessorException {
@@ -1436,9 +1459,15 @@ public class ReferencePnpJobProcessor extends AbstractPnpJobProcessor {
      */
     protected class Pick extends PlannedPlacementStep {
         HashMap<PlannedPlacement, Integer> retries = new HashMap<>();
+        private final boolean discardOnPickFailure;
         
         public Pick(List<PlannedPlacement> plannedPlacements) {
+            this(plannedPlacements, true);
+        }
+
+        private Pick(List<PlannedPlacement> plannedPlacements, boolean discardOnPickFailure) {
             super(plannedPlacements);
+            this.discardOnPickFailure = discardOnPickFailure;
         }
         
         @Override
@@ -1538,6 +1567,9 @@ public class ReferencePnpJobProcessor extends AbstractPnpJobProcessor {
                 }
                 catch (JobProcessorException jpe) {
                     lastException = jpe;
+                    if (!discardOnPickFailure) {
+                        throw jpe;
+                    }
                     discard(nozzle);
                     continue;
                 }
@@ -3089,7 +3121,10 @@ public class ReferencePnpJobProcessor extends AbstractPnpJobProcessor {
                         }
                     }
                 }
-                Logger.debug("Optimised: {} rank {} from {}",bestPlacement,bestPlacement.getRank(),compatibleJobPlacements.size());
+                if (bestPlacement != null) {
+                    Logger.debug("Optimised: {} rank {} from {}", bestPlacement,
+                            bestPlacement.getRank(), compatibleJobPlacements.size());
+                }
             }
             // if bestPlacement is still null, use the first
             if (bestPlacement == null) {

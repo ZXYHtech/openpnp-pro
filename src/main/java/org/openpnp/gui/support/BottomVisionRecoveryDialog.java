@@ -60,8 +60,8 @@ public final class BottomVisionRecoveryDialog {
         content.add(Box.createVerticalStrut(10));
         content.add(new JLabel("器件：" + part.getId() + "    吸嘴：" + nozzle.getName()));
         content.add(Box.createVerticalStrut(12));
-        content.add(description("重新拾取器件", "丢弃当前吸嘴上的器件，从飞达重新取料并再次识别。"
-                + "其他吸嘴先完成当前周期，该器件随后自动重新拾取。"));
+        content.add(description("重新拾取器件", "不抛料，直接从飞达重新拾取器件并再次识别。"
+                + "保留正常取料前检测；其他吸嘴保持当前周期状态。"));
         content.add(description("重试视觉识别", "保留当前吸嘴上的器件，仅重新执行底部视觉识别，不重新取料。"));
         content.add(description("抛料并跳过", "丢弃当前吸嘴上的器件，跳过该贴片位并继续其他贴装，不重新取料。"
                 + "该位号保留未贴装状态，便于后续补贴。"));

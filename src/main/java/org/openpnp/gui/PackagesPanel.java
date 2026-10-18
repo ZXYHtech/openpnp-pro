@@ -261,6 +261,7 @@ public class PackagesPanel extends JPanel implements WizardContainer {
             }
         };
         table.setSelectionMode(ListSelectionModel.MULTIPLE_INTERVAL_SELECTION);
+        ((AutoSelectTextTable) table).setMultiRowEditEnabled(true);
 
         JComboBox<BottomVisionSettings> bottomVisionCombo = new JComboBox<>(
                 new VisionSettingsComboBoxModel(BottomVisionSettings.class));
@@ -306,7 +307,8 @@ public class PackagesPanel extends JPanel implements WizardContainer {
         });
 
         tableModel.addTableModelListener(e -> {
-            if (selectedPackage != null) { 
+            if (selectedPackage != null && table.getSelectedRowCount() <= 1
+                    && !((AutoSelectTextTable) table).isMultiRowEditInProgress()) {
                 // Reselect previously selected settings.
                 Helpers.selectObjectTableRow(table, selectedPackage);
             }

@@ -1185,7 +1185,7 @@ public class JobPanel extends JPanel {
             String action = skip ? "抛料并跳过" : "重新拾取";
             UiUtils.submitUiMachineTask(
                     () -> skip ? processor.discardAndSkipFailedAlignment(nozzle)
-                            : processor.discardAndRequeueFailedAlignment(nozzle),
+                            : processor.repickFailedAlignment(nozzle),
                     requeued -> {
                         if (Boolean.TRUE.equals(requeued)) {
                             jobResume();
@@ -1197,7 +1197,8 @@ public class JobPanel extends JPanel {
                     },
                     failure -> UiUtils.showError(getTopLevelAncestor(),
                             action + "失败，任务保持暂停",
-                            new Exception("未能完成旧器件的丢弃，任务保持暂停。请检查机器状态后再继续。", failure)));
+                            new Exception(skip ? "未能完成抛料，任务保持暂停。请检查机器状态后再继续。"
+                                    : "未能完成重新拾取，任务保持暂停。请检查供料、吸嘴和取料检测后再继续。", failure)));
         }
         else if (choice == BottomVisionRecoveryDialog.Choice.RETRY_VISION) {
             jobResume();
