@@ -66,6 +66,7 @@ public final class OpenPnpCalibrationMachine implements CalibrationMachine {
     private ControllerShaping.Session shaping;
     private PrecisionProfile previousProfile;
     private boolean originalPlannerCompensation;
+    private boolean previousProfileCompatible = true;
     private org.openpnp.corexy.LegacyCompensationInterlock.Session legacySession;
     private final List<PrecisionSample> priorObservations = new ArrayList<>();
     private final Map<String, CalibrationPlan.Path> fittedPaths = new LinkedHashMap<>();
@@ -201,10 +202,21 @@ public final class OpenPnpCalibrationMachine implements CalibrationMachine {
 
     @Override
     public String fingerprint() throws Exception {
+        return fingerprint(false);
+    }
+
+    /** Old profiles included M114 telemetry. Only exact matches may be upgraded automatically. */
+    public void validateProfile(PrecisionProfile profile) throws Exception {
+        String stable = fingerprint();
+        profile.validate(profile.fingerprintVersion == 1 && !stable.equals(profile.fingerprint)
+                ? fingerprint(true) : stable);
+    }
+
+    private String fingerprint(boolean legacyTelemetry) throws Exception {
         if (machine.getDefaultHead().getDefaultCamera() != camera || camera.getAxisX() != x || camera.getAxisY() != y) {
             throw new IllegalStateException("顶部相机或 X/Y 轴映射已改变，请重新校准。");
         }
-        StringBuilder text = new StringBuilder("CoreXY-profile-v1|");
+        StringBuilder text = new StringBuilder(legacyTelemetry ? "CoreXY-profile-v1|" : "CoreXY-profile-v2|");
         for (ReferenceControllerAxis axis : new ReferenceControllerAxis[] {x, y}) {
             text.append(axis.getId()).append('|').append(axis.getType()).append('|')
                     .append(axis.getDriver().getId()).append('|').append(axis.getDriver().getClass().getName())
@@ -213,7 +225,15 @@ public final class OpenPnpCalibrationMachine implements CalibrationMachine {
                     .append('|').append(axis.getFeedratePerSecond()).append('|')
                     .append(axis.getAccelerationPerSecond2()).append('|');
             if (axis.getDriver() instanceof GcodeDriver) {
-                text.append(((GcodeDriver) axis.getDriver()).getFirmwareConfiguration()).append('|');
+                GcodeDriver driver = (GcodeDriver) axis.getDriver();
+                // getFirmwareConfiguration() includes reportedAxes: an M114 position, not configuration.
+                if (legacyTelemetry) { text.append(driver.getFirmwareConfiguration()); }
+                else {
+                    text.append(driver.getDetectedFirmware() == null ? "" : driver.getDetectedFirmware())
+                            .append("\n\n")
+                            .append(driver.getConfiguredAxes() == null ? "" : driver.getConfiguredAxes());
+                }
+                text.append('|');
             }
         }
         appendCameraFingerprint(text, camera);
@@ -274,6 +294,10 @@ public final class OpenPnpCalibrationMachine implements CalibrationMachine {
                 && ((org.openpnp.corexy.CoreXYAdvancedMotionPlanner) planner).isCoreXYCompensationEnabled();
         if (originalSettings != null) {
             previousProfile = CoreXYIntegration.store(configuration).loadForRestore();
+            if (previousProfile != null) {
+                try { validateProfile(previousProfile); }
+                catch (IllegalArgumentException changed) { previousProfileCompatible = false; }
+            }
         }
         originalLegacyBytes = Files.readAllBytes(legacy);
         originalToolModels = ToolPointRuntime.snapshot();
@@ -293,6 +317,15 @@ public final class OpenPnpCalibrationMachine implements CalibrationMachine {
         }
         started = true;
         startedAt = System.nanoTime();
+        if (originalSettings != null && !previousProfileCompatible) {
+            machine.home();
+            PrecisionRuntime.deactivate();
+        }
+        // A failed saved-profile load must not prevent the very operation that replaces it.
+        // Take ownership before the first positioning move, while keeping legacy compensation off.
+        if (!PrecisionRuntime.isActive() && org.openpnp.corexy.LegacyCompensationInterlock.isExclusive()) {
+            legacySession = org.openpnp.corexy.LegacyCompensationInterlock.beginCalibration(configuration);
+        }
         camera.actuateLightBeforeCapture();
         // Recording five points can leave the camera over the last marker, rather than the datum.
         if (settings.fixedMarkers != null) {
@@ -302,7 +335,7 @@ public final class OpenPnpCalibrationMachine implements CalibrationMachine {
         Location initial = detect(location(settings.originX, settings.originY, settings.planeZ));
         datumX = initial.getX() - settings.originX;
         datumY = initial.getY() - settings.originY;
-        if (originalSettings != null || CoreXYRuntime.isLegacyEnabled() || originalPlannerCompensation) {
+        if ((originalSettings != null && previousProfileCompatible) || CoreXYRuntime.isLegacyEnabled() || originalPlannerCompensation) {
             PrecisionRuntime.setProductionGuards(null, null);
             for (CalibrationPlan.Path path : plan.finalCheck) {
                 priorObservations.add(observe(path));
@@ -310,7 +343,9 @@ public final class OpenPnpCalibrationMachine implements CalibrationMachine {
         }
         machine.home();
         PrecisionRuntime.deactivate();
-        legacySession = org.openpnp.corexy.LegacyCompensationInterlock.beginCalibration(configuration);
+        if (legacySession == null) {
+            legacySession = org.openpnp.corexy.LegacyCompensationInterlock.beginCalibration(configuration);
+        }
         ToolPointRuntime.setModels(java.util.Collections.emptyMap());
         x.setBacklashCompensationMethod(BacklashCompensationMethod.None);
         y.setBacklashCompensationMethod(BacklashCompensationMethod.None);
@@ -868,8 +903,12 @@ public final class OpenPnpCalibrationMachine implements CalibrationMachine {
         cleanup.run(() -> {
             camera.actuateLightAfterCapture();
             if (machine.isEnabled()) {
-                camera.moveToSafeZ();
-                camera.waitForCompletion(CompletionType.WaitForStillstand);
+                // Rollback may deliberately restore a failed-load lock; cleanup must remain possible.
+                try (org.openpnp.corexy.LegacyCompensationInterlock.RecoveryScope scope =
+                        org.openpnp.corexy.LegacyCompensationInterlock.recoveryView(configuration)) {
+                    camera.moveToSafeZ();
+                    camera.waitForCompletion(CompletionType.WaitForStillstand);
+                }
             }
         });
         if (disabledConfig != null) {
@@ -909,6 +948,7 @@ public final class OpenPnpCalibrationMachine implements CalibrationMachine {
     public PrecisionProfile profile(CalibrationController.Report report) throws Exception {
         PrecisionProfile profile = new PrecisionProfile();
         profile.createdAt = report.createdAt;
+        profile.fingerprintVersion = 2;
         profile.fingerprint = fingerprint();
         profile.axisX = x.getId();
         profile.axisY = y.getId();
@@ -1011,7 +1051,7 @@ public final class OpenPnpCalibrationMachine implements CalibrationMachine {
     }
 
     public void prepareVerification(PrecisionProfile profile, boolean full) throws Exception {
-        profile.validate(fingerprint());
+        validateProfile(profile);
         if (profile.fixedMarkers == null || !machine.isEnabled() || !planner.isHomed()) {
             throw new IllegalStateException("需要已连接、完成机械寻零并已保存的 5 marker 补偿方案。");
         }
@@ -1091,9 +1131,12 @@ public final class OpenPnpCalibrationMachine implements CalibrationMachine {
         if (!camera.isReachable(target) || !planner.isValidLocation(camera, raw)) {
             throw new IllegalStateException("marker 拍摄位置超出机器软限位。");
         }
-        camera.actuateLightBeforeCapture();
-        MovableUtils.moveToLocationAtSafeZ(camera, target, .35 * machine.getSpeed());
-        camera.waitForCompletion(CompletionType.WaitForStillstand);
+        try (org.openpnp.corexy.LegacyCompensationInterlock.RecoveryScope scope =
+                org.openpnp.corexy.LegacyCompensationInterlock.recoveryView(configuration)) {
+            camera.actuateLightBeforeCapture();
+            MovableUtils.moveToLocationAtSafeZ(camera, target, .35 * machine.getSpeed());
+            camera.waitForCompletion(CompletionType.WaitForStillstand);
+        }
         // Keep illumination on while the operator inspects the live view.
     }
 

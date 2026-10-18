@@ -16,7 +16,6 @@ import org.openpnp.model.Motion;
 import org.openpnp.model.Motion.MotionOption;
 import org.openpnp.spi.Axis;
 import org.openpnp.spi.ControllerAxis;
-import org.openpnp.spi.CoordinateAxis;
 import org.openpnp.spi.HeadMountable;
 
 public final class CoreXYRuntime {
@@ -366,16 +365,35 @@ public final class CoreXYRuntime {
 
     public static void correctReportedCoordinates(AbstractMotionPlanner planner) {
         AxesLocation active = activeOffset(planner);
+        if (active.isEmpty()) { return; }
+        final AxesLocation backlash;
+        try {
+            java.lang.reflect.Field field = AbstractMotionPlanner.class.getDeclaredField("lastDirectionalBacklashOffset");
+            field.setAccessible(true);
+            backlash = (AxesLocation) field.get(planner);
+        }
+        catch (ReflectiveOperationException failure) {
+            throw fail("Cannot restore logical coordinates from driver position.", failure);
+        }
         for (Axis axis : active.getAxes()) {
-            if (axis instanceof CoordinateAxis) {
-                CoordinateAxis coordinateAxis = (CoordinateAxis) axis;
-                coordinateAxis.setLengthCoordinate(coordinateAxis.getLengthCoordinate()
-                        .subtract(active.getLengthCoordinate(axis)));
+            if (axis instanceof ControllerAxis) {
+                ControllerAxis controllerAxis = (ControllerAxis) axis;
+                // Always derive from physical driver coordinates, never from a logical value that
+                // a resolution-tolerant stock completion may have left unchanged. Idempotent.
+                controllerAxis.setLengthCoordinate(controllerAxis.getDriverLengthCoordinate()
+                        .subtract(backlash.getLengthCoordinate(axis)).subtract(active.getLengthCoordinate(axis)));
             }
         }
         // Coordinate bookkeeping runs at every production standstill. The measured
         // camera settling delay belongs only to explicit calibration observations.
         // Driver completion, camera settling and pick/place dwell are owned by their callers.
+    }
+
+    /** Native completion converts before comparing/reporting, so observers only see logical coordinates. */
+    public static AxesLocation logicalReportedLocation(AbstractMotionPlanner planner, AxesLocation physical) {
+        AxesLocation active = activeOffset(planner);
+        return new AxesLocation(physical.getAxes(),
+                axis -> physical.getLengthCoordinate(axis).subtract(active.getLengthCoordinate(axis)));
     }
 
     public static void reset(AbstractMotionPlanner planner, String reason) {

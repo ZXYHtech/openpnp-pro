@@ -96,7 +96,7 @@ public final class CoreXYIntegration {
             LegacyCompensationInterlock.expectSavedProfile(configuration);
             LegacyCompensationInterlock.suspendForProfile(configuration);
             OpenPnpCalibrationMachine backend = new OpenPnpCalibrationMachine(configuration);
-            PrecisionProfile profile = store.loadProfile(backend.fingerprint());
+            PrecisionProfile profile = store.loadProfile(backend);
             if (profile == null) {
                 throw new IllegalStateException("启用标志存在，但没有完整的补偿档案。");
             }
@@ -137,7 +137,7 @@ public final class CoreXYIntegration {
 
     public static void activateProfile(Configuration configuration, PrecisionProfile profile,
             OpenPnpCalibrationMachine backend) throws Exception {
-        profile.validate(backend.fingerprint());
+        backend.validateProfile(profile);
         AbstractMotionPlanner planner = (AbstractMotionPlanner) configuration.getMachine().getMotionPlanner();
         LegacyCompensationInterlock.suspendForProfile(configuration);
         ((ReferenceControllerAxis) configuration.getMachine().getAxis(profile.axisX))
@@ -152,7 +152,7 @@ public final class CoreXYIntegration {
         }
         FixedMarkerLifecycle.install(configuration, profile, backend, false);
         PrecisionRuntime.setProductionGuards(() -> {
-            profile.validate(backend.fingerprint());
+            backend.validateProfile(profile);
             FixedMarkerLifecycle.assertReady(profile);
         }, () -> {
             if (!profile.controllerApplyCommand.isEmpty()) {
@@ -183,7 +183,7 @@ public final class CoreXYIntegration {
                 store.updateReportCommit(directory, true, report.outcome);
                 FixedMarkerLifecycle.install(configuration, profile, backend, true);
                 PrecisionRuntime.setProductionGuards(() -> {
-                    profile.validate(backend.fingerprint());
+                    backend.validateProfile(profile);
                     FixedMarkerLifecycle.assertReady(profile);
                 }, () -> {
                     if (!profile.controllerApplyCommand.isEmpty()) {

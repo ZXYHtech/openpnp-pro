@@ -1038,6 +1038,7 @@ public abstract class AbstractMotionPlanner extends AbstractModelObject implemen
                     ((ControllerAxis) axis).getDriverLengthCoordinate()
                         .subtract(lastDirectionalBacklashOffset.getLengthCoordinate(axis)) :
                         null));
+            reportedLocation = CoreXYRuntime.logicalReportedLocation(this, reportedLocation);
             AxesLocation currentLocation = new AxesLocation(reportedLocation.getControllerAxes(),
                     (axis) -> axis.getLengthCoordinate());
             AxesLocation diff = reportedLocation.motionSegmentTo(currentLocation);
@@ -1055,9 +1056,6 @@ public abstract class AbstractMotionPlanner extends AbstractModelObject implemen
         wrapUpCoordinates(hm);
         // Remove old stuff.
         clearMotionPlanOlderThan(NanosecondTime.getRuntimeSeconds() - maximumPlanHistory);
-        if (completionType.isEnforcingStillstand()) {
-            CoreXYRuntime.correctReportedCoordinates(this);
-        }
     }
 
     /**

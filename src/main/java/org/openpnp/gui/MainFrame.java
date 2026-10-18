@@ -1946,7 +1946,8 @@ public class MainFrame extends JFrame {
     private Action coreXYPrecisionAction = new AbstractAction("CoreXY 自动精度校准...") {
         @Override
         public void actionPerformed(ActionEvent event) {
-            new org.openpnp.corexy.ui.CoreXYWizard(MainFrame.this, configuration).setVisible(true);
+            UiUtils.messageBoxOnException(() ->
+                    new org.openpnp.corexy.ui.CoreXYWizard(MainFrame.this, configuration).setVisible(true));
         }
     };
     private Action safetyWorkbenchAction = new AbstractAction("3D 安全工作台...") {

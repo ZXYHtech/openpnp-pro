@@ -231,7 +231,7 @@ class CoreXYRuntimeIntegrationTest {
         assertTimeout(java.time.Duration.ofMillis(700), () -> {
             for (int wait = 0; wait < 5; wait++) {
                 // Each driver completion refreshes physical coordinates before bookkeeping.
-                location(120.03, 99.98).setToCoordinates();
+                location(120.03, 99.98).setToDriverCoordinates(x.getDriver());
                 CoreXYRuntime.correctReportedCoordinates(planner);
                 assertEquals(120, x.getCoordinate(), 1e-9);
                 assertEquals(100, y.getCoordinate(), 1e-9);
@@ -245,12 +245,55 @@ class CoreXYRuntimeIntegrationTest {
     }
 
     @Test
+    void repeatedNativeAndAgentCompletionCannotSubtractASubResolutionOffsetAgain() throws Exception {
+        x.setResolution(.0125);
+        y.setResolution(.0125);
+        activateProduction(.004, -.003);
+        plan(100, 100, 120, 100);
+        motions().clear(); // Driver is already at the endpoint; only completion callbacks follow.
+        location(120.004, 99.997).setToDriverCoordinates(x.getDriver());
+        location(120, 100).setToCoordinates();
+        for (int repeat = 0; repeat < 2000; repeat++) {
+            planner.waitForCompletion(camera, org.openpnp.spi.MotionPlanner.CompletionType.WaitForStillstand);
+            assertEquals(120, x.getCoordinate(), 1e-9, "Native repeat " + repeat);
+            assertEquals(100, y.getCoordinate(), 1e-9, "Native repeat " + repeat);
+            CoreXYRuntime.correctReportedCoordinates(planner); // Standalone Agent path is idempotent too.
+            assertEquals(120, x.getCoordinate(), 1e-9);
+            assertEquals(100, y.getCoordinate(), 1e-9);
+        }
+    }
+
+    @Test
+    void fiveThousandMovesAndRepeatedWaitsKeepQuantizationBoundedWithoutDrift() throws Exception {
+        x.setResolution(.0125);
+        y.setResolution(.0125);
+        activateProduction(.033, -.024);
+        double cx = 100, cy = 100;
+        for (int step = 0; step < 5000; step++) {
+            double tx = 50 + (step * 31 % 190), ty = 50 + (step * 17 % 190);
+            plan(cx, cy, tx, ty);
+            AxesLocation end = motions().getLast().getLocation1();
+            // Match this machine's G-code XY formatting: 0.01 mm command increments.
+            double px = Math.rint(end.getCoordinate(x) * 100) / 100;
+            double py = Math.rint(end.getCoordinate(y) * 100) / 100;
+            location(px, py).setToDriverCoordinates(x.getDriver());
+            for (int repeat = 0; repeat < 4; repeat++) {
+                CoreXYRuntime.correctReportedCoordinates(planner);
+                assertEquals(tx, x.getCoordinate(), .005000001);
+                assertEquals(ty, y.getCoordinate(), .005000001);
+            }
+            cx = x.getCoordinate();
+            cy = y.getCoordinate();
+        }
+    }
+
+    @Test
     void conditioningWaypointsShareOneFinalMeasurementWaitAndNextMoveRearmsIt() throws Exception {
         activateProduction(.03, -.02);
         PrecisionRuntime.activate(planner, PrecisionRuntime.getModel(), x.getId(), y.getId(), 1000, .25);
         for (int step = 0; step < 3; step++) {
             plan(100 + step * 20, 100, 120 + step * 20, 100);
-            location(120.03 + step * 20, 99.98).setToCoordinates();
+            location(120.03 + step * 20, 99.98).setToDriverCoordinates(x.getDriver());
             CoreXYRuntime.correctReportedCoordinates(planner);
         }
         assertEquals(1000, PrecisionRuntime.getSettlingMillis(planner));
@@ -391,7 +434,7 @@ class CoreXYRuntimeIntegrationTest {
         assertEquals(121.03, motions().getLast().getLocation1().getCoordinate(x), 1e-9);
         assertThrows(IllegalStateException.class, PrecisionRuntime::deactivate);
         for (int i = 0; i < 3; i++) {
-            location(121.03, 99.98).setToCoordinates();
+            location(121.03, 99.98).setToDriverCoordinates(x.getDriver());
             CoreXYRuntime.correctReportedCoordinates(planner);
             assertEquals(121, x.getCoordinate(), 1e-9);
             assertEquals(100, y.getCoordinate(), 1e-9);

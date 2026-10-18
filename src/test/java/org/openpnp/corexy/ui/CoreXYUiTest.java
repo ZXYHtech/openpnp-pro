@@ -89,9 +89,9 @@ class CoreXYUiTest {
         Configuration.initialize(temporary.toFile());
         final CoreXYWizard[] wizard = {null};
         SwingUtilities.invokeAndWait(() -> {
-            wizard[0] = new CoreXYWizard(null, Configuration.get());
             try {
-                java.lang.reflect.Field button = CoreXYWizard.class.getDeclaredField("simulation");
+                wizard[0] = new CoreXYWizard(null, Configuration.get());
+                java.lang.reflect.Field button = FixedMarkerDialog.class.getDeclaredField("simulation");
                 button.setAccessible(true);
                 ((javax.swing.JButton) button.get(wizard[0])).doClick();
             }
@@ -104,7 +104,7 @@ class CoreXYUiTest {
             Thread.sleep(100);
             SwingUtilities.invokeAndWait(() -> {
                 try {
-                    java.lang.reflect.Field running = CoreXYWizard.class.getDeclaredField("running");
+                    java.lang.reflect.Field running = FixedMarkerDialog.class.getDeclaredField("running");
                     running.setAccessible(true);
                     done[0] = !running.getBoolean(wizard[0]);
                 }

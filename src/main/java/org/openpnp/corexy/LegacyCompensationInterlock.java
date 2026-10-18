@@ -18,6 +18,7 @@ public final class LegacyCompensationInterlock {
     private static volatile Configuration exclusiveConfiguration;
     private static volatile boolean committed;
     private static final ThreadLocal<Boolean> RESTORING = ThreadLocal.withInitial(() -> false);
+    private static final ThreadLocal<Integer> RECOVERY_VIEW = ThreadLocal.withInitial(() -> 0);
 
     private LegacyCompensationInterlock() { }
 
@@ -70,8 +71,37 @@ public final class LegacyCompensationInterlock {
     /** A damaged saved profile must not silently fall back to legacy compensation. */
     public static void assertProductionAllowed() {
         if (committed && exclusiveConfiguration == Configuration.get()
-                && calibration == null && !PrecisionRuntime.isActive() && !RESTORING.get()) {
-            throw new IllegalStateException("精度补偿尚未成功加载；原插件保持停用，请检查档案或在机器菜单的自动精度校准中停用补偿。");
+                && calibration == null && !PrecisionRuntime.isActive() && !RESTORING.get()
+                && RECOVERY_VIEW.get() == 0) {
+            throw new IllegalStateException("已保存补偿未加载，生产移动已暂停；可在自动精度校准中停用补偿、移动查看 marker 或重新校准。原因："
+                    + CoreXYIntegration.getStartupStatus());
+        }
+    }
+
+    /** Scoped inspection only; a failed load never silently enables legacy compensation or production. */
+    public static RecoveryScope recoveryView(Configuration configuration) {
+        boolean recover = !PrecisionRuntime.isActive() && committed && exclusiveConfiguration == configuration;
+        if (recover) {
+            AbstractMotionPlanner planner = (AbstractMotionPlanner) configuration.getMachine().getMotionPlanner();
+            if (!planner.isHomed() || CoreXYRuntime.isLegacyEnabled() || CoreXYRuntime.isLegacyDryRun()
+                    || (planner instanceof CoreXYAdvancedMotionPlanner
+                        && ((CoreXYAdvancedMotionPlanner) planner).isCoreXYCompensationEnabled())) {
+                throw new IllegalStateException("恢复查看需要先 Home，并确保旧补偿已停用。");
+            }
+            CoreXYRuntime.requireNeutralLegacy();
+            RECOVERY_VIEW.set(RECOVERY_VIEW.get() + 1);
+        }
+        return new RecoveryScope(recover);
+    }
+
+    public static final class RecoveryScope implements AutoCloseable {
+        private boolean recover;
+        private RecoveryScope(boolean recover) { this.recover = recover; }
+        @Override public void close() {
+            if (recover) {
+                RECOVERY_VIEW.set(RECOVERY_VIEW.get() - 1);
+                recover = false;
+            }
         }
     }
 

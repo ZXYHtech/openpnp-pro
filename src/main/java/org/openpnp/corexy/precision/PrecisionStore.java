@@ -293,6 +293,26 @@ public final class PrecisionStore {
         return profile;
     }
 
+    public PrecisionProfile loadProfile(OpenPnpCalibrationMachine backend) throws Exception {
+        PrecisionProfile profile = loadForRestore();
+        if (profile != null) {
+            backend.validateProfile(profile);
+            if (profile.fingerprintVersion == 1) {
+                // Validation above proves the old identity before excluding volatile telemetry.
+                Snapshot previous = snapshot();
+                profile.fingerprint = backend.fingerprint();
+                profile.fingerprintVersion = 2;
+                try { saveProfile(profile, isEnabled()); }
+                catch (Exception failure) {
+                    try { restore(previous); }
+                    catch (Exception rollback) { failure.addSuppressed(rollback); }
+                    throw failure;
+                }
+            }
+        }
+        return profile;
+    }
+
     /** Still verifies integrity, but allows old axis/camera settings to be restored after a change. */
     public PrecisionProfile loadForRestore() throws Exception {
         Path file = root.resolve("profile.json"), checksum = root.resolve("profile.sha256");

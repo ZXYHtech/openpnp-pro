@@ -24,14 +24,14 @@ public final class CompensationActions {
         }
         OpenPnpCalibrationMachine backend = new OpenPnpCalibrationMachine(configuration);
         PrecisionStore store = CoreXYIntegration.store(configuration);
-        PrecisionProfile profile = store.loadProfile(backend.fingerprint());
-        if (profile == null) { throw new IllegalStateException("尚无通过实测验证的保存方案，请先校准。"); }
         if (!CoreXYIntegration.acquireWorkflow()) {
             throw new IllegalStateException("请等待当前 CoreXY 操作完成。");
         }
         boolean changed = false;
         Exception activationFailure = null;
         try {
+            PrecisionProfile profile = store.loadProfile(backend);
+            if (profile == null) { throw new IllegalStateException("尚无通过实测验证的保存方案，请先校准。"); }
             if (cancelled.getAsBoolean()) { throw new CancellationException("已取消启用补偿"); }
             progress.update(0, "准备启用已保存方案 · Home 清除旧补偿状态");
             changed = true;

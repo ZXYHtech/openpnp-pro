@@ -3,6 +3,8 @@ package org.openpnp.corexy.precision;
 /** A real measured profile, never a simulated fit. */
 public final class PrecisionProfile {
     public int schema = 1;
+    /** v2 excludes live controller position reports from configuration identity. */
+    public int fingerprintVersion = 1;
     public String fingerprint, axisX, axisY, temperatureActuator = "", controllerRestoreCommand = "";
     public String controllerApplyCommand = "";
     public String previousBacklashX, previousBacklashY;
@@ -22,6 +24,14 @@ public final class PrecisionProfile {
     public double[] homeReference;
 
     public void validate(String currentFingerprint) {
+        if (fingerprintVersion < 1 || fingerprintVersion > 2) {
+            throw new IllegalArgumentException("不支持的补偿配置指纹版本，请更新软件。");
+        }
+        if (fingerprint == null || !fingerprint.equals(currentFingerprint)) {
+            throw new IllegalArgumentException(fingerprintVersion == 1
+                    ? "旧补偿档案配置校验不匹配（旧版包含位置报告）；可停用补偿、查看点位并重新五点校准，原方案保留。"
+                    : "机器几何或运动配置与校准时不一致；请核对轴、相机标定和吸嘴偏移，或重新五点校准。原方案保留。");
+        }
         if (homeReference != null && (homeReference.length != 2
                 || !Double.isFinite(homeReference[0]) || !Double.isFinite(homeReference[1]))) {
             throw new IllegalArgumentException("Home 参考数据无效，请重新5点精度验证。");
@@ -39,16 +49,19 @@ public final class PrecisionProfile {
                 || calibrationDirectory == null) {
             throw new IllegalArgumentException("固定 marker 基准或方案编号无效。");
         }
-        if (schema != 1 || fingerprint == null || !fingerprint.equals(currentFingerprint)
+        if (schema != 1
                 || axisX == null || axisY == null || axisX.equals(axisY) || createdAt <= 0
                 || settlingMillis < 0 || settlingMillis > 5000 || !Double.isFinite(noise) || noise < 0
                 || !Double.isFinite(target) || target <= 0 || model == null || baseline == null || corrected == null
                 || corrected.count < 8 || baseline.count < 8 || !Double.isFinite(corrected.p95)
                 || !Double.isFinite(corrected.rms) || !Double.isFinite(corrected.maximum)
-                || !PrecisionAcceptance.reasons(baseline, corrected, noise).isEmpty()
                 || temperatureActuator == null
                 || (model.getLayers().contains(PrecisionModel.Layer.THERMAL_DRIFT) && temperatureActuator.isEmpty())) {
-            throw new IllegalArgumentException("补偿档案无效、机器配置已变化或独立验证不合格。");
+            throw new IllegalArgumentException("补偿档案数据不完整或数值无效，请恢复有效档案或重新校准。");
+        }
+        java.util.List<String> rejected = PrecisionAcceptance.reasons(baseline, corrected, noise);
+        if (!rejected.isEmpty()) {
+            throw new IllegalArgumentException("补偿档案实测评估未通过：" + String.join("；", rejected));
         }
         model.validate();
         if (toolModels == null) {

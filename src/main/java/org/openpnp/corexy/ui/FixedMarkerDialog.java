@@ -46,7 +46,7 @@ import org.openpnp.model.Location;
 import org.openpnp.util.UiUtils;
 
 /** Five fixed references: record once, calibrate, then inspect durable startup checks. */
-public final class FixedMarkerDialog extends JDialog {
+public class FixedMarkerDialog extends JDialog {
     private final Configuration configuration;
     private final CalibrationController controller = new CalibrationController();
     private final AtomicBoolean cancelled = new AtomicBoolean();
@@ -97,8 +97,8 @@ public final class FixedMarkerDialog extends JDialog {
     private final String[] markerIds = {"home", "marker-2", "marker-3", "marker-4", "marker-5"};
     private final String[] markerNames = {"Home 视觉基准", "覆盖点 2", "覆盖点 3", "覆盖点 4", "覆盖点 5"};
 
-    public FixedMarkerDialog(JDialog owner, Configuration configuration) throws Exception {
-        super(owner, "Home + 四个临时 marker · 校准与5点精度验证", false);
+    public FixedMarkerDialog(java.awt.Window owner, Configuration configuration) throws Exception {
+        super(owner, "Home + 四个临时 marker · 校准与5点精度验证", java.awt.Dialog.ModalityType.MODELESS);
         this.configuration = configuration;
         setDefaultCloseOperation(DO_NOTHING_ON_CLOSE);
         setMinimumSize(new Dimension(900, 650));
@@ -254,7 +254,8 @@ public final class FixedMarkerDialog extends JDialog {
         final int row = Math.max(0, table.getSelectedRow());
         if (!begin()) { return; }
         showLive();
-        String message = "安全抬 Z，移动查看 " + setup.markers.get(row).id + "；不改写点位和补偿方案";
+        String message = "安全抬 Z，移动查看 " + setup.markers.get(row).id
+                + (PrecisionRuntime.isActive() ? " · 当前补偿已加载" : " · 当前无补偿，仅查看点位");
         state.setText(message);
         live.update(message);
         UiUtils.submitUiMachineTask(() -> {
@@ -288,8 +289,9 @@ public final class FixedMarkerDialog extends JDialog {
     private void refreshProfile(boolean celebrate) {
         try {
             PrecisionProfile profile = CoreXYIntegration.store(configuration).loadForRestore();
-            boolean active = PrecisionRuntime.isActive() && CoreXYIntegration.store(configuration).isEnabled();
-            compensation.setText(active ? "● 新补偿已启用" : PrecisionRuntime.isActive() ? "● 已加载，等待校验/保存" : "○ 新补偿停用");
+            boolean saved = CoreXYIntegration.store(configuration).isEnabled();
+            boolean active = PrecisionRuntime.isActive() && saved;
+            compensation.setText(active ? "● 新补偿已启用" : PrecisionRuntime.isActive() ? "● 已加载，等待校验/保存" : saved ? "⚠ 保存方案加载失败，可停用或重新校准" : "○ 新补偿停用");
             enable.setEnabled(!running && profile != null && !active);
             disable.setEnabled(!running && (PrecisionRuntime.isActive() || CoreXYIntegration.store(configuration).isEnabled()));
             verify.setEnabled(!running && PrecisionRuntime.isActive());

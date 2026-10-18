@@ -211,6 +211,132 @@ class LegacyCompensationInterlockTest {
         assertThrows(Exception.class, () -> plan(100, 120));
     }
 
+    @Test void failedLoadAllowsScopedInspectionAndRecalibrationButNeverLegacyOrProductionFallback() throws Exception {
+        CoreXYIntegration.store(configuration).setEnabled(true);
+        CoreXYIntegration.initialize(configuration);
+        planner.home();
+        assertThrows(Exception.class, () -> plan(100, 120));
+        try (LegacyCompensationInterlock.RecoveryScope scope = LegacyCompensationInterlock.recoveryView(configuration)) {
+            plan(100, 120);
+            assertFalse(PrecisionRuntime.isActive());
+            assertDisabled();
+            assertThrows(Exception.class, () -> LegacyCompensationInterlock.assertLegacyLoadAllowed(true));
+        }
+        assertThrows(Exception.class, () -> plan(100, 120));
+        session = LegacyCompensationInterlock.beginCalibration(configuration);
+        plan(100, 120);
+        assertDisabled();
+        session.rollback();
+        session = null;
+        assertThrows(Exception.class, () -> plan(100, 120));
+        CoreXYIntegration.disable(configuration);
+        assertFalse(CoreXYIntegration.store(configuration).isEnabled());
+        assertFalse(LegacyCompensationInterlock.isExclusive());
+        planner.home();
+        plan(100, 120);
+    }
+
+    @Test void positionReportsDoNotChangeConfigurationIdentityButRealSettingsDo() throws Exception {
+        org.openpnp.machine.reference.driver.GcodeDriver driver = new org.openpnp.machine.reference.driver.GcodeDriver();
+        machine.addDriver(driver);
+        x.setDriver(driver);
+        y.setDriver(driver);
+        driver.setReportedAxes("ok C: X:214.7200 Y:144.4100 Z:0 A:360 B:0");
+        OpenPnpCalibrationMachine backend = new OpenPnpCalibrationMachine(configuration);
+        PrecisionProfile saved = profile(backend);
+        saved.fingerprintVersion = 2;
+        String before = backend.fingerprint();
+        driver.setReportedAxes("ok C: X:225.2400 Y:103.2500 Z:0 A:360 B:360");
+        assertEquals(before, backend.fingerprint());
+        backend.validateProfile(saved);
+        x.setAccelerationPerSecond2(new Length(4321, LengthUnit.Millimeters));
+        assertThrows(IllegalArgumentException.class, () -> backend.validateProfile(saved));
+    }
+
+    @Test void exactLegacyIdentityMigratesOnceAndSubsequentPositionReportsStayCompatible() throws Exception {
+        org.openpnp.machine.reference.driver.GcodeDriver driver = new org.openpnp.machine.reference.driver.GcodeDriver();
+        machine.addDriver(driver);
+        x.setDriver(driver);
+        y.setDriver(driver);
+        driver.setReportedAxes("X:100 Y:150");
+        OpenPnpCalibrationMachine backend = new OpenPnpCalibrationMachine(configuration);
+        PrecisionProfile saved = profile(backend);
+        Method legacyHash = OpenPnpCalibrationMachine.class.getDeclaredMethod("fingerprint", boolean.class);
+        legacyHash.setAccessible(true);
+        saved.fingerprint = (String) legacyHash.invoke(backend, true);
+        PrecisionStore store = CoreXYIntegration.store(configuration);
+        store.saveProfile(saved, false);
+        PrecisionProfile migrated = store.loadProfile(backend);
+        assertEquals(2, migrated.fingerprintVersion);
+        assertEquals(backend.fingerprint(), migrated.fingerprint);
+        driver.setReportedAxes("X:240 Y:21");
+        assertNotNull(store.loadProfile(backend));
+        assertFalse(store.isEnabled());
+        assertTrue(Files.isRegularFile(store.getRoot().resolve("profile-previous.json")));
+    }
+
+    @Test void failedProfileLoadDoesNotBlockTheFirstCalibrationPositioningMove() throws Exception {
+        OpenPnpCalibrationMachine backend = failedLoadBackend();
+        CalibrationRequest request = recoveryMarkers().toRequest();
+        Exception failure = assertThrows(Exception.class,
+                () -> backend.prepare(request, new CalibrationPlan(request)));
+        assertEquals("TEST_POSITIONING_REACHED", failure.getMessage());
+        Field lease = OpenPnpCalibrationMachine.class.getDeclaredField("legacySession");
+        lease.setAccessible(true);
+        session = (LegacyCompensationInterlock.Session) lease.get(backend);
+        assertNotNull(session, "Calibration owns recovery before any positioning move.");
+        assertDisabled();
+        session.rollback();
+        session = null;
+        assertThrows(Exception.class, LegacyCompensationInterlock::assertProductionAllowed);
+    }
+
+    @Test void failedProfileLoadStillAllowsMarkerInspectionAndClosesTheRecoveryScopeOnError() throws Exception {
+        OpenPnpCalibrationMachine backend = failedLoadBackend();
+        Exception failure = assertThrows(Exception.class, () -> backend.viewFixedMarker(recoveryMarkers(), 1));
+        assertEquals("TEST_POSITIONING_REACHED", failure.getMessage());
+        assertThrows(Exception.class, LegacyCompensationInterlock::assertProductionAllowed);
+        assertDisabled();
+    }
+
+    private OpenPnpCalibrationMachine failedLoadBackend() throws Exception {
+        CoreXYIntegration.store(configuration).setEnabled(true);
+        CoreXYIntegration.initialize(configuration);
+        machine.setEnabled(true); // Only the fixture's NullDriver exists; never connect real hardware.
+        planner.home();
+        machine.setHomed(true);
+        org.openpnp.spi.Head head = camera.getHead();
+        head.removeCamera(camera);
+        camera.close();
+        camera = new RecoveryCamera();
+        camera.setAxisX(x);
+        camera.setAxisY(y);
+        head.addCamera(camera);
+        // The positioning spy throws before a driver is called. This type passes the real-backend preflight.
+        org.openpnp.machine.reference.driver.GcodeDriver fake = new org.openpnp.machine.reference.driver.GcodeDriver();
+        x.setDriver(fake);
+        y.setDriver(fake);
+        return new OpenPnpCalibrationMachine(configuration);
+    }
+
+    private FixedMarkerSetup recoveryMarkers() {
+        FixedMarkerSetup setup = new FixedMarkerSetup();
+        int id = 0;
+        for (double[] p : new double[][] {{100, 100}, {80, 80}, {200, 80}, {80, 200}, {200, 200}}) {
+            setup.markers.add(new FixedMarkerSetup.Marker("marker-" + id++, "point", p[0], p[1]));
+        }
+        return setup;
+    }
+
+    private static final class RecoveryCamera extends SimulatedUpCamera {
+        @Override public synchronized int getWidth() { return 640; }
+        @Override public synchronized int getHeight() { return 480; }
+        @Override public void moveTo(org.openpnp.model.Location target, double speed, Motion.MotionOption... options) {
+            LegacyCompensationInterlock.assertProductionAllowed();
+            throw new IllegalStateException("TEST_POSITIONING_REACHED");
+        }
+    }
+
     @Test void aFailedBackupLeavesTheFormalConfigUntouchedAndNoCalibrationLease() throws Exception {
         byte[] old = enableLegacy(false);
         Files.write(CoreXYIntegration.runtimeDirectory(configuration).resolve("backups"), new byte[] {1});
