@@ -8,6 +8,7 @@ import java.util.Collections;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Set;
+import java.util.function.DoubleUnaryOperator;
 
 import org.openpnp.machine.reference.safety.SafetyCollisionEngine.ValidationResult;
 import org.openpnp.machine.reference.safety.SafetyCollisionEngine.Waypoint;
@@ -16,6 +17,7 @@ import org.openpnp.machine.reference.safety.SafetyWorkbenchModel.SafetyObject;
 import org.openpnp.machine.reference.safety.SafetyWorkbenchModel.Shape;
 import org.openpnp.machine.reference.safety.SafetyWorkbenchModel.ToolProfile;
 import org.openpnp.model.Footprint;
+import org.openpnp.model.AxesLocation;
 import org.openpnp.model.Length;
 import org.openpnp.model.LengthUnit;
 import org.openpnp.model.Location;
@@ -24,6 +26,10 @@ import org.openpnp.spi.Head;
 import org.openpnp.spi.HeadMountable;
 import org.openpnp.spi.Machine;
 import org.openpnp.spi.Nozzle;
+import org.openpnp.spi.Axis;
+import org.openpnp.spi.Locatable.LocationOption;
+import org.openpnp.machine.reference.axis.ReferenceCamCounterClockwiseAxis;
+import org.openpnp.machine.reference.axis.ReferenceCamClockwiseAxis;
 
 /**
  * Swept-volume checker for a complete multi-head machine. XY motion is shared
@@ -58,6 +64,9 @@ public final class DynamicSafetyCollisionEngine {
         public final double retractedTipLength;
         public final double extendedTipLength;
         public final double carriedPartHeight;
+        boolean selectedTool;
+        boolean conservativeSegmentZ;
+        DoubleUnaryOperator mappedZ;
 
         DynamicTool(String headId, String toolId, String name, Waypoint reference,
                 double radiusX, double radiusY, double minZOffset, double maxZOffset,
@@ -80,6 +89,7 @@ public final class DynamicSafetyCollisionEngine {
             this.followsX = followsX;
             this.followsY = followsY;
             this.followsZ = followsZ;
+            selectedTool = followsZ;
             this.carryingPart = carryingPart;
             bodyFollowsNozzleZ = true;
             bodyMinZOffset = minZOffset;
@@ -101,11 +111,13 @@ public final class DynamicSafetyCollisionEngine {
             this.toolId = toolId;
             this.name = name;
             this.reference = reference;
-            radiusX = profile.getRadiusX(carriedPartRadiusX);
-            radiusY = profile.getRadiusY(carriedPartRadiusY);
-            lowerRadiusX = Math.max(profile.shaftRadius, carriedPartRadiusX)
+            // Include the corners, not just the longer side of a rotating part.
+            double sweptPartRadius = Math.hypot(carriedPartRadiusX, carriedPartRadiusY);
+            radiusX = profile.getRadiusX(sweptPartRadius);
+            radiusY = profile.getRadiusY(sweptPartRadius);
+            lowerRadiusX = Math.max(profile.shaftRadius, sweptPartRadius)
                     + profile.clearance;
-            lowerRadiusY = Math.max(profile.shaftRadius, carriedPartRadiusY)
+            lowerRadiusY = Math.max(profile.shaftRadius, sweptPartRadius)
                     + profile.clearance;
             minZOffset = profile.getMinimumZOffset(reference.z, carriedPartHeight);
             maxZOffset = profile.getMaximumZOffset();
@@ -115,6 +127,7 @@ public final class DynamicSafetyCollisionEngine {
             this.followsX = followsX;
             this.followsY = followsY;
             this.followsZ = followsZ;
+            selectedTool = followsZ;
             this.carryingPart = carryingPart;
             bodyFollowsNozzleZ = profile.bodyFollowsNozzleZ;
             bodyMinZOffset = profile.bodyMinZOffset;
@@ -137,8 +150,8 @@ public final class DynamicSafetyCollisionEngine {
                             ? selectedPosition.x - selectedStart.x : 0),
                     reference.y + (followsY
                             ? selectedPosition.y - selectedStart.y : 0),
-                    reference.z + (followsZ
-                            ? selectedPosition.z - selectedStart.z : 0));
+                    mappedZ != null ? mappedZ.applyAsDouble(selectedPosition.z)
+                            : reference.z + (followsZ ? selectedPosition.z - selectedStart.z : 0));
         }
 
         public double tipLengthAt(double nozzleZ) {
@@ -158,12 +171,12 @@ public final class DynamicSafetyCollisionEngine {
 
         public double bodyMinimumZAt(double nozzleZ) {
             double bodyReferenceZ = bodyFollowsNozzleZ ? nozzleZ : retractedZ;
-            return bodyReferenceZ + bodyMinZOffset;
+            return bodyReferenceZ + bodyMinZOffset - clearance;
         }
 
         public double bodyMaximumZAt(double nozzleZ) {
             double bodyReferenceZ = bodyFollowsNozzleZ ? nozzleZ : retractedZ;
-            return bodyReferenceZ + bodyMaxZOffset;
+            return bodyReferenceZ + bodyMaxZOffset + clearance;
         }
 
         public double minimumZAt(double nozzleZ) {
@@ -192,6 +205,8 @@ public final class DynamicSafetyCollisionEngine {
         }
         List<DynamicTool> tools = new ArrayList<>();
         Head selectedHead = selectedTool.getHead();
+        Location selectedOrigin = selectedTool.getLocation().convertToUnits(LengthUnit.Millimeters);
+        AxesLocation initialAxes = new AxesLocation(machine);
         for (Head head : machine.getHeads()) {
             for (Nozzle nozzle : head.getNozzles()) {
                 ToolProfile profile = model.findToolProfile(head.getId(), nozzle.getId());
@@ -203,16 +218,40 @@ public final class DynamicSafetyCollisionEngine {
                         .convertToUnits(LengthUnit.Millimeters);
                 Part part = nozzle.getPart();
                 double[] partSize = partSize(part);
+                if (part != null && (!(partSize[0] > 0) || !(partSize[1] > 0)
+                        || !Double.isFinite(partSize[0]) || !Double.isFinite(partSize[1]))) {
+                    throw new Exception("吸嘴“" + nozzle.getName() + "”的物料外形尺寸未知。");
+                }
                 double partHeight = part == null ? 0
                         : part.getHeightForSafeZ()
                                 .convertToUnits(LengthUnit.Millimeters).getValue();
                 boolean sameHead = head == selectedHead;
-                tools.add(new DynamicTool(head.getId(), nozzle.getId(),
+                boolean sharedZ = sameHead && selectedTool.getMappedAxes(machine).byType(Axis.Type.Z).getAxes().stream()
+                        .anyMatch(axis -> nozzle.getMappedAxes(machine).byType(Axis.Type.Z).getAxes().contains(axis));
+                DynamicTool dynamic = new DynamicTool(head.getId(), nozzle.getId(),
                         head.getName() + " · " + nozzle.getName(),
                         new Waypoint(location.getX(), location.getY(), location.getZ()),
                         profile, partSize[0] / 2.0, partSize[1] / 2.0,
-                        partHeight, sameHead, sameHead, nozzle == selectedTool,
-                        part != null));
+                        partHeight, sameHead, sameHead, nozzle == selectedTool || sharedZ,
+                        part != null);
+                dynamic.selectedTool = nozzle == selectedTool;
+                boolean cam = selectedTool.getAxisZ() instanceof ReferenceCamCounterClockwiseAxis
+                        || selectedTool.getAxisZ() instanceof ReferenceCamClockwiseAxis;
+                dynamic.conservativeSegmentZ = sameHead && cam;
+                if (sharedZ && nozzle != selectedTool) {
+                    dynamic.mappedZ = selectedZ -> {
+                        try {
+                            Location selected = selectedOrigin.derive(null, null, selectedZ, null);
+                            AxesLocation axes = selectedTool.toRaw(selectedTool.toHeadLocation(selected, LocationOption.Quiet), LocationOption.Quiet);
+                            return nozzle.toHeadMountableLocation(nozzle.toTransformed(initialAxes.put(axes), LocationOption.Quiet),
+                                    LocationOption.Quiet).convertToUnits(LengthUnit.Millimeters).getZ();
+                        }
+                        catch (Exception failure) {
+                            throw new IllegalStateException("无法验证共用 Z 轴的吸嘴位置", failure);
+                        }
+                    };
+                }
+                tools.add(dynamic);
             }
         }
         return tools;
@@ -266,6 +305,19 @@ public final class DynamicSafetyCollisionEngine {
             }
         }
         return new ValidationResult(new ArrayList<>(issues), samples);
+    }
+
+    /**
+     * Validation for a pick/place transit. Contact already present at the source
+     * may be left and contact at the destination may be approached, but a tool
+     * may not enter an obstacle in the middle of the route. This distinguishes
+     * an intentional feeder/board endpoint from crossing the same named object
+     * during an accelerated diagonal move.
+     */
+    public static ValidationResult validateTransit(SafetyWorkbenchModel model,
+            List<Waypoint> selectedPath, List<DynamicTool> tools) {
+        Waypoint anchor = selectedPath == null || selectedPath.isEmpty() ? null : selectedPath.get(0);
+        return CoordinatedMotionValidator.validate(model, selectedPath, tools, anchor);
     }
 
     private static double[] partSize(Part part) {

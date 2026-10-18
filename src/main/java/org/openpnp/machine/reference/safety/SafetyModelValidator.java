@@ -16,6 +16,11 @@ public final class SafetyModelValidator {
 
     public static List<String> validate(SafetyWorkbenchModel model) {
         List<String> issues = new ArrayList<>();
+        if (!finite(model.getMinX(), model.getMaxX(), model.getMinY(), model.getMaxY(),
+                model.getMinZ(), model.getMaxZ(), model.getToolRadiusX(), model.getToolRadiusY(),
+                model.getToolMinZOffset(), model.getToolMaxZOffset(), model.getSampleStep())) {
+            issues.add("工作台范围、包络和采样间距必须是有限数值。");
+        }
         if (!(model.getMinX() < model.getMaxX())
                 || !(model.getMinY() < model.getMaxY())
                 || !(model.getMinZ() < model.getMaxZ())) {
@@ -37,6 +42,12 @@ public final class SafetyModelValidator {
             }
             String name = profile.name == null || profile.name.trim().isEmpty()
                     ? "未命名吸嘴" : profile.name;
+            if (!finite(profile.bodyRadiusX, profile.bodyRadiusY, profile.bodyMinZOffset,
+                    profile.bodyMaxZOffset, profile.shaftRadius, profile.clearance,
+                    profile.retractedZ, profile.extendedZ, profile.retractedTipLength,
+                    profile.extendedTipLength)) {
+                issues.add("“" + name + "”的包络包含无效数值。");
+            }
             if (!profile.enabled) {
                 issues.add("“" + name + "”的安全包络被禁用；多头机器不能忽略任一吸嘴。");
                 continue;
@@ -61,6 +72,18 @@ public final class SafetyModelValidator {
             }
             String name = object.name == null || object.name.trim().isEmpty()
                     ? "未命名物体" : object.name;
+            if (!finite(object.x, object.y, object.z, object.width, object.depth,
+                    object.height, object.clearance, object.apertureWidth, object.apertureDepth)) {
+                issues.add("“" + name + "”的几何包含无效数值。");
+            }
+            if (object.polygon != null) {
+                for (SafetyWorkbenchModel.Point2 point : object.polygon) {
+                    if (point == null || !finite(point.x, point.y)) {
+                        issues.add("“" + name + "”的轮廓点包含无效数值。");
+                        break;
+                    }
+                }
+            }
             if (object.width <= 0 || object.depth <= 0 || object.height < 0) {
                 issues.add("“" + name + "”的尺寸无效。");
             }
@@ -80,5 +103,14 @@ public final class SafetyModelValidator {
             }
         }
         return issues;
+    }
+
+    private static boolean finite(double... values) {
+        for (double value : values) {
+            if (!Double.isFinite(value)) {
+                return false;
+            }
+        }
+        return true;
     }
 }

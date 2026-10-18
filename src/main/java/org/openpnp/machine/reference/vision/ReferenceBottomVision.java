@@ -234,6 +234,15 @@ public class ReferenceBottomVision extends AbstractPartAlignment {
     private PartAlignmentOffset findOffsetsPreRotate(Part part, BoardLocation boardLocation,
             Placement placement, Nozzle nozzle, Camera camera, BottomVisionSettings bottomVisionSettings)
                     throws Exception {
+        try (BottomVisionTiming.Scope timing = BottomVisionTiming.begin(part.getId(), "预旋转静拍")) {
+            PartAlignmentOffset offsets = findOffsetsPreRotateMeasured(part, boardLocation, placement, nozzle, camera, bottomVisionSettings);
+            timing.success();
+            return offsets;
+        }
+    }
+
+    private PartAlignmentOffset findOffsetsPreRotateMeasured(Part part, BoardLocation boardLocation,
+            Placement placement, Nozzle nozzle, Camera camera, BottomVisionSettings bottomVisionSettings) throws Exception {
         double wantedAngle = placement.getLocation().getRotation();
         if (boardLocation != null) {
             wantedAngle = Utils2D.calculateBoardPlacementLocation(boardLocation, placement.getLocation())
@@ -333,6 +342,15 @@ public class ReferenceBottomVision extends AbstractPartAlignment {
     private PartAlignmentOffset findOffsetsPostRotate(Part part, BoardLocation boardLocation,
             Placement placement, Nozzle nozzle, Camera camera, BottomVisionSettings bottomVisionSettings)
                     throws Exception {
+        try (BottomVisionTiming.Scope timing = BottomVisionTiming.begin(part.getId(), "后旋转静拍")) {
+            PartAlignmentOffset offsets = findOffsetsPostRotateMeasured(part, boardLocation, placement, nozzle, camera, bottomVisionSettings);
+            timing.success();
+            return offsets;
+        }
+    }
+
+    private PartAlignmentOffset findOffsetsPostRotateMeasured(Part part, BoardLocation boardLocation,
+            Placement placement, Nozzle nozzle, Camera camera, BottomVisionSettings bottomVisionSettings) throws Exception {
         // Create a location that is the Camera's X, Y, it's Z + part height
         // and a rotation of 0, unless preRotate is enabled
         Location wantedLocation = getCameraLocationAtPartHeight(part, camera, nozzle, 0.);
@@ -403,7 +421,7 @@ public class ReferenceBottomVision extends AbstractPartAlignment {
                     org.openpnp.vision.pipeline.stages.ImageCapture.EXPERIMENTAL_CAPTURE_PROPERTY,
                     image);
             RotatedRect rect = processPipelineAndGetResult(pipeline, camera, part, nozzle,
-                    wantedLocation, wantedLocation, settings);
+                    wantedLocation, wantedLocation, settings, false);
             Location offsets = VisionUtils.getPixelCenterOffsets(
                     camera, rect.center.x, rect.center.y);
             double angleOffset = VisionUtils.getPixelAngle(camera, rect.angle)
@@ -663,12 +681,31 @@ public class ReferenceBottomVision extends AbstractPartAlignment {
 
     private RotatedRect processPipelineAndGetResult(CvPipeline pipeline, Camera camera,
             Part part, Nozzle nozzle, Location wantedLocation, Location adjustedNozzleLocation, BottomVisionSettings bottomVisionSettings) throws Exception {
+        return processPipelineAndGetResult(pipeline, camera, part, nozzle, wantedLocation,
+                adjustedNozzleLocation, bottomVisionSettings, true);
+    }
+
+    private RotatedRect processPipelineAndGetResult(CvPipeline pipeline, Camera camera,
+            Part part, Nozzle nozzle, Location wantedLocation, Location adjustedNozzleLocation,
+            BottomVisionSettings bottomVisionSettings, boolean finalDisplayInCaller) throws Exception {
+        BottomVisionTiming.pass();
         preparePipeline(pipeline, bottomVisionSettings.getPipelineParameterAssignments(), camera, part.getPackage(), 
                 nozzle, nozzle.getNozzleTip(), wantedLocation, adjustedNozzleLocation, bottomVisionSettings);
         for (PipelineShot pipelineShot : pipeline.getPipelineShots()) {
-            pipelineShot.apply();
+            long movementStarted = System.nanoTime();
+            try {
+                pipelineShot.apply();
+            }
+            finally {
+                BottomVisionTiming.movement(System.nanoTime() - movementStarted);
+            }
 
-            pipeline.process();
+            try {
+                pipeline.process();
+            }
+            finally {
+                BottomVisionTiming.pipeline(pipeline);
+            }
             Result result = pipeline.getResult(VisionUtils.PIPELINE_RESULTS_NAME);
 
             // Fall back to the old name of "result" instead of "results" for backwards
@@ -695,8 +732,11 @@ public class ReferenceBottomVision extends AbstractPartAlignment {
                         part.getId(), result.model.getClass().getSimpleName()));
             }
             pipelineShot.processResult(result);
-            // Display the shot result.   
-            displayResult(OpenCvUtils.toBufferedImage(pipeline.getWorkingImage()), part, null, camera, nozzle);
+            // The caller displays the final image and offsets. Avoid converting
+            // and refreshing the same image once again for each intermediate shot.
+            if (!finalDisplayInCaller) {
+                displayResult(OpenCvUtils.toBufferedImage(pipeline.getWorkingImage()), part, null, camera, nozzle);
+            }
         }
         return (RotatedRect) pipeline.getCurrentPipelineShot().processCompositeResult().getModel();
     }

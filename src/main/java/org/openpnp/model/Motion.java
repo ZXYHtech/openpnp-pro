@@ -101,7 +101,9 @@ public class Motion {
         SubordinateX,
         SubordinateY,
         SubordinateZ,
-        SubordinateRotation;
+        SubordinateRotation,
+        /** Keep the validated XYZ line; do not automatically select independent axes. */
+        CoordinatedMotion;
 
         public int flag() {
             return 1 << this.ordinal();

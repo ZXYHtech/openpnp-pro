@@ -57,6 +57,8 @@ import org.openpnp.machine.reference.axis.ReferenceControllerAxis;
 import org.openpnp.machine.reference.driver.GcodeAsyncDriver;
 import org.openpnp.machine.reference.driver.GcodeDriver;
 import org.openpnp.machine.reference.solutions.GcodeDriverSolutions;
+import org.openpnp.gui.support.DynamicSafeMotionPanel;
+import org.openpnp.machine.reference.safety.SafetyWorkbenchStore;
 import org.openpnp.model.Configuration;
 import org.openpnp.model.LengthUnit;
 import org.openpnp.model.Location;
@@ -103,6 +105,7 @@ public class ExperimentalMotionCenterDialog extends JDialog {
     private final JSpinner speedSpinner = new JSpinner(new SpinnerNumberModel(0.60, 0.10, 1.00, 0.05));
     private final JSpinner cyclesSpinner = new JSpinner(new SpinnerNumberModel(2, 1, 5, 1));
     private final JCheckBox emptyNozzle = new JCheckBox("确认吸嘴无料，运动范围内没有障碍物");
+    private DynamicSafeMotionPanel dynamicSafeMotion;
     private final JButton convertButton = new JButton();
     private final JButton motionTestButton = new JButton("运行分级速度对比");
     private final JButton exportButton = new JButton("导出测速结果");
@@ -332,6 +335,9 @@ public class ExperimentalMotionCenterDialog extends JDialog {
         parameters.add(new JLabel("往返轮数"));
         parameters.add(cyclesSpinner);
         settings.add(parameters);
+        dynamicSafeMotion = new DynamicSafeMotionPanel(SafetyWorkbenchStore.get(), machine,
+                text -> recommendations.setText(text));
+        settings.add(dynamicSafeMotion);
         JPanel execution = new JPanel(new FlowLayout(FlowLayout.LEFT, 8, 3));
         execution.add(emptyNozzle);
         motionTestButton.addActionListener(event -> runSafeMotionTest());
@@ -423,6 +429,9 @@ public class ExperimentalMotionCenterDialog extends JDialog {
                 : "机器：未连接", machine.isEnabled() && machine.isHomed());
         boolean xy = axisModel.hasLinearXy();
         setStatus(safetyState, xy ? "轴配置：已识别XY" : "轴配置：需检查", xy);
+        if (dynamicSafeMotion != null) {
+            dynamicSafeMotion.refresh();
+        }
         updateDriverButton();
     }
 

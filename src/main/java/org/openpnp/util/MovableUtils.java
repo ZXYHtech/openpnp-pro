@@ -4,6 +4,7 @@ import org.openpnp.model.AxesLocation;
 import org.openpnp.model.Configuration;
 import org.openpnp.model.Length;
 import org.openpnp.model.Location;
+import org.openpnp.machine.reference.safety.DynamicSafeMotionPlanner;
 import org.openpnp.spi.Head;
 import org.openpnp.spi.HeadMountable;
 import org.openpnp.spi.Locatable.LocationOption;
@@ -25,6 +26,9 @@ public class MovableUtils {
      */
     public static void moveToLocationAtSafeZ(HeadMountable hm, Location location, double speed)
             throws Exception {
+        if (DynamicSafeMotionPlanner.tryMoveToLocationAtSafeZ(hm, location, speed)) {
+            return;
+        }
         Head head = hm.getHead();
         Location currentLocationWithNewZ = hm.getLocation().derive(location, false, false, true, false);
         AxesLocation rawLocation = hm.toRaw(hm.toHeadLocation(location, LocationOption.Quiet), LocationOption.Quiet);
