@@ -24,9 +24,13 @@ public final class StencilPreview extends JPanel {
 
     private boolean references = true;
 
-    private double yaw = -25, pitch = 55, zoom = 1, panX, panY, angle, lift, explode;
+    private double yaw = 35, pitch = 55, zoom = 1, panX, panY, angle, lift, explode;
 
-    private double scale = 1, cx, cy, centerX, centerY;
+    private double scale = 1, cx, cy;
+
+    private double[] cameraTarget = { 0, 0, 0 };
+
+    private double cameraRadius = 1;
 
     private Point pressed;
 
@@ -61,7 +65,7 @@ public final class StencilPreview extends JPanel {
                 }
                 if (threeD && SwingUtilities.isLeftMouseButton(e) && !place) {
                     yaw += dx * .5;
-                    pitch = Math.max(5, Math.min(175, pitch + dy * .5));
+                    pitch = Math.max(-89.5, Math.min(90, pitch + dy * .5));
                 } else {
                     panX += dx;
                     panY += dy;
@@ -113,8 +117,11 @@ public final class StencilPreview extends JPanel {
     }
 
     public void printPose(boolean value) {
+        if (printPose == value) {
+            return;
+        }
         printPose = value;
-        repaint();
+        fit();
     }
 
     public void placement(boolean value, BiConsumer<Double, Double> callback) {
@@ -138,7 +145,38 @@ public final class StencilPreview extends JPanel {
     public void fit() {
         zoom = 1;
         panX = panY = 0;
+        fitBounds();
         repaint();
+    }
+
+    private void fitBounds() {
+        if (meshes.isEmpty()) {
+            return;
+        }
+        StencilPlan d = new StencilPlan(modelParameters);
+        double[] low = { Double.POSITIVE_INFINITY, Double.POSITIVE_INFINITY, Double.POSITIVE_INFINITY };
+        double[] high = { Double.NEGATIVE_INFINITY, Double.NEGATIVE_INFINITY, Double.NEGATIVE_INFINITY };
+        for (int i = 0; i < meshes.size(); i++) {
+            for (double[] t : meshes.get(i).triangles) {
+                for (int k = 0; k < 9; k += 3) {
+                    double[] v = world(t[k], t[k + 1], t[k + 2], i, d);
+                    for (int axis = 0; axis < 3; axis++) {
+                        low[axis] = Math.min(low[axis], v[axis]);
+                        high[axis] = Math.max(high[axis], v[axis]);
+                    }
+                }
+            }
+        }
+        double radiusSquared = 0;
+        for (int axis = 0; axis < 3; axis++) {
+            cameraTarget[axis] = (low[axis] + high[axis]) / 2;
+            radiusSquared += Math.pow((high[axis] - low[axis]) / 2, 2);
+        }
+        cameraRadius = Math.max(1, Math.sqrt(radiusSquared));
+    }
+
+    private StencilCamera camera() {
+        return new StencilCamera(cameraTarget, cameraRadius, getWidth(), getHeight(), yaw, pitch, zoom, panX, panY);
     }
 
     public void release(double value, double lift) {
@@ -198,11 +236,13 @@ public final class StencilPreview extends JPanel {
             x = (e.getX() - cx) / scale;
             y = (cy - e.getY()) / scale;
         } else {
-            double a = Math.toRadians(yaw), b = Math.toRadians(pitch), z = parameters.s("emboss_part").equals("pcb_base") ? d.pcbTop : d.pcbTop + p.n("stencil_gap") + p.n("stencil_thickness") + 2.8;
-            double xp = (e.getX() - cx) / scale, yp = (cy - e.getY()) / scale;
-            double q = (yp + Math.cos(b) * z) / Math.sin(b);
-            x = Math.cos(a) * xp + Math.sin(a) * q + centerX;
-            y = -Math.sin(a) * xp + Math.cos(a) * q + centerY;
+            double z = parameters.s("emboss_part").equals("pcb_base") ? d.pcbTop : d.pcbTop + p.n("stencil_gap") + p.n("stencil_thickness") + 2.8;
+            double[] point = camera().pickTop(e.getX(), e.getY(), z);
+            if (point == null) {
+                return;
+            }
+            x = point[0];
+            y = point[1];
             if (parameters.s("emboss_part").equals("stencil_upper")) {
                 y -= d.jawFront;
             }
@@ -321,8 +361,6 @@ public final class StencilPreview extends JPanel {
 
         double[] xy = new double[6], z = new double[3];
 
-        double depth;
-
         Color color;
 
         double alpha = 1;
@@ -330,36 +368,7 @@ public final class StencilPreview extends JPanel {
 
     private void render3D(Graphics2D g) {
         StencilPlan d = new StencilPlan(modelParameters);
-        double minX = Double.POSITIVE_INFINITY, minY = minX, maxX = -minX, maxY = -minX;
-        // Fit uses stable assembly extents, so explode and flip do not reset the user's camera.
-        if (coupons || printPose) {
-            for (int i = 0; i < meshes.size(); i++) {
-                for (double[] t : meshes.get(i).triangles) {
-                    for (int k = 0; k < 9; k += 3) {
-                        double[] v = world(t[k], t[k + 1], t[k + 2], i, d);
-                        minX = Math.min(minX, v[0]);
-                        maxX = Math.max(maxX, v[0]);
-                        minY = Math.min(minY, v[1]);
-                        maxY = Math.max(maxY, v[1]);
-                    }
-                }
-            }
-        } else {
-            minX = d.baseLeft;
-            maxX = d.baseRight;
-            minY = d.baseFront;
-            maxY = d.baseRear;
-        }
-        centerX = (minX + maxX) / 2;
-        centerY = (minY + maxY) / 2;
-        cx = getWidth() / 2.0 + panX;
-        cy = getHeight() / 2.0 + panY;
-        double a = Math.toRadians(yaw), b = Math.toRadians(pitch), ca = Math.cos(a), sa = Math.sin(a), cb = Math.cos(b), sb = Math.sin(b);
-        double projectedWidth = Math.abs(ca) * (maxX - minX) + Math.abs(sa) * (maxY - minY);
-        double projectedHeight = Math.abs(sb) * (Math.abs(sa) * (maxX - minX)
-                + Math.abs(ca) * (maxY - minY)) + Math.abs(cb) * (d.hingeZ + 4.2);
-        scale = Math.max(.05, Math.min((getWidth() - 48) / (projectedWidth + 10),
-                (getHeight() - 48) / (projectedHeight + 12))) * zoom;
+        StencilCamera camera = camera();
         List<Triangle> draw = new ArrayList<>();
         for (int i = 0; i < meshes.size(); i++) {
             for (double[] t : meshes.get(i).triangles) {
@@ -367,12 +376,7 @@ public final class StencilPreview extends JPanel {
                 double[][] v = new double[3][];
                 for (int k = 0; k < 3; k++) {
                     v[k] = world(t[k * 3], t[k * 3 + 1], t[k * 3 + 2], i, d);
-                    double x = v[k][0] - centerX, y = v[k][1] - centerY, z = v[k][2];
-                    double q = sa * x + ca * y;
-                    tri.xy[k * 2] = cx + (ca * x - sa * y) * scale;
-                    tri.xy[k * 2 + 1] = cy - (sb * q - cb * z) * scale;
-                    tri.z[k] = cb * q + sb * z;
-                    tri.depth += tri.z[k] / 3;
+                    projectVertex(tri, k, v[k], camera);
                 }
                 double ux = v[1][0] - v[0][0], uy = v[1][1] - v[0][1], uz = v[1][2] - v[0][2], vx = v[2][0] - v[0][0], vy = v[2][1] - v[0][1], vz = v[2][2] - v[0][2];
                 double nx = uy * vz - uz * vy, ny = uz * vx - ux * vz, nz = ux * vy - uy * vx, len = Math.sqrt(nx * nx + ny * ny + nz * nz);
@@ -392,10 +396,10 @@ public final class StencilPreview extends JPanel {
         List<Triangle> steel = new ArrayList<>();
         if (references && !coupons && !printPose && explode < .0001) {
             for (double[] t : boxTriangles(0, 0, d.pocketFloor + d.p.n("pcb_thickness") / 2, d.p.n("pcb_length"), d.p.n("pcb_width"), d.p.n("pcb_thickness"))) {
-                draw.add(project(t, 0, new Color(54, 94, 70), 1, d, ca, sa, cb, sb));
+                draw.add(project(t, 0, new Color(54, 94, 70), 1, d, camera));
             }
             for (double[] t : boxTriangles(d.jawCenter, (d.jawFront + d.p.n("grip_depth") - d.p.n("pcb_width") / 2) / 2, d.pcbTop + d.p.n("stencil_gap") + d.p.n("stencil_thickness") / 2, d.jawWidth, d.p.n("pcb_width") + d.p.n("stencil_margin"), d.p.n("stencil_thickness"))) {
-                steel.add(project(t, 3, new Color(200, 212, 216), .20, d, ca, sa, cb, sb));
+                steel.add(project(t, 3, new Color(200, 212, 216), .20, d, camera));
             }
         }
         for (Triangle t : draw) {
@@ -409,18 +413,28 @@ public final class StencilPreview extends JPanel {
         g.drawString(coupons ? "C0.00～C0.40 · 9 组 / 18 件 · 同板打印" : printPose ? "打印姿态 · 三件底面 Z=0" : String.format(Locale.ROOT, "装配姿态 · 翻转 %.0f° · 抬升 %.1f mm", angle, lift), 16, 23);
     }
 
-    private Triangle project(double[] t, int part, Color color, double alpha, StencilPlan d, double ca, double sa, double cb, double sb) {
+    private Triangle project(double[] t, int part, Color color, double alpha, StencilPlan d, StencilCamera camera) {
         Triangle tri = new Triangle();
         tri.color = color;
         tri.alpha = alpha;
         for (int k = 0; k < 3; k++) {
             double[] v = world(t[k * 3], t[k * 3 + 1], t[k * 3 + 2], part, d);
-            double x = v[0] - centerX, y = v[1] - centerY, z = v[2], q = sa * x + ca * y;
-            tri.xy[k * 2] = cx + (ca * x - sa * y) * scale;
-            tri.xy[k * 2 + 1] = cy - (sb * q - cb * z) * scale;
-            tri.z[k] = cb * q + sb * z;
+            projectVertex(tri, k, v, camera);
         }
         return tri;
+    }
+
+    private static void projectVertex(Triangle tri, int k, double[] v, StencilCamera camera) {
+        double[] projected = camera.project(v);
+        if (projected == null) {
+            // Bounds keep the normal model in front of the eye. A pose outside
+            // those bounds may cross it; skip this face instead of exploding pixels.
+            tri.alpha = 0;
+            return;
+        }
+        tri.xy[k * 2] = projected[0];
+        tri.xy[k * 2 + 1] = projected[1];
+        tri.z[k] = projected[2];
     }
 
     private static List<double[]> boxTriangles(double x, double y, double z, double w, double h, double d) {
@@ -441,6 +455,9 @@ public final class StencilPreview extends JPanel {
     }
 
     private static void raster(Triangle t, int[] pixels, double[] depths, int width, int height) {
+        if (t.alpha == 0) {
+            return;
+        }
         double x0 = t.xy[0], y0 = t.xy[1], x1 = t.xy[2], y1 = t.xy[3], x2 = t.xy[4], y2 = t.xy[5];
         double den = (y1 - y2) * (x0 - x2) + (x2 - x1) * (y0 - y2);
         if (Math.abs(den) < 1e-10) {
@@ -456,7 +473,8 @@ public final class StencilPreview extends JPanel {
                 }
                 double z = a * t.z[0] + b * t.z[1] + c * t.z[2];
                 int index = y * width + x;
-                if (z > depths[index] + (t.alpha < 1 ? 1e-7 : 0)) {
+                // Reciprocal depth is linear in screen barycentric coordinates.
+                if (z > depths[index] + (t.alpha < 1 ? 1e-11 : 0)) {
                     if (t.alpha >= 1) {
                         depths[index] = z;
                         pixels[index] = t.color.getRGB();

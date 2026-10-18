@@ -35,7 +35,7 @@
     },
     {
       "path": "src/main/java/org/openpnp/stencil/StencilPreview.java",
-      "sha256": "AB53DBC17F73F7569D732B2E62D4928D0DDB6DA95057119C1FBAE573EE23CB12"
+      "sha256": "E210BF97579BC5E7A4B5A503818933AE843F779135A519A94D8BE98AABAC6AD9"
     },
     {
       "path": "src/main/java/org/openpnp/stencil/StencilStore.java",
@@ -64,6 +64,18 @@
     {
       "path": "src/test/java/org/openpnp/gui/StencilFixtureDialogTest.java",
       "sha256": "89D37C1C953EC7A96A1FA2C677D8B8310657DF8CBF99C172C811F5D2BBA833CB"
+    },
+    {
+      "path": "src/main/java/org/openpnp/stencil/StencilCamera.java",
+      "sha256": "EAB73612B119ED0B19FB3197E66D0B50A7925743C9C5C08BAC9F91F6EF3BAC24"
+    },
+    {
+      "path": "src/test/java/org/openpnp/stencil/StencilCameraTest.java",
+      "sha256": "D3C0FFD57D9A89A9834DB78809C88C59298AA7B7AC2C2A81827ED8B2CB741B88"
+    },
+    {
+      "path": "src/test/java/org/openpnp/stencil/StencilPreviewCameraTest.java",
+      "sha256": "A23ED9C8014CFD3E28376642563E78D2F0AE83882323FF2045F8FF5BCF189556"
     }
   ],
   "differences": [
