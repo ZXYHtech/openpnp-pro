@@ -1,0 +1,1 @@
+THIRD_PARTY_NOTICES.txt is included in the runtime manifest; full notices are generated from docs/stencil/licenses. Native SDK source: https://github.com/Open-Cascade-SAS/OCCT/tree/V8.0.1 . Rebuild using build.ps1 and the exact official SDK documented in manifest.json.

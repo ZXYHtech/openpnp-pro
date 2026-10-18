@@ -1,0 +1,156 @@
+{
+  "schema_version": 1,
+  "targets": [
+    {
+      "path": "src/main/java/org/openpnp/stencil/StencilCadTask.java",
+      "sha256": "85C26F8A4DA2D5747C447A97C555DBB79EC658CF260F9BADC7ABF5DFFA2CE662"
+    },
+    {
+      "path": "src/main/java/org/openpnp/stencil/StencilFiles.java",
+      "sha256": "D9770C956CC890653CAD472B87A3942EE41C916C1E43FF7E3435D4012E53E11F"
+    },
+    {
+      "path": "src/main/java/org/openpnp/stencil/StencilJobs.java",
+      "sha256": "C8ED61F935AAA73BD794FD300212416F1FF120E7CBC117D7D7FBE4F117D9C760"
+    },
+    {
+      "path": "src/main/java/org/openpnp/stencil/StencilLabel.java",
+      "sha256": "A716FD110804D98ED5B4E766F3A44345576965CAE5147830A72E1B7041E6C3A1"
+    },
+    {
+      "path": "src/main/java/org/openpnp/stencil/StencilMesh.java",
+      "sha256": "7B2B6CCD4E3D37987E73E3DC96A05B16DE7B6E5E2F864C181660C62117101F8A"
+    },
+    {
+      "path": "src/main/java/org/openpnp/stencil/StencilNative.java",
+      "sha256": "35C32505C0D17DEF657B77AC08E6DF183CDF9AB3127061D360EE7B80973C5E89"
+    },
+    {
+      "path": "src/main/java/org/openpnp/stencil/StencilParameters.java",
+      "sha256": "E4956645B1962EB4EC53D5546750EEB23A87D09A276CE2DCC49231198F8AEC74"
+    },
+    {
+      "path": "src/main/java/org/openpnp/stencil/StencilPlan.java",
+      "sha256": "C02DF1EF37D7578B130E6AF6C553D4BCFCC61D8A85F2626E595C463C44606BFB"
+    },
+    {
+      "path": "src/main/java/org/openpnp/stencil/StencilPreview.java",
+      "sha256": "26599B4358955B0927C748E34CD72F3E84A7CBF9229967626A8B6AF660D3176C"
+    },
+    {
+      "path": "src/main/java/org/openpnp/stencil/StencilStore.java",
+      "sha256": "66835C8EB62534F2D110946AB4262307E108D88ADAC972860C7FC26F2CD50E92"
+    },
+    {
+      "path": "src/test/java/org/openpnp/stencil/StencilMeshLabelTest.java",
+      "sha256": "125F49A938362E6D94E05B2D5875A92BB8237AAA90C5279BB6B3E23F1D86AD7C"
+    },
+    {
+      "path": "src/test/java/org/openpnp/stencil/StencilNativeTest.java",
+      "sha256": "514B5288BD900BA4652C2E071A291C08F31CA7160B2244E7DC285FFD82B4E87E"
+    },
+    {
+      "path": "src/test/java/org/openpnp/stencil/StencilParametersTest.java",
+      "sha256": "3CBAFF92C5AF70A33D94B60751F51ACF7EF70C20E0EA93CA0E4F136615AA6801"
+    },
+    {
+      "path": "src/test/java/org/openpnp/stencil/StencilStoreTest.java",
+      "sha256": "E2BAAB55CBEFFFC47EAECB4400620C3B97DFC3EE6BC7D0FE32FCD4466990EA6D"
+    },
+    {
+      "path": "src/main/java/org/openpnp/gui/StencilFixtureDialog.java",
+      "sha256": "58AF793C1DD65D3A2424599D5F7705A537F51BB512818B1EAE9FC3AA07E793E0"
+    },
+    {
+      "path": "src/test/java/org/openpnp/gui/StencilFixtureDialogTest.java",
+      "sha256": "89D37C1C953EC7A96A1FA2C677D8B8310657DF8CBF99C172C811F5D2BBA833CB"
+    }
+  ],
+  "differences": [
+    "Java Swing replaces browser UI",
+    "Java business logic and packaged native OCCT replace Python",
+    "Frozen CAD protocol JSON replaces Python generation script",
+    "Java raster labels and system print dialog replace web and PowerShell label printing"
+  ],
+  "source_version": "1.14.0",
+  "sources": [
+    {
+      "path": "domain.py",
+      "sha256": "2E96675FA7A0582BC45225ED38165C6049301634F0C2BE1540866D99A130FE29"
+    },
+    {
+      "path": "geometry.py",
+      "sha256": "A0FB61F358F6A192768565CD0499785123E7BC5E1FE2F65840B47D774E4F7AA3"
+    },
+    {
+      "path": "hinge_calibration.py",
+      "sha256": "3D6A9169840EABB4385B1FACF220CB2318B38BE64DDA870D07C04EE70CA004B7"
+    },
+    {
+      "path": "text_layout.py",
+      "sha256": "9901E5FB5584EF0647F972576335D1C3DE6BC80AB21476B042D3CB1FA8128E96"
+    },
+    {
+      "path": "font_catalog.py",
+      "sha256": "FE78444258E2AFC4D68654E5465DA02B100FD7AE542D962C762ECFE483F29AD8"
+    },
+    {
+      "path": "worker.py",
+      "sha256": "99F7DF8794492FC12D2C5107AC818DC03F54061DBE0370EEBADB5F054418FAC2"
+    },
+    {
+      "path": "app.py",
+      "sha256": "A200211454B6BD0BD8E1007BDB0850DA5A3EF2C5451F47403B4598719DF55CE0"
+    },
+    {
+      "path": "labels.py",
+      "sha256": "3D2B3307FE7C5BC406C1F82F080C22CE1FC66D93DC25BCE322F5E9369BB58000"
+    },
+    {
+      "path": "label_print.py",
+      "sha256": "C2BCFA737BA4F050E3B916A6092CA4DDD86B913B8DF2F6C026967852038B1682"
+    },
+    {
+      "path": "mesh_export.py",
+      "sha256": "16E35BA7A1E74EAF54FFE28EFC304D924373F4653EC4519CDF0A66F88152AD51"
+    },
+    {
+      "path": "output_files.py",
+      "sha256": "56459122E598705BBBD3893ADB42126D725A156B6E3FAFB8D28868F8797A7CB8"
+    },
+    {
+      "path": "local_open.py",
+      "sha256": "83BA8E73750B57D12C1B78BAD3379FA702C962E097174D66C0BE1CA22C6F33AF"
+    },
+    {
+      "path": "desktop_open.py",
+      "sha256": "BBF71CFDCC9005FC53E7D12BBA000C5482B15C6106E7AE9E85ECA3257CE61E31"
+    },
+    {
+      "path": "factory-defaults.json",
+      "sha256": "BA490FCA48D7DC8655AAF1B42A62F6505F1B7A5216BFFAD3607158FE6D98EC70"
+    },
+    {
+      "path": "web/index.html",
+      "sha256": "7E52099399A9D6073D7BE2CDB192B98831C9BCF581C72CB7802D112228C88B53"
+    },
+    {
+      "path": "web/app.js",
+      "sha256": "8553EEE9AC1A2D0E6195EA319FDB577B8E3D08FE1BDDC524829F617FA5F3B23E"
+    },
+    {
+      "path": "web/viewer.js",
+      "sha256": "4E94C9BBD3B9CC15F074AF50213E38CA82ADAC993FEE21456BDC20BF05CF4751"
+    },
+    {
+      "path": "web/parameter-options.js",
+      "sha256": "4A135E52EDF1DB4B06CBD742E3413196C4CABD2191781EA9261676365B6B2CBE"
+    }
+  ],
+  "runtime_dependency_on_source": false,
+  "source_id": "stencil-studio",
+  "geometry_revision": 17,
+  "consumer_id": "openpnp-pro",
+  "source_unchanged": true,
+  "kind": "java-rewrite"
+}
