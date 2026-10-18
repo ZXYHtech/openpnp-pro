@@ -399,6 +399,7 @@ public class AutoSelectTextTable extends JTable {
     }
 
     public void autoFitColumnsToViewport() {
+        installPersistentColumnWidths();
         int columnCount = getColumnCount();
         if (columnCount == 0) {
             return;
@@ -464,6 +465,7 @@ public class AutoSelectTextTable extends JTable {
             tableColumn.setPreferredWidth(widths[column]);
             tableColumn.setWidth(widths[column]);
         }
+        TableUtils.saveColumnWidths(this);
         revalidate();
         repaint();
     }
@@ -476,6 +478,7 @@ public class AutoSelectTextTable extends JTable {
                 Math.max(80, (int) (viewportWidth * 0.65)));
         column.setPreferredWidth(width);
         column.setWidth(width);
+        TableUtils.saveColumnWidths(this);
         revalidate();
         repaint();
     }

@@ -49,6 +49,30 @@ public final class CoreXYIntegration {
         return new PrecisionStore(runtimeDirectory(configuration).resolve("precision"));
     }
 
+    /** Use Pro's public save API or the installed stock SDK's native backed-up machine writer. */
+    public static void saveMachineConfiguration(Configuration configuration) throws Exception {
+        try {
+            try {
+                Configuration.class.getMethod("saveMachineConfiguration").invoke(configuration);
+            }
+            catch (NoSuchMethodException stock) {
+                java.lang.reflect.Method backup = Configuration.class.getDeclaredMethod(
+                        "createBackedUpFile", String.class, java.time.LocalDateTime.class);
+                java.lang.reflect.Method save = Configuration.class.getDeclaredMethod("saveMachine", java.io.File.class);
+                backup.setAccessible(true);
+                save.setAccessible(true);
+                java.io.File target = (java.io.File) backup.invoke(configuration, "machine.xml", java.time.LocalDateTime.now());
+                save.invoke(configuration, target);
+            }
+        }
+        catch (java.lang.reflect.InvocationTargetException failure) {
+            Throwable cause = failure.getCause();
+            if (cause instanceof Exception) { throw (Exception) cause; }
+            if (cause instanceof Error) { throw (Error) cause; }
+            throw new IllegalStateException("无法保存机器配置", cause);
+        }
+    }
+
     public static Path legacyConfiguration(Configuration configuration) throws Exception {
         Path path = runtimeDirectory(configuration).resolve("config/corexy.properties");
         if (!Files.exists(path)) {
@@ -176,7 +200,7 @@ public final class CoreXYIntegration {
                 PrecisionProfile profile = backend.profile(report);
                 profile.calibrationDirectory = directory.toString();
                 store.saveProfile(profile, false);
-                configuration.saveMachineConfiguration();
+                saveMachineConfiguration(configuration);
                 store.setEnabled(true);
                 report.enabled = true;
                 report.outcome = measuredOutcome;
@@ -199,7 +223,7 @@ public final class CoreXYIntegration {
             try {
                 backend.finish(false, null, report.settlingMillis);
                 store.restore(previous);
-                configuration.saveMachineConfiguration();
+                saveMachineConfiguration(configuration);
             }
             catch (Exception rollbackFailure) {
                 persistenceFailure.addSuppressed(rollbackFailure);
@@ -284,7 +308,7 @@ public final class CoreXYIntegration {
         properties.setProperty("dry-run", "false");
         storeProperties(legacy, properties);
         CoreXYAgent.install(CoreXYAgent.getStartupInstrumentation(), legacy.toString());
-        configuration.saveMachineConfiguration();
+        saveMachineConfiguration(configuration);
         LegacyCompensationInterlock.release(configuration);
         startupStatus = "CoreXY 补偿已停用，轴设置已恢复。";
         if (homeFailure != null) {

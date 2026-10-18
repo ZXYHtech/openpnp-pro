@@ -62,7 +62,7 @@ public final class CalibrationLivePanel extends JPanel implements CameraListener
         if (camera == selected) { return; }
         disconnect();
         camera = selected;
-        org.openpnp.util.CameraPreviewDemand.acquire(camera);
+        updatePreviewDemand(true);
         camera.startContinuousCapture(this);
         refresh.start();
     }
@@ -71,10 +71,23 @@ public final class CalibrationLivePanel extends JPanel implements CameraListener
         refresh.stop();
         if (camera != null) {
             camera.stopContinuousCapture(this);
-            org.openpnp.util.CameraPreviewDemand.release(camera);
+            updatePreviewDemand(false);
         }
         camera = null;
         frame = null;
+    }
+
+    private void updatePreviewDemand(boolean acquire) {
+        try {
+            Class.forName("org.openpnp.util.CameraPreviewDemand")
+                    .getMethod(acquire ? "acquire" : "release", Camera.class).invoke(null, camera);
+        }
+        catch (ClassNotFoundException stock) {
+            // Stock OpenPnP uses continuous capture subscriptions without Pro's preview gate.
+        }
+        catch (ReflectiveOperationException failure) {
+            throw new IllegalStateException("无法更新相机预览状态", failure);
+        }
     }
 
     public void update(String message) {

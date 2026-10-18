@@ -646,6 +646,14 @@ public class Configuration extends AbstractModelObject {
         saveMachine(createBackedUpFile("machine.xml", LocalDateTime.now()));
     }
 
+    /** Persist feeder material references, including newly created Parts, without board-save prompts. */
+    public synchronized void saveFeederConfiguration() throws Exception {
+        LocalDateTime now = LocalDateTime.now();
+        savePackages(createBackedUpFile("packages.xml", now));
+        saveParts(createBackedUpFile("parts.xml", now));
+        saveMachine(createBackedUpFile("machine.xml", now));
+    }
+
     /**
      * Writes a non-destructive recovery snapshot without changing regular file locations or
      * clearing dirty flags.

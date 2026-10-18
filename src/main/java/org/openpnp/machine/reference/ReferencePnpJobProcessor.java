@@ -208,6 +208,7 @@ public class ReferencePnpJobProcessor extends AbstractPnpJobProcessor {
             throw new Exception("Can't initialize with a null Job.");
         }
         this.job = job;
+        pauseWhenNozzlesEmptyRequested = false;
         trialBoardLocation = null;
         trialPlacement = null;
         currentStep = new PreFlight();
@@ -272,6 +273,7 @@ public class ReferencePnpJobProcessor extends AbstractPnpJobProcessor {
     }
     @Override
     public synchronized boolean next() throws JobProcessorException {
+        if (currentStep != null && isEmptyNozzlePauseRequested()) { return true; }
         this.fireJobState(Configuration.get().getMachine().getSignalers(), AbstractJobProcessor.State.RUNNING);
         try {
             currentStep = currentStep.step();
@@ -285,6 +287,23 @@ public class ReferencePnpJobProcessor extends AbstractPnpJobProcessor {
             this.fireJobState(Configuration.get().getMachine().getSignalers(), AbstractJobProcessor.State.FINISHED);
         }
         return currentStep != null;
+    }
+
+    private volatile boolean pauseWhenNozzlesEmptyRequested;
+
+    /** Must remain lock-free: next() holds this processor's monitor during physical operations. */
+    public void requestPauseWhenNozzlesEmpty(boolean requested) {
+        pauseWhenNozzlesEmptyRequested = requested;
+    }
+
+    boolean isEmptyNozzlePauseRequested() {
+        if (!pauseWhenNozzlesEmptyRequested) { return false; }
+        for (Head candidate : Configuration.get().getMachine().getHeads()) {
+            for (Nozzle nozzle : candidate.getNozzles()) {
+                if (nozzle.getPart() != null) { return false; }
+            }
+        }
+        return true;
     }
 
     private void scriptJobError(Exception e1) throws JobProcessorException {
@@ -2647,6 +2666,7 @@ public class ReferencePnpJobProcessor extends AbstractPnpJobProcessor {
              * Get the first planned placement from the list that is still in processing status
              * and that is not marked completed.
              */
+            if (this instanceof Pick && isEmptyNozzlePauseRequested()) { return this; }
             PlannedPlacement plannedPlacement = plannedPlacements
                     .stream()
                     .filter(p -> {
