@@ -352,10 +352,14 @@ public final class StencilPreview extends JPanel {
         }
         centerX = (minX + maxX) / 2;
         centerY = (minY + maxY) / 2;
-        scale = Math.max(.05, Math.min((getWidth() - 80) / (maxX - minX + 35), (getHeight() - 100) / (maxY - minY + 60))) * zoom;
         cx = getWidth() / 2.0 + panX;
         cy = getHeight() / 2.0 + panY;
         double a = Math.toRadians(yaw), b = Math.toRadians(pitch), ca = Math.cos(a), sa = Math.sin(a), cb = Math.cos(b), sb = Math.sin(b);
+        double projectedWidth = Math.abs(ca) * (maxX - minX) + Math.abs(sa) * (maxY - minY);
+        double projectedHeight = Math.abs(sb) * (Math.abs(sa) * (maxX - minX)
+                + Math.abs(ca) * (maxY - minY)) + Math.abs(cb) * (d.hingeZ + 4.2);
+        scale = Math.max(.05, Math.min((getWidth() - 48) / (projectedWidth + 10),
+                (getHeight() - 48) / (projectedHeight + 12))) * zoom;
         List<Triangle> draw = new ArrayList<>();
         for (int i = 0; i < meshes.size(); i++) {
             for (double[] t : meshes.get(i).triangles) {

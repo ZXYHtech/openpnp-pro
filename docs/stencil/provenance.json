@@ -35,7 +35,7 @@
     },
     {
       "path": "src/main/java/org/openpnp/stencil/StencilPreview.java",
-      "sha256": "26599B4358955B0927C748E34CD72F3E84A7CBF9229967626A8B6AF660D3176C"
+      "sha256": "AB53DBC17F73F7569D732B2E62D4928D0DDB6DA95057119C1FBAE573EE23CB12"
     },
     {
       "path": "src/main/java/org/openpnp/stencil/StencilStore.java",
@@ -59,7 +59,7 @@
     },
     {
       "path": "src/main/java/org/openpnp/gui/StencilFixtureDialog.java",
-      "sha256": "58AF793C1DD65D3A2424599D5F7705A537F51BB512818B1EAE9FC3AA07E793E0"
+      "sha256": "91CDEEEBA00E3514A7FDDC3B974599BDD68E2E4D079E6DA6223C8421751A9C7F"
     },
     {
       "path": "src/test/java/org/openpnp/gui/StencilFixtureDialogTest.java",

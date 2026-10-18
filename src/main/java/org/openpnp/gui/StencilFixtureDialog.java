@@ -344,16 +344,20 @@ public final class StencilFixtureDialog extends JDialog {
         references.addActionListener(e -> preview.references(references.isSelected()));
         pose.add(references);
         out.add(controls, BorderLayout.NORTH);
-        viewTabs.addTab("② 结构示意", new JPanel());
-        viewTabs.addTab("实际三维", new JPanel());
-        viewTabs.addTab("打印姿态", new JPanel());
+        viewTabs.addTab("② 结构示意", new JPanel(new BorderLayout()));
+        viewTabs.addTab("实际三维", new JPanel(new BorderLayout()));
+        viewTabs.addTab("打印姿态", new JPanel(new BorderLayout()));
+        ((JPanel) viewTabs.getComponentAt(0)).add(preview, BorderLayout.CENTER);
         JPanel view = new JPanel(new BorderLayout());
-        view.add(viewTabs, BorderLayout.NORTH);
-        view.add(preview, BorderLayout.CENTER);
+        view.add(viewTabs, BorderLayout.CENTER);
         viewTabs.addChangeListener(e -> {
             int i = viewTabs.getSelectedIndex();
+            JPanel page = (JPanel) viewTabs.getComponentAt(i);
+            page.add(preview, BorderLayout.CENTER);
             preview.threeD(i > 0);
             preview.printPose(i == 2);
+            page.revalidate();
+            page.repaint();
         });
         report.setEditable(false);
         report.setLineWrap(true);
