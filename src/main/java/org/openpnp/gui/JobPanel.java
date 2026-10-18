@@ -85,6 +85,7 @@ import org.openpnp.gui.components.ExistingBoardOrPanelDialog;
 import org.openpnp.gui.components.reticle.BoardPlacementReticle;
 import org.openpnp.gui.processes.MultiPlacementBoardLocationProcess;
 import org.openpnp.gui.support.ActionGroup;
+import org.openpnp.gui.support.BottomVisionRecoveryDialog;
 import org.openpnp.gui.support.CustomBooleanRenderer;
 import org.openpnp.gui.support.MonospacedFontTableCellRenderer;
 import org.openpnp.gui.support.MonospacedFontWithAffineStatusTableCellRenderer;
@@ -1164,33 +1165,21 @@ public class JobPanel extends JPanel {
     }
 
     private boolean showBottomVisionRecovery(JobProcessorException exception) {
-        if (!(jobProcessor instanceof ReferencePnpJobProcessor)
-                || !(exception.getSource() instanceof Part)
-                || !(exception.getSecondarySource() instanceof Nozzle)) {
+        if (!(jobProcessor instanceof ReferencePnpJobProcessor)) {
             return false;
         }
 
         ReferencePnpJobProcessor processor = (ReferencePnpJobProcessor) jobProcessor;
-        Nozzle nozzle = (Nozzle) exception.getSecondarySource();
-        if (!processor.canRecoverFailedAlignment(nozzle)) {
+        Nozzle nozzle = exception.getSource() instanceof Nozzle ? (Nozzle) exception.getSource()
+                : exception.getSecondarySource() instanceof Nozzle ? (Nozzle) exception.getSecondarySource() : null;
+        Part part = processor.getFailedAlignmentPart(nozzle);
+        if (part == null) {
             return false;
         }
-        Part part = (Part) exception.getSource();
-        Object[] options = {
-                "Discard + Re-pick",
-                "Retry Vision",
-                "Keep Paused",
-                "Abort Job",
-                "Details"
-        };
-        String message = "Bottom-vision alignment failed for " + part.getId()
-                + " on " + nozzle.getName() + ".\n\n"
-                + exception.getMessage() + "\n\nChoose a safe recovery action:";
-        int choice = JOptionPane.showOptionDialog(getTopLevelAncestor(), message,
-                "Bottom Vision Recovery", JOptionPane.DEFAULT_OPTION,
-                JOptionPane.WARNING_MESSAGE, null, options, options[0]);
+        BottomVisionRecoveryDialog.Choice choice = BottomVisionRecoveryDialog.show(
+                getTopLevelAncestor(), part, nozzle, exception);
 
-        if (choice == 0) {
+        if (choice == BottomVisionRecoveryDialog.Choice.REPICK) {
             UiUtils.submitUiMachineTask(
                     () -> processor.discardAndRequeueFailedAlignment(nozzle),
                     requeued -> {
@@ -1198,24 +1187,22 @@ public class JobPanel extends JPanel {
                             jobResume();
                         }
                         else {
-                            UiUtils.showError(new Exception(
-                                    "The failed alignment is no longer active; nothing was discarded."));
+                            UiUtils.showError(getTopLevelAncestor(), "重新拾取未执行",
+                                    new Exception("当前识别失败的器件状态已改变，未丢弃或重新拾取任何器件。"));
                         }
                     },
                     failure -> UiUtils.showError(getTopLevelAncestor(),
-                            "Bottom Vision Recovery", failure));
+                            "重新拾取失败，任务保持暂停",
+                            new Exception("未能完成旧器件的丢弃，任务保持暂停。请检查机器状态后再继续。", failure)));
         }
-        else if (choice == 1) {
+        else if (choice == BottomVisionRecoveryDialog.Choice.RETRY_VISION) {
             jobResume();
         }
-        else if (choice == 3) {
+        else if (choice == BottomVisionRecoveryDialog.Choice.ABORT) {
             setState(State.Stopping);
             jobAbort();
         }
-        else if (choice == 4) {
-            UiUtils.showError(getTopLevelAncestor(), "Bottom Vision Details", exception);
-        }
-        // Keep Paused and closing the dialog intentionally leave the processor paused.
+        // Keeping paused or closing the dialog must not resume the machine.
         return true;
     }
     private void selectJobProcessorExceptionSource(Object source,boolean primary) {
