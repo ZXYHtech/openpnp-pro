@@ -27,11 +27,11 @@
     },
     {
       "path": "src/main/java/org/openpnp/stencil/StencilParameters.java",
-      "sha256": "E4956645B1962EB4EC53D5546750EEB23A87D09A276CE2DCC49231198F8AEC74"
+      "sha256": "7DB68C62348D063BE778DE86697719D0C10EAD6C53F191548CBCF1DC7C0E22B8"
     },
     {
       "path": "src/main/java/org/openpnp/stencil/StencilPlan.java",
-      "sha256": "C02DF1EF37D7578B130E6AF6C553D4BCFCC61D8A85F2626E595C463C44606BFB"
+      "sha256": "55D15BD63B40D3F9A46004C80EA18078C7C87ED4FF36075F86C1E363273EA2FA"
     },
     {
       "path": "src/main/java/org/openpnp/stencil/StencilPreview.java",
@@ -51,7 +51,7 @@
     },
     {
       "path": "src/test/java/org/openpnp/stencil/StencilParametersTest.java",
-      "sha256": "3CBAFF92C5AF70A33D94B60751F51ACF7EF70C20E0EA93CA0E4F136615AA6801"
+      "sha256": "145C30797136C9269F8F4350044F1B3E7FBA8442837CD61A4BE935141A4503C1"
     },
     {
       "path": "src/test/java/org/openpnp/stencil/StencilStoreTest.java",
@@ -59,11 +59,11 @@
     },
     {
       "path": "src/main/java/org/openpnp/gui/StencilFixtureDialog.java",
-      "sha256": "91CDEEEBA00E3514A7FDDC3B974599BDD68E2E4D079E6DA6223C8421751A9C7F"
+      "sha256": "C80906525351887B558313F5A5A9B3794CC1E325B97A0DDA841C8D0E7FDED2FB"
     },
     {
       "path": "src/test/java/org/openpnp/gui/StencilFixtureDialogTest.java",
-      "sha256": "89D37C1C953EC7A96A1FA2C677D8B8310657DF8CBF99C172C811F5D2BBA833CB"
+      "sha256": "ED14E90E683DE15B2A2A1DD181405E5401C3B2C8D18269856C8849E465EE07F3"
     },
     {
       "path": "src/main/java/org/openpnp/stencil/StencilCamera.java",
@@ -76,13 +76,18 @@
     {
       "path": "src/test/java/org/openpnp/stencil/StencilPreviewCameraTest.java",
       "sha256": "A23ED9C8014CFD3E28376642563E78D2F0AE83882323FF2045F8FF5BCF189556"
+    },
+    {
+      "path": "src/main/resources/org/openpnp/stencil/factory-defaults.json",
+      "sha256": "7E302D7936CF419D347F320785376ED88C706F541E8E5863A096F63BDE637DE8"
     }
   ],
   "differences": [
     "Java Swing replaces browser UI",
     "Java business logic and packaged native OCCT replace Python",
     "Frozen CAD protocol JSON replaces Python generation script",
-    "Java raster labels and system print dialog replace web and PowerShell label printing"
+    "Java raster labels and system print dialog replace web and PowerShell label printing",
+    "Product name and default fixture model changed to YAA2000-GWJJ; two-column parameter layout and product instructions"
   ],
   "source_version": "1.14.0",
   "sources": [

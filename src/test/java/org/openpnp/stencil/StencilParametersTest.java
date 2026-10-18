@@ -9,10 +9,22 @@ class StencilParametersTest {
     @Test
     void sourceFactoryAndEnvelopeRoundtrip() {
         StencilParameters p = StencilParameters.factory();
+        assertEquals("YAA2000-GWJJ", p.s("model"));
         assertEquals(146.9, p.n("pcb_length"));
         assertEquals(4, p.n("screw_count"));
         assertEquals(-.1, p.n("pcb_depth_compensation"));
         assertEquals(p.json().toString(), StencilParameters.parse(p.envelope().toString()).json().toString());
+    }
+
+    @Test
+    void instructionsUseTheProductNameAndCurrentFixtureParameters() {
+        String text = new StencilPlan(StencilParameters.factory().with("model", "测试夹具")).instructions();
+        assertTrue(text.contains("YAA2000-GWJJ"));
+        assertTrue(text.contains("测试夹具"));
+        for (String removed : new String[] { "Java", "Python", "原应用", "后台服务", "浏览器" }) {
+            assertFalse(text.contains(removed), removed);
+        }
+        assertDoesNotThrow(() -> new StencilCadTask().fixture(StencilParameters.factory()));
     }
 
     @Test

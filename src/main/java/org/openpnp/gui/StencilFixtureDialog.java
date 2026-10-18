@@ -74,7 +74,7 @@ public final class StencilFixtureDialog extends JDialog {
     private final JSpinner lift = new JSpinner(new SpinnerNumberModel(0.0, 0.0, 12.0, 1.0));
 
     public StencilFixtureDialog(Window owner, Path configurationDirectory) throws IOException {
-        super(owner, "钢网夹具设计 · OpenPnP Pro · Java 原生版", ModalityType.MODELESS);
+        super(owner, "钢网夹具设计 · " + StencilParameters.PRODUCT_MODEL, ModalityType.MODELESS);
         Path root = configurationDirectory.resolve("stencil-fixtures");
         store = new StencilStore(root);
         jobs = StencilJobs.shared(root);
@@ -87,11 +87,15 @@ public final class StencilFixtureDialog extends JDialog {
         JLabel heading = new JLabel("① 填写尺寸   →   ② 检查结构与公差   →   ③ 生成并打印");
         heading.setFont(heading.getFont().deriveFont(Font.BOLD, 17));
         top.add(heading, BorderLayout.NORTH);
-        top.add(new JLabel("三件式快拆夹具 · 支持原应用 1.14.0 参数 · 无需 Python / 浏览器 / 后台服务"), BorderLayout.CENTER);
+        top.add(new JLabel(StencilParameters.PRODUCT_MODEL + " · 三件式快拆钢网夹具"), BorderLayout.CENTER);
         JPanel actions = new JPanel(new FlowLayout(FlowLayout.LEFT, 6, 0));
-        actions.add(button("导入原应用参数", this::importParameters));
+        actions.setName("stencil-parameter-actions");
+        actions.add(button("保存为启动参数", () -> {
+            store.startup(parameters());
+            status.setText("已保存为启动参数，下次打开自动载入。");
+        }));
+        actions.add(button("导入参数", this::importParameters));
         actions.add(button("导出参数", this::exportParameters));
-        actions.add(button("保存为启动参数", () -> store.startup(parameters())));
         actions.add(button("恢复出厂参数", () -> {
             if (confirm("恢复出厂参数？当前未保存的编辑将被替换。")) {
                 apply(StencilParameters.factory());
@@ -103,11 +107,12 @@ public final class StencilFixtureDialog extends JDialog {
         JTabbedPane left = new JTabbedPane();
         left.addTab("尺寸与选项", parameterPanel());
         left.addTab("已保存配置", presetPanel());
+        left.setMinimumSize(new Dimension(460, 0));
         JSplitPane split = new JSplitPane(JSplitPane.HORIZONTAL_SPLIT, left, workspace());
         horizontalSplit = split;
         split.setOneTouchExpandable(true);
-        split.setResizeWeight(.32);
-        split.setDividerLocation(380);
+        split.setResizeWeight(.42);
+        split.setDividerLocation(520);
         add(split, BorderLayout.CENTER);
         JPanel bottom = new JPanel(new BorderLayout(6, 5));
         bottom.setBorder(BorderFactory.createEmptyBorder(8, 14, 10, 14));
@@ -157,7 +162,7 @@ public final class StencilFixtureDialog extends JDialog {
                 setSize(Math.max(1000, Math.min(1800, windowState.get("width").getAsInt())), Math.max(690, Math.min(1200, windowState.get("height").getAsInt())));
             }
             if (windowState.has("horizontal")) {
-                horizontalSplit.setDividerLocation(windowState.get("horizontal").getAsInt());
+                horizontalSplit.setDividerLocation(Math.max(460, windowState.get("horizontal").getAsInt()));
             }
             if (windowState.has("vertical")) {
                 verticalSplit.setDividerLocation(windowState.get("vertical").getAsInt());
@@ -179,7 +184,7 @@ public final class StencilFixtureDialog extends JDialog {
             GridBagConstraints c = new GridBagConstraints();
             c.insets = new Insets(6, 7, 6, 7);
             c.anchor = GridBagConstraints.WEST;
-            c.gridy = 0;
+            int cell = 0;
             for (StencilParameters.Field f : StencilParameters.FIELDS.values()) {
                 if (f.group.equals(group)) {
                     // Preserved on import; legacy field never drove the source app's current recessed text.
@@ -218,18 +223,26 @@ public final class StencilFixtureDialog extends JDialog {
                     input.setName("stencil-" + f.key);
                     input.setToolTipText(f.label + (f.value instanceof Number && f.choices.length == 0 ? " · 范围 " + f.min + "～" + f.max + " mm" : ""));
                     editors.put(f.key, input);
-                    c.gridx = 0;
-                    c.weightx = 0;
-                    c.fill = GridBagConstraints.NONE;
-                    form.add(new JLabel(f.label), c);
-                    c.gridx = 1;
+                    boolean wide = f.key.equals("model") || f.key.equals("emboss_text");
+                    if (wide && cell % 2 != 0) {
+                        cell++;
+                    }
+                    c.gridx = cell % 2;
+                    c.gridy = cell / 2;
+                    c.gridwidth = wide ? 2 : 1;
                     c.weightx = 1;
                     c.fill = GridBagConstraints.HORIZONTAL;
-                    form.add(input, c);
-                    c.gridy++;
+                    JPanel field = new JPanel(new BorderLayout(0, 4));
+                    JLabel label = new JLabel(f.label);
+                    label.setLabelFor(input);
+                    field.add(label, BorderLayout.NORTH);
+                    field.add(input, BorderLayout.CENTER);
+                    form.add(field, c);
+                    cell += wide ? 2 : 1;
                 }
             }
             c.gridx = 0;
+            c.gridy = (cell + 1) / 2;
             c.gridwidth = 2;
             c.weighty = 1;
             c.fill = GridBagConstraints.VERTICAL;
@@ -767,7 +780,13 @@ public final class StencilFixtureDialog extends JDialog {
     }
 
     private void help() {
-        JTextArea text = new JTextArea(new StencilPlan(StencilParameters.factory()).instructions() + "\n使用入口：窗口 → 钢网夹具设计；实验功能中也可打开。\n参数和结果位置：" + store.root() + "\n\n原应用命名配置可先导出为 JSON，再在此导入；不读取或修改应用中心账号数据。\n生成任务在后台执行，关闭设计窗口不会取消任务。退出 Pro 会停止生成，下次显示为中断，已完成文件保留。\n生成文件内的 cad-input.json 是冻结的原生 CAD 操作程序，报告记录来源版本和软件校验结果。\n点击定位时请选择空白顶面；三维定位须先合拢并归零翻转/抬升，打印姿态不能定位。", 22, 80);
+        StencilParameters info;
+        try {
+            info = parameters();
+        } catch (Exception ignored) {
+            info = loadedParameters == null ? StencilParameters.factory() : loadedParameters;
+        }
+        JTextArea text = new JTextArea(new StencilPlan(info).instructions() + "\n使用入口：窗口 → 钢网夹具设计；实验功能中也可打开。\n参数和结果位置：" + store.root() + "\n\n先填写型号和 PCB 尺寸，再检查结构、公差及刻字。参数区每行两项，可切换基本、公差、结构和刻字页面。\n“保存为启动参数”会记住当前全部设置；也可导入、导出参数，或将不同夹具保存为命名配置。\n生成完成后查看校验报告，选择单件 STEP / STL / 3MF，或导出完整 ZIP。三维页检查装配，打印姿态页检查三个零件的打印朝向。\n生成任务在后台执行，关闭设计窗口不会取消任务。退出软件会停止生成，下次显示为中断，已完成文件保留。\n点击定位时请选择空白顶面；三维定位须先合拢并归零翻转/抬升，打印姿态不能定位。", 22, 80);
         text.setEditable(false);
         text.setLineWrap(true);
         text.setWrapStyleWord(true);

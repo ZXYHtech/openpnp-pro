@@ -4,7 +4,8 @@
 
 | 能力或细节 | 来源 | Java 沿用方式 / 差异 | 验证 |
 |---|---|---|---|
-| 全量 schema 1 参数、严格类型/范围、尺寸联动 | domain.py、factory-defaults.json、web/parameter-options.js | StencilParameters；工厂参数一致；保留旧 engrave_depth 导入导出但隐藏不影响现行几何的旧编辑项 | 参数及界面测试 |
+| 全量 schema 1 参数、严格类型/范围、尺寸联动 | domain.py、factory-defaults.json、web/parameter-options.js | StencilParameters；工厂尺寸一致，按用户要求将默认夹具名改为 YAA2000-GWJJ；保留旧 engrave_depth 导入导出但隐藏不影响现行几何的旧编辑项 | 参数及界面测试 |
+| 双列参数及启动保存入口 | web/index.html 的 pair 布局、web/app.js | 沿用每行两项的标签加输入结构；型号和长文字占整行；保存启动参数置于工具栏首项 | 实际窗口位置及保存回读测试 |
 | 三件主体、开口轴座、扁轴、左右快拆扩展 | geometry.py、domain.py | StencilCadTask / StencilPlan，几何版本 17 | 三组原源码实体体积和包围盒对照、实体有效性 |
 | 侧/底部取板孔、开边通道和 3 mm 实心圈 | 同上 | 逐公式迁移，底部孔半径受 PCB 长宽共同约束 | 不对称底部孔参数对照及公差边界测试 |
 | 网格/侧面减重和底厚保护 | 同上 | 同一网格划分及避让，报告计算移除体积 | STEP 实体对照、最小底厚组合测试 |

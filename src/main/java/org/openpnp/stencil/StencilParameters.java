@@ -10,6 +10,8 @@ import com.google.gson.*;
  */
 public final class StencilParameters {
 
+    public static final String PRODUCT_MODEL = "YAA2000-GWJJ";
+
     public static final class Field {
 
         public final String key, label, group;

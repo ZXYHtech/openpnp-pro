@@ -570,9 +570,10 @@ public class ReferenceBottomVision extends AbstractPartAlignment {
             pipeline.setProperty("footprint.maxHeight", maxDim);
             // Set alignment parameters.
             pipeline.setProperty("MinAreaRect.center", wantedLocation);
-            pipeline.setProperty("MinAreaRect.expectedAngle", wantedLocation.getRotation());
+            double expectedImageAngle = -VisionUtils.getCameraAngle(camera, wantedLocation.getRotation());
+            pipeline.setProperty("MinAreaRect.expectedAngle", expectedImageAngle);
             pipeline.setProperty("DetectRectlinearSymmetry.center", wantedLocation);
-            pipeline.setProperty("DetectRectlinearSymmetry.expectedAngle", wantedLocation.getRotation());
+            pipeline.setProperty("DetectRectlinearSymmetry.expectedAngle", expectedImageAngle);
             // Set the background removal properties.
             pipeline.setProperty("DetectRectlinearSymmetry.searchDistance", nozzleTip.getMaxPickTolerance()
                     .multiply(1.2)); // Allow for some tolerance, we will check the result later.

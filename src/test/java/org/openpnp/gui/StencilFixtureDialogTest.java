@@ -40,6 +40,18 @@ class StencilFixtureDialogTest {
                 d.setVisible(true);
                 d.validate();
                 assertTrue(d.getTitle().contains("钢网夹具"));
+                assertTrue(d.getTitle().contains("YAA2000-GWJJ"));
+                assertFalse(d.getTitle().contains("Java"));
+                JPanel actions = (JPanel) named(d, "stencil-parameter-actions");
+                assertEquals("保存为启动参数", ((JButton) actions.getComponent(0)).getText());
+                assertEquals("导入参数", ((JButton) actions.getComponent(1)).getText());
+                assertEquals("YAA2000-GWJJ", ((JTextField) named(d, "stencil-model")).getText());
+                JComponent length = (JComponent) named(d, "stencil-pcb_length");
+                JComponent width = (JComponent) named(d, "stencil-pcb_width");
+                Point a = SwingUtilities.convertPoint(length, 0, 0, d);
+                Point b = SwingUtilities.convertPoint(width, 0, 0, d);
+                assertEquals(a.y, b.y, "PCB length and width must share a row");
+                assertTrue(b.x > a.x + length.getWidth(), "Two parameter fields must appear side by side");
                 assertTrue(named(d, "stencil-generate") instanceof JButton);
                 assertEquals("4", ((JComboBox<?>) named(d, "stencil-screw_count")).getSelectedItem());
                 assertEquals(146.9, ((Number) ((JSpinner) named(d, "stencil-pcb_length")).getValue()).doubleValue());
@@ -49,6 +61,8 @@ class StencilFixtureDialogTest {
                 assertFalse(named(d, "stencil-generate").isEnabled());
                 ((JSpinner) named(d, "stencil-pcb_depth_compensation")).setValue(.05);
                 assertTrue(named(d, "stencil-generate").isEnabled());
+                ((JButton) actions.getComponent(0)).doClick();
+                assertEquals(15, new StencilStore(dir.resolve("stencil-fixtures")).startup().n("top_distance"));
                 assertFalse(Files.exists(dir.resolve("machine.xml")));
             } catch (Throwable t) {
                 failure[0] = t;
