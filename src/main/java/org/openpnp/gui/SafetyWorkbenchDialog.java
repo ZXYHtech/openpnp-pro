@@ -696,6 +696,21 @@ public class SafetyWorkbenchDialog extends JDialog {
         visionTiming.setToolTipText("查看真实静拍调用的移动下发、采图/稳定、流水线耗时和复拍轮数，不额外拍照。");
         visionTiming.addActionListener(event -> showBottomVisionTiming());
         coordinatedMotion.add(visionTiming);
+        JButton motionDiagnostics = new JButton("联动运行诊断");
+        motionDiagnostics.setName("xyz-runtime-diagnostics");
+        motionDiagnostics.addActionListener(event -> {
+            JTextArea diagnosticText = new JTextArea(org.openpnp.machine.reference.safety.DynamicMotionDiagnostics.summary(), 18, 70);
+            diagnosticText.setEditable(false);
+            diagnosticText.setLineWrap(true);
+            diagnosticText.setWrapStyleWord(true);
+            Object[] options = { "关闭", "复制 CSV" };
+            if (JOptionPane.showOptionDialog(this, new JScrollPane(diagnosticText), "XY/Z 联动运行诊断 · 本次启动",
+                    JOptionPane.DEFAULT_OPTION, JOptionPane.INFORMATION_MESSAGE, null, options, options[0]) == 1) {
+                Toolkit.getDefaultToolkit().getSystemClipboard().setContents(new StringSelection(
+                        org.openpnp.machine.reference.safety.DynamicMotionDiagnostics.csv()), null);
+            }
+        });
+        coordinatedMotion.add(motionDiagnostics);
         header.add(coordinatedMotion);
         return header;
     }

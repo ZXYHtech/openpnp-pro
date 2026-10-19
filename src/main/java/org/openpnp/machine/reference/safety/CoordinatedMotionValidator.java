@@ -29,6 +29,10 @@ final class CoordinatedMotionValidator {
     }
 
     static ValidationResult validate(SafetyWorkbenchModel model, List<Waypoint> path, List<DynamicTool> tools, Waypoint anchor) {
+        return validate(model, path, tools, anchor, Long.MAX_VALUE);
+    }
+
+    static ValidationResult validate(SafetyWorkbenchModel model, List<Waypoint> path, List<DynamicTool> tools, Waypoint anchor, long deadline) {
         Set<String> issues = new LinkedHashSet<>();
         List<Waypoint> samples = new ArrayList<>();
         if (path == null || path.isEmpty() || tools == null || tools.isEmpty()) {
@@ -70,20 +74,38 @@ final class CoordinatedMotionValidator {
                 }
             }
             Collections.sort(fractions);
+            // A cam envelope uses the full segment Z range at every XY interval.
+            // Resolve those identical axis transforms once per segment, not once per sample.
+            List<Waypoint> segmentStarts = new ArrayList<>();
+            List<Waypoint> segmentEnds = new ArrayList<>();
+            for (DynamicTool tool : tools) {
+                segmentStarts.add(tool.conservativeSegmentZ ? tool.at(anchor, first) : null);
+                segmentEnds.add(tool.conservativeSegmentZ ? tool.at(anchor, last) : null);
+            }
             for (int index = 1; index < fractions.size(); index++) {
+                if ((index & 31) == 1 && System.nanoTime() > deadline) {
+                    return new ValidationResult(Collections.singletonList("规划超过 40 ms 预算，保持原安全 Z"), samples);
+                }
                 Waypoint a = Waypoint.interpolate(first, last, fractions.get(index - 1));
                 Waypoint b = Waypoint.interpolate(first, last, fractions.get(index));
                 samples.add(b);
                 List<Envelope> envelopes = new ArrayList<>();
-                for (DynamicTool tool : tools) {
-                    Waypoint poseA = tool.at(anchor, a);
-                    Waypoint poseB = tool.at(anchor, b);
+                for (int toolIndex = 0; toolIndex < tools.size(); toolIndex++) {
+                    DynamicTool tool = tools.get(toolIndex);
+                    Waypoint poseA;
+                    Waypoint poseB;
                     if (tool.conservativeSegmentZ) {
                         // Cam Z is monotone in raw motor position, but nonlinear
                         // in time. Cover the complete segment Z range at every XY
                         // interval instead of assuming linear physical Z motion.
-                        poseA = new Waypoint(poseA.x, poseA.y, tool.at(anchor, first).z);
-                        poseB = new Waypoint(poseB.x, poseB.y, tool.at(anchor, last).z);
+                        poseA = new Waypoint(tool.reference.x + (tool.followsX ? a.x - anchor.x : 0),
+                                tool.reference.y + (tool.followsY ? a.y - anchor.y : 0), segmentStarts.get(toolIndex).z);
+                        poseB = new Waypoint(tool.reference.x + (tool.followsX ? b.x - anchor.x : 0),
+                                tool.reference.y + (tool.followsY ? b.y - anchor.y : 0), segmentEnds.get(toolIndex).z);
+                    }
+                    else {
+                        poseA = tool.at(anchor, a);
+                        poseB = tool.at(anchor, b);
                     }
                     Envelope envelope = new Envelope(tool, poseA, poseB);
                     envelopes.add(envelope);

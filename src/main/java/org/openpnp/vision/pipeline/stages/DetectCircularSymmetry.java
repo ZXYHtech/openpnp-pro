@@ -443,7 +443,15 @@ public class DetectCircularSymmetry extends CvStage {
         final int hSearchRange = y1SearchRange - y0SearchRange;
         
         if (wSearchRange < 1 || hSearchRange < 1) {
-            throw new Exception("Circular symmetry stage: search range is cropped to nothing.");
+            String reason = width < maxDiameter || height < maxDiameter ? "目标直径大于可用图像"
+                    : xCenter < 0 || xCenter >= width || yCenter < 0 || yCenter >= height
+                            ? "预期中心位于图像外，请检查机器是否实际到位、回零和相机坐标标定"
+                            : "搜索窗口与有效图像没有足够交集，请检查搜索范围和直径参数";
+            throw new Exception(String.format(java.util.Locale.ROOT,
+                    "圆形对称识别无法开始：%s。\n图像 %d×%d px；预期中心 (%d, %d) px；"
+                    + "目标直径 %d～%d px；搜索窗口 %d×%d px；采样步长 %d px。",
+                    reason, width, height, xCenter, yCenter, minDiameter, maxDiameter,
+                    searchWidth, searchHeight, subSamplingEff));
         }
 
         // Create super sampling offsets if needed.

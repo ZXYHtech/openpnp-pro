@@ -26,7 +26,7 @@ public final class BottomVisionTiming {
 
         public final boolean successful;
 
-        public final long totalNs, movementNs, captureNs, pipelineNs;
+        public final long totalNs, movementNs, captureNs, pipelineNs, motionWaitNs, lightingNs;
 
         public final int passes, shots;
 
@@ -38,6 +38,8 @@ public final class BottomVisionTiming {
             movementNs = scope.movementNs;
             captureNs = scope.captureNs;
             pipelineNs = scope.pipelineNs;
+            motionWaitNs = scope.motionWaitNs;
+            lightingNs = scope.lightingNs;
             passes = scope.passes;
             shots = scope.shots;
         }
@@ -53,7 +55,7 @@ public final class BottomVisionTiming {
 
         boolean successful, closed;
 
-        long movementNs, captureNs, pipelineNs;
+        long movementNs, captureNs, pipelineNs, motionWaitNs, lightingNs;
 
         int passes, shots;
 
@@ -105,6 +107,20 @@ public final class BottomVisionTiming {
         }
     }
 
+    public static void motionWait(long nanoseconds) {
+        Scope scope = CURRENT.get();
+        if (scope != null) {
+            scope.motionWaitNs += Math.max(0, nanoseconds);
+        }
+    }
+
+    public static void lighting(long nanoseconds) {
+        Scope scope = CURRENT.get();
+        if (scope != null) {
+            scope.lightingNs += Math.max(0, nanoseconds);
+        }
+    }
+
     public static void pipeline(CvPipeline pipeline) {
         Scope scope = CURRENT.get();
         if (scope == null) {
@@ -142,13 +158,15 @@ public final class BottomVisionTiming {
         if (samples.isEmpty()) {
             return "尚无静拍识别记录。下一次作业识别时自动统计，无需额外拍照。\n" + "统计只保留本次启动最近 1000 次静拍调用，不保存图像，不改变相机、运动或识别阈值。";
         }
-        long total = 0, movement = 0, capture = 0, pipeline = 0;
+        long total = 0, movement = 0, capture = 0, pipeline = 0, motionWait = 0, lighting = 0;
         int failures = 0, passes = 0, shots = 0, repeated = 0;
         for (Sample sample : samples) {
             total += sample.totalNs;
             movement += sample.movementNs;
             capture += sample.captureNs;
             pipeline += sample.pipelineNs;
+            motionWait += sample.motionWaitNs;
+            lighting += sample.lightingNs;
             passes += sample.passes;
             shots += sample.shots;
             failures += sample.successful ? 0 : 1;
@@ -156,13 +174,24 @@ public final class BottomVisionTiming {
         }
         double scale = 1e6 * samples.size();
         String advice = capture > total * .5 ? "主要耗时在采图、稳定或等待到位，优先检查相机稳定诊断和实际采集延迟。" : pipeline > total * .4 ? "流水线阶段占比较高，优先评估图像区域和重复处理步骤。" : "先结合单次记录及运动路径查看主要耗时；本统计不自动降低稳定或识别要求。";
-        return String.format(Locale.ROOT, "静拍调用：%d 次；失败：%d 次；多轮修正：%d 次（%.1f%%）\n" + "平均总耗时：%.1f ms\n移动指令准备/下发：%.1f ms\n" + "采图与稳定阶段：%.1f ms\n其他流水线阶段：%.1f ms\n" + "平均处理轮次：%.2f；平均拍摄步骤：%.2f\n\n%s\n\n" + "移动指令可能异步执行，物理运动到位等待可能计入采图阶段；其他时间包含参数准备、结果处理和显示。" + "拍摄步骤与帧数不等同，多步骤合成不是多轮修正。这里只记录静拍，飞拍另有实验报告。", samples.size(), failures, repeated, 100. * repeated / samples.size(), total / scale, movement / scale, capture / scale, pipeline / scale, 1. * passes / samples.size(), 1. * shots / samples.size(), advice);
+        return String.format(Locale.ROOT, "静拍调用：%d 次；失败：%d 次；多轮修正：%d 次（%.1f%%）\n"
+                + "平均总耗时：%.1f ms\n移动指令准备/下发：%.1f ms\n采图阶段合计：%.1f ms\n"
+                + "  相机到位等待：%.1f ms\n  灯光控制及其到位等待：%.1f ms\n"
+                + "  稳定、采图及转换等：%.1f ms\n其他流水线阶段：%.1f ms\n"
+                + "平均处理轮次：%.2f；平均拍摄步骤：%.2f\n\n%s\n\n"
+                + "物理运动到位等待可能计入采图阶段，现单独拆分；灯光控制也可能等待此前的运动完成。"
+                + "稳定、采图及转换等为采图阶段扣除两类等待后的余量。"
+                + "拍摄步骤与帧数不等同，多步骤合成不是多轮修正。这里只记录静拍，飞拍另有实验报告。",
+                samples.size(), failures, repeated, 100. * repeated / samples.size(), total / scale,
+                movement / scale, capture / scale, motionWait / scale, lighting / scale,
+                Math.max(0, capture - motionWait - lighting) / scale, pipeline / scale,
+                1. * passes / samples.size(), 1. * shots / samples.size(), advice);
     }
 
     public static String csv() {
-        StringBuilder csv = new StringBuilder("part,mode,success,total_ms,movement_submission_ms,capture_settle_ms,other_pipeline_ms,passes,shots\n");
+        StringBuilder csv = new StringBuilder("part,mode,success,total_ms,movement_submission_ms,capture_settle_ms,other_pipeline_ms,passes,shots,motion_wait_ms,lighting_coordination_ms,settle_capture_ms\n");
         for (Sample sample : samples()) {
-            csv.append(String.format(Locale.ROOT, "%s,%s,%s,%.6f,%.6f,%.6f,%.6f,%d,%d%n", quoted(sample.partId), quoted(sample.mode), sample.successful, sample.totalNs / 1e6, sample.movementNs / 1e6, sample.captureNs / 1e6, sample.pipelineNs / 1e6, sample.passes, sample.shots));
+            csv.append(String.format(Locale.ROOT, "%s,%s,%s,%.6f,%.6f,%.6f,%.6f,%d,%d,%.6f,%.6f,%.6f%n", quoted(sample.partId), quoted(sample.mode), sample.successful, sample.totalNs / 1e6, sample.movementNs / 1e6, sample.captureNs / 1e6, sample.pipelineNs / 1e6, sample.passes, sample.shots, sample.motionWaitNs / 1e6, sample.lightingNs / 1e6, Math.max(0, sample.captureNs - sample.motionWaitNs - sample.lightingNs) / 1e6));
         }
         return csv.toString();
     }

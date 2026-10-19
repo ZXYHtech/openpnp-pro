@@ -584,7 +584,8 @@ public class ReferenceNozzle extends AbstractNozzle implements HeadMountable {
                             calibrationNozzleTip.getCalibration().calibrate(this, true, false);
                         }
                         catch (Exception e) {
-                            if (calibrationNozzleTip.getCalibration().isFailHoming()) {
+                            if (calibrationNozzleTip.getCalibration().isFailHoming()
+                                    || org.openpnp.machine.reference.driver.ControllerFaultException.causedBy(e)) {
                                 throw e; 
                             }
                             else {

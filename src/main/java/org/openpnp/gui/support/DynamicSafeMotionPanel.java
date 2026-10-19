@@ -44,9 +44,6 @@ public final class DynamicSafeMotionPanel extends JPanel {
             try {
                 if (toggle.isSelected()) {
                     String issue = DynamicSafeMotionPlanner.enablementIssue(model, machine);
-                    if (machine.isBusy()) {
-                        issue = "请等当前机器任务结束后再启用";
-                    }
                     if (!issue.isEmpty()) {
                         feedback.accept(issue + "。开关尚未启用。");
                         refresh();

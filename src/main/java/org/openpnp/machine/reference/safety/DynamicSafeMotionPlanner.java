@@ -35,7 +35,6 @@ import org.openpnp.spi.Locatable.LocationOption;
 import org.openpnp.spi.Machine;
 import org.openpnp.spi.Nozzle;
 import org.pmw.tinylog.Logger;
-import com.google.gson.Gson;
 
 /**
  * Plans everything before issuing motion; an execution error must never trigger a retry path.
@@ -49,6 +48,37 @@ public final class DynamicSafeMotionPlanner {
     private static final AtomicLong FALLBACKS = new AtomicLong();
 
     private static volatile String lastReason = "等待下一段移动";
+    private static volatile Prepared prepared;
+
+    private static final class Prepared {
+        final SafetyWorkbenchModel source, frozen;
+        final long revision, certifiedRevision;
+        final String issue;
+        Prepared(SafetyWorkbenchModel source) {
+            this.source = source;
+            revision = source.getRevision();
+            certifiedRevision = source.getCertifiedRevision();
+            frozen = SafetyWorkbenchStore.snapshot(source);
+            List<String> issues = SafetyModelValidator.validate(frozen);
+            issue = issues.isEmpty() ? "" : issues.get(0);
+        }
+        boolean matches(SafetyWorkbenchModel model) {
+            return source == model && revision == model.getRevision()
+                    && certifiedRevision == model.getCertifiedRevision();
+        }
+    }
+
+    private static Prepared prepare(SafetyWorkbenchModel model) {
+        Prepared cached = prepared;
+        if (cached == null || !cached.matches(model)) {
+            cached = new Prepared(model);
+            if (!cached.matches(model)) {
+                throw new IllegalStateException("模型在复制期间已修改");
+            }
+            prepared = cached;
+        }
+        return cached;
+    }
 
     public static final class Plan {
 
@@ -99,9 +129,9 @@ public final class DynamicSafeMotionPlanner {
         if (model == null || !model.isCertified()) {
             return "请先核对 3D 模型并点击“检查并认证”";
         }
-        List<String> issues = SafetyModelValidator.validate(model);
-        if (!issues.isEmpty()) {
-            return issues.get(0);
+        Prepared cached = prepare(model);
+        if (!cached.issue.isEmpty()) {
+            return cached.issue;
         }
         int nozzles = 0;
         for (Head head : machine.getHeads()) {
@@ -120,16 +150,31 @@ public final class DynamicSafeMotionPlanner {
         if (!DynamicSafeMotionSettings.isEnabled()) {
             return false;
         }
+        if (ineligible(tool, destination, requestedSpeed)) {
+            DynamicMotionDiagnostics.skipped();
+            return false;
+        }
         if (tool == null || tool.getHead() == null || !tool.getHead().getMachine().isEnabled() || !tool.getHead().getMachine().isHomed()) {
             return fallback("机器尚未启用或回零");
         }
         SafetyWorkbenchModel model = SafetyWorkbenchStore.get();
         long revision = model.getRevision();
-        Plan plan = preview(tool, destination, requestedSpeed);
+        long started = System.nanoTime();
+        Plan plan = preview(tool, destination, requestedSpeed, started + 40_000_000L);
+        double planningMs = (System.nanoTime() - started) / 1e6;
         if (!plan.isOptimized()) {
+            DynamicMotionDiagnostics.record(tool.getName(), plan.reason, false, planningMs,
+                    plan.originalSeconds, plan.coordinatedSeconds);
             return fallback(plan.reason);
         }
+        if ((plan.originalSeconds - plan.coordinatedSeconds) * 1000 <= planningMs + 5) {
+            DynamicMotionDiagnostics.record(tool.getName(), "预计节省不足以抵消规划开销", false, planningMs,
+                    plan.originalSeconds, plan.coordinatedSeconds);
+            return fallback("预计节省不足以抵消规划开销");
+        }
         if (SafetyWorkbenchStore.get() != model || revision != model.getRevision() || !model.isCertified()) {
+            DynamicMotionDiagnostics.record(tool.getName(), "模型在规划期间已修改", false, planningMs,
+                    plan.originalSeconds, plan.coordinatedSeconds);
             return fallback("模型在规划期间已修改");
         }
         // No catch here: once the first command is issued, a partial failure is
@@ -141,6 +186,8 @@ public final class DynamicSafeMotionPlanner {
             tool.moveTo(waypoint, requestedSpeed, MotionOption.CoordinatedMotion);
         }
         ACCEPTED.incrementAndGet();
+        DynamicMotionDiagnostics.record(tool.getName(), plan.reason, true, planningMs,
+                plan.originalSeconds, plan.coordinatedSeconds);
         lastReason = "整段扫掠检查通过";
         return true;
     }
@@ -159,7 +206,28 @@ public final class DynamicSafeMotionPlanner {
      * Read-only preview: no homing, motion, actuation, camera capture or settings changes.
      */
     public static Plan preview(HeadMountable tool, Location destination, double speed) {
+        return preview(tool, destination, speed, Long.MAX_VALUE);
+    }
+
+    private static boolean ineligible(HeadMountable tool, Location destination, double speed) {
+        if (tool == null || tool.getClass() != ReferenceNozzle.class || tool.getHead() == null
+                || destination == null || !Double.isFinite(speed) || speed <= 0) {
+            return true;
+        }
         try {
+            Location start = tool.getLocation().convertToUnits(LengthUnit.Millimeters);
+            Location target = destination.convertToUnits(LengthUnit.Millimeters);
+            return !finite(start) || !finite(target)
+                    || Math.hypot(target.getX() - start.getX(), target.getY() - start.getY()) < EPSILON;
+        }
+        catch (Exception unavailable) { return false; } // preview will report the actual failure
+    }
+
+    private static Plan preview(HeadMountable tool, Location destination, double speed, long deadline) {
+        try {
+            if (ineligible(tool, destination, speed)) {
+                return rejected("纯 Z、原地旋转、特殊工具或无效坐标保持原路径");
+            }
             SafetyWorkbenchModel live = SafetyWorkbenchStore.get();
             String issue = enablementIssue(live, tool.getHead().getMachine());
             if (!issue.isEmpty()) {
@@ -167,8 +235,8 @@ public final class DynamicSafeMotionPlanner {
             }
             // The workbench can be edited while the machine thread is planning.
             // Freeze geometry and reject a changed certification before execution.
-            SafetyWorkbenchModel model = new Gson().fromJson(new Gson().toJson(live), SafetyWorkbenchModel.class);
-            return plan(tool, destination, speed, model);
+            SafetyWorkbenchModel model = prepare(live).frozen;
+            return plan(tool, destination, speed, model, deadline);
         } catch (Exception planningFailure) {
             Logger.debug(planningFailure, "3D coordinated planning declined before motion.");
             return rejected("规划条件不满足：" + planningFailure.getMessage());
@@ -176,6 +244,10 @@ public final class DynamicSafeMotionPlanner {
     }
 
     static Plan plan(HeadMountable tool, Location destination, double speed, SafetyWorkbenchModel model) throws Exception {
+        return plan(tool, destination, speed, model, Long.MAX_VALUE);
+    }
+
+    private static Plan plan(HeadMountable tool, Location destination, double speed, SafetyWorkbenchModel model, long deadline) throws Exception {
         if (tool == null || tool.getClass() != ReferenceNozzle.class || destination == null || !Double.isFinite(speed) || speed <= 0) {
             return rejected("探针、特殊工具或无效坐标保持原路径");
         }
@@ -211,8 +283,14 @@ public final class DynamicSafeMotionPlanner {
                 return rejected("吸嘴物料高度未知");
             }
         }
-        double sourceZ = clearHeight(start, safeZ, start, model, tools);
-        double targetZ = clearHeight(target, safeZ, start, model, tools);
+        if (System.nanoTime() > deadline) {
+            return rejected("规划超过 40 ms 预算，保持原安全 Z");
+        }
+        double sourceZ = clearHeight(start, safeZ, start, model, tools, deadline);
+        double targetZ = clearHeight(target, safeZ, start, model, tools, deadline);
+        if (System.nanoTime() > deadline) {
+            return rejected("规划超过 40 ms 预算，保持原安全 Z");
+        }
         if (!Double.isFinite(sourceZ) || !Double.isFinite(targetZ)) {
             return rejected("安全高度仍有障碍或其他吸嘴未抬起");
         }
@@ -222,6 +300,9 @@ public final class DynamicSafeMotionPlanner {
         double originalSeconds = estimate(tool, start, original, speed);
         String reason = "没有可缩短耗时的安全联动段";
         for (double fraction : new double[] { 0, 0.4, 0.25, 0.12 }) {
+            if (System.nanoTime() > deadline) {
+                return rejected("规划超过 40 ms 预算，保持原安全 Z");
+            }
             Location departure = start.derive(null, null, sourceZ, null);
             Location ascentEnd = interpolate(start, target, fraction).derive(null, null, safeZ, target.getRotation());
             Location descentStart = interpolate(start, target, 1 - fraction).derive(null, null, safeZ, target.getRotation());
@@ -240,7 +321,7 @@ public final class DynamicSafeMotionPlanner {
             for (Location location : path) {
                 points.add(point(location));
             }
-            ValidationResult result = CoordinatedMotionValidator.validate(model, points, tools, point(start));
+            ValidationResult result = CoordinatedMotionValidator.validate(model, points, tools, point(start), deadline);
             if (!result.isSafe()) {
                 reason = result.getIssues().get(0);
                 continue;
@@ -334,19 +415,22 @@ public final class DynamicSafeMotionPlanner {
                 && Double.isFinite(cam.getCamArmsAngle()) && cam.getCamArmsAngle() >= 0 && cam.getCamArmsAngle() <= 180;
     }
 
-    private static double clearHeight(Location endpoint, double safeZ, Location start, SafetyWorkbenchModel model, List<DynamicTool> tools) {
+    private static double clearHeight(Location endpoint, double safeZ, Location start, SafetyWorkbenchModel model, List<DynamicTool> tools, long deadline) {
         double low = endpoint.getZ();
-        if (clearAt(endpoint, start, model, tools)) {
+        if (clearAt(endpoint, start, model, tools, deadline)) {
             // Keep a short vertical final approach even on an unobstructed table.
             return Math.min(safeZ, low + 1);
         }
-        if (!clearAt(endpoint.derive(null, null, safeZ, null), start, model, tools)) {
+        if (!clearAt(endpoint.derive(null, null, safeZ, null), start, model, tools, deadline)) {
             return Double.NaN;
         }
         double high = safeZ;
         for (int index = 0; index < 12; index++) {
             double middle = (low + high) / 2;
-            if (clearAt(endpoint.derive(null, null, middle, null), start, model, tools)) {
+            if (System.nanoTime() > deadline) {
+                return Double.NaN;
+            }
+            if (clearAt(endpoint.derive(null, null, middle, null), start, model, tools, deadline)) {
                 high = middle;
             } else {
                 low = middle;
@@ -355,8 +439,8 @@ public final class DynamicSafeMotionPlanner {
         return Math.min(safeZ, high + 0.5);
     }
 
-    private static boolean clearAt(Location location, Location start, SafetyWorkbenchModel model, List<DynamicTool> tools) {
-        return CoordinatedMotionValidator.validate(model, Collections.singletonList(point(location)), tools, point(start)).isSafe();
+    private static boolean clearAt(Location location, Location start, SafetyWorkbenchModel model, List<DynamicTool> tools, long deadline) {
+        return CoordinatedMotionValidator.validate(model, Collections.singletonList(point(location)), tools, point(start), deadline).isSafe();
     }
 
     private static double estimate(HeadMountable tool, Location start, List<Location> path, double speed) throws Exception {

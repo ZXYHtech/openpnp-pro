@@ -525,6 +525,17 @@ public class ReferenceMachine extends AbstractMachine {
 
     @Override
     public void home() throws Exception {
+        try {
+            homeTransaction();
+        }
+        catch (Exception failure) {
+            setHomed(false);
+            getMotionPlanner().unhome();
+            throw failure;
+        }
+    }
+
+    private void homeTransaction() throws Exception {
         // Drain pending Park/nozzle moves before G28 and before resetting compensation state.
         getMotionPlanner().waitForCompletion(null, org.openpnp.spi.MotionPlanner.CompletionType.WaitForStillstand);
         if (!(getMotionPlanner() instanceof

@@ -220,11 +220,26 @@ public final class DynamicSafetyCollisionEngine {
                 double[] partSize = partSize(part);
                 if (part != null && (!(partSize[0] > 0) || !(partSize[1] > 0)
                         || !Double.isFinite(partSize[0]) || !Double.isFinite(partSize[1]))) {
-                    throw new Exception("吸嘴“" + nozzle.getName() + "”的物料外形尺寸未知。");
+                    throw new Exception("吸嘴“" + nozzle.getName() + "”的物料“" + part.getId()
+                            + "”外形尺寸未知；请在封装库填写本体宽/长（Body Width/Height），不是焊盘尺寸");
                 }
-                double partHeight = part == null ? 0
-                        : part.getHeightForSafeZ()
-                                .convertToUnits(LengthUnit.Millimeters).getValue();
+                double partHeight = 0;
+                if (part != null) {
+                    // Use the same configured height upper bound as stock Safe-Z
+                    // when the part height is unknown. Add through-board depth,
+                    // which may hang below that bound. Never guess body XY size.
+                    double through = part.getThroughBoardDepth().convertToUnits(LengthUnit.Millimeters).getValue();
+                    Length heightBound = part.isPartHeightUnknown()
+                            ? (nozzle.getNozzleTip() == null ? null : nozzle.getNozzleTip().getMaxPartHeight()) : part.getHeight();
+                    double bodyHeight = heightBound == null ? Double.NaN
+                            : heightBound.convertToUnits(LengthUnit.Millimeters).getValue();
+                    partHeight = bodyHeight + through;
+                    if (!Double.isFinite(bodyHeight) || bodyHeight <= 0 || !Double.isFinite(partHeight)
+                            || !Double.isFinite(through) || through < 0) {
+                        throw new Exception("吸嘴“" + nozzle.getName() + "”的物料“" + part.getId()
+                                + "”安全高度无效；请填写物料高度，或配置吸嘴尖最大物料高度作为保守上界，并检查穿板深度");
+                    }
+                }
                 boolean sameHead = head == selectedHead;
                 boolean sharedZ = sameHead && selectedTool.getMappedAxes(machine).byType(Axis.Type.Z).getAxes().stream()
                         .anyMatch(axis -> nozzle.getMappedAxes(machine).byType(Axis.Type.Z).getAxes().contains(axis));

@@ -44,6 +44,70 @@ import org.openpnp.spi.MotionPlanner;
 import org.openpnp.util.MovableUtils;
 
 class DynamicSafeMotionPlannerTest {
+    @Test
+    void savedCertificationSurvivesReloadAndEditsRequireRecertification() throws Exception {
+        SafetyWorkbenchStore.save(model);
+        SafetyWorkbenchModel loaded = SafetyWorkbenchStore.reload();
+        assertNotSame(model, loaded);
+        assertTrue(loaded.isCertified());
+        assertEquals(model.getRevision(), loaded.getCertifiedRevision());
+        assertTrue(DynamicSafeMotionPlanner.preview(nozzle, target(), 1).isOptimized());
+        loaded.touch();
+        assertFalse(DynamicSafeMotionPlanner.preview(nozzle, target(), 1).isOptimized());
+        loaded.certify("Reviewed again");
+        assertTrue(DynamicSafeMotionPlanner.preview(nozzle, target(), 1).isOptimized());
+        assertTrue(commands.isEmpty());
+    }
+
+    @Test
+    void repeatedPreviewsUseFrozenGeometryButInvalidateItWhenAnObstacleChanges() throws Exception {
+        for (int i = 0; i < 10; i++) {
+            assertTrue(DynamicSafeMotionPlanner.preview(nozzle, target(), 1).isOptimized());
+        }
+        SafetyObject object = model.createObject(ObjectType.KEEP_OUT);
+        object.x = 130;
+        object.y = 80;
+        object.z = -10;
+        object.width = 50;
+        object.depth = 50;
+        object.height = 100;
+        model.addObject(object);
+        model.certify("New obstruction");
+        assertFalse(DynamicSafeMotionPlanner.preview(nozzle, target(), 1).isOptimized());
+        assertTrue(commands.isEmpty());
+    }
+
+    @Test
+    void changingConfigurationDoesNotReuseAnotherMachinesModel() throws Exception {
+        assertSame(model, SafetyWorkbenchStore.get());
+        Configuration.initialize(temporary.resolve("fresh-profile").toFile());
+        assertNotSame(model, SafetyWorkbenchStore.get());
+        assertFalse(SafetyWorkbenchStore.get().isCertified());
+        Configuration.initialize(temporary.toFile());
+        assertTrue(SafetyWorkbenchStore.get().isCertified());
+    }
+
+    @Test
+    void pureZIsNotReportedAsAnEvaluatedFallback() throws Exception {
+        DynamicMotionDiagnostics.clear();
+        DynamicSafeMotionSettings.setEnabled(true);
+        assertFalse(DynamicSafeMotionPlanner.tryMoveToLocationAtSafeZ(nozzle,
+                nozzle.getLocation().derive(null, null, 0., null), 1));
+        assertTrue(DynamicMotionDiagnostics.summary().contains("不适用 1"));
+        assertTrue(DynamicMotionDiagnostics.summary().contains("已评估回退 0"));
+    }
+
+    @Test
+    void certifiedOptInCanBeSavedWhileBusyWithoutIssuingMotion() throws Exception {
+        ReferenceMachine busyMachine = spy(machine);
+        when(busyMachine.isBusy()).thenReturn(true);
+        SwingUtilities.invokeAndWait(() -> {
+            DynamicSafeMotionPanel panel = new DynamicSafeMotionPanel(model, busyMachine, message -> { });
+            ((JToggleButton) panel.getComponent(0)).doClick();
+            assertTrue(DynamicSafeMotionSettings.isEnabled());
+        });
+        assertTrue(commands.isEmpty());
+    }
 
     @TempDir
     Path temporary;

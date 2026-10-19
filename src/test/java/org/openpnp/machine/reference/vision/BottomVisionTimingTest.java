@@ -27,6 +27,8 @@ class BottomVisionTimingTest {
         try (BottomVisionTiming.Scope scope = BottomVisionTiming.begin("part", "预旋转静拍")) {
             BottomVisionTiming.pass();
             BottomVisionTiming.movement(1_000_000);
+            BottomVisionTiming.motionWait(2_000_000);
+            BottomVisionTiming.lighting(500_000);
             BottomVisionTiming.pipeline(pipeline);
             scope.success();
         }
@@ -37,6 +39,9 @@ class BottomVisionTimingTest {
         assertEquals(3_000_000, sample.captureNs);
         assertEquals(2_000_000, sample.pipelineNs);
         assertEquals(1_000_000, sample.movementNs);
+        assertEquals(2_000_000, sample.motionWaitNs);
+        assertEquals(500_000, sample.lightingNs);
+        assertTrue(BottomVisionTiming.csv().contains("motion_wait_ms,lighting_coordination_ms,settle_capture_ms"));
         verifyNoMoreInteractions(processing);
         verify(pipeline, never()).process();
     }

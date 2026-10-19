@@ -249,6 +249,7 @@ public class GcodeAsyncDriver extends GcodeDriver {
                     continue;
                 }
                 try {
+                    checkControllerFault();
                     if (confirmationFlowControl && lastCommand != null) {
                         try {
                             // Before we can send the new command, make sure the wanted confirmation count of the last command was received.
@@ -259,6 +260,7 @@ public class GcodeAsyncDriver extends GcodeDriver {
                             lastCommand = null;
                         }
                     }
+                    checkControllerFault();
                     if (command.line != null) {
                         // Set up the wanted confirmations for next time.
                         lastCommand = command;
@@ -273,6 +275,13 @@ public class GcodeAsyncDriver extends GcodeDriver {
                         }
                         //Logger.trace("[{}] confirmation released.", getCommunications().getConnectionName());
                     }
+                }
+                catch (ControllerFaultException e) {
+                    commandQueue.clear();
+                    synchronized (GcodeAsyncDriver.this) {
+                        GcodeAsyncDriver.this.notifyAll();
+                    }
+                    return;
                 }
                 catch (IOException e) {
                     Logger.error(e, "[{}] Write error", connectionName);
@@ -401,7 +410,7 @@ public class GcodeAsyncDriver extends GcodeDriver {
         while (!confirmationComplete) {
             try {
                 synchronized(this) { 
-                    wait(timeout);
+                    wait(Math.min(timeout, 50));
                 }
             }
             catch (InterruptedException e) {

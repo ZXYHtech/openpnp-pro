@@ -14,6 +14,34 @@ import org.openpnp.machine.reference.safety.SafetyWorkbenchModel.Point2;
 import org.openpnp.machine.reference.safety.SafetyWorkbenchModel.Shape;
 
 class CoordinatedMotionValidatorTest {
+    @Test
+    void camTransformsAreResolvedOncePerSegmentWithTheSameConservativeCollisionEnvelope() {
+        SafetyWorkbenchModel model = model();
+        Waypoint start = new Waypoint(0, 0, 20);
+        DynamicTool tool = tool(start);
+        tool.conservativeSegmentZ = true;
+        java.util.concurrent.atomic.AtomicInteger transforms = new java.util.concurrent.atomic.AtomicInteger();
+        tool.mappedZ = z -> { transforms.incrementAndGet();
+        return z;
+        };
+        java.util.List<Waypoint> path = Arrays.asList(start, new Waypoint(300, 0, 10));
+        assertTrue(CoordinatedMotionValidator.validate(model, path, Collections.singletonList(tool), start).isSafe());
+        assertEquals(2, transforms.get(), "600+ intervals must not repeat full machine axis transforms");
+        box(model, ObjectType.KEEP_OUT, 140, -.1, 15, 1, .2, 1);
+        transforms.set(0);
+        assertFalse(CoordinatedMotionValidator.validate(model, path, Collections.singletonList(tool), start).isSafe(),
+                "The complete segment Z envelope must still reject this obstruction");
+        assertEquals(2, transforms.get());
+    }
+
+    @Test
+    void exceededPlanningBudgetCannotProduceAnApprovedPath() {
+        Waypoint start = new Waypoint(0, 0, 20);
+        ValidationResult result = CoordinatedMotionValidator.validate(model(),
+                Arrays.asList(start, new Waypoint(300, 0, 10)), Collections.singletonList(tool(start)), start, 0);
+        assertFalse(result.isSafe());
+        assertTrue(result.getIssues().get(0).contains("预算"));
+    }
 
     SafetyWorkbenchModel model() {
         SafetyWorkbenchModel model = new SafetyWorkbenchModel();
