@@ -682,7 +682,7 @@ public class Configuration extends AbstractModelObject {
                     : board.getFile().getName();
             File recoveryFile = new File(boardsDirectory,
                     String.format("%03d-%s", index++, safeRecoveryName(sourceName)));
-            serializer.write(board, recoveryFile);
+            serializeObject(board, recoveryFile);
             manifest.add("BOARD " + recoveryFile.getName() + " <- "
                     + (board.getFile() == null ? "(unsaved)" : board.getFile().getAbsolutePath()));
         }
@@ -692,12 +692,12 @@ public class Configuration extends AbstractModelObject {
                     : panel.getFile().getName();
             File recoveryFile = new File(panelsDirectory,
                     String.format("%03d-%s", index++, safeRecoveryName(sourceName)));
-            serializer.write(panel, recoveryFile);
+            serializeObject(panel, recoveryFile);
             manifest.add("PANEL " + recoveryFile.getName() + " <- "
                     + (panel.getFile() == null ? "(unsaved)" : panel.getFile().getAbsolutePath()));
         }
         if (job != null) {
-            serializer.write(job, new File(directory, "current-job.xml"));
+            serializeObject(job, new File(directory, "current-job.xml"));
             manifest.add("JOB current-job.xml <- "
                     + (job.getFile() == null ? "(unsaved)" : job.getFile().getAbsolutePath()));
         }
@@ -1033,16 +1033,14 @@ public class Configuration extends AbstractModelObject {
         Serializer serializer = createSerializer();
         // This write forces any errors that will appear to happen before we start writing to
         // the file, which keeps us from writing a partial configuration to the real file.
-        serializer.write(o, new ByteArrayOutputStream());
-        FileOutputStream out = new FileOutputStream(file);
-        serializer.write(o, out);
-        out.write('\n');
-        out.close();
+        ByteArrayOutputStream output = new ByteArrayOutputStream();
+        serializer.write(o, output);
+        ProConfigurationExtensions.write(file, output.toByteArray());
     }
 
     private void loadMachine(File file) throws Exception {
         Serializer serializer = createSerializer();
-        MachineConfigurationHolder holder = serializer.read(MachineConfigurationHolder.class, file);
+        MachineConfigurationHolder holder = ProConfigurationExtensions.read(serializer, MachineConfigurationHolder.class, file);
         machine = holder.machine;
     }
 
@@ -1055,7 +1053,7 @@ public class Configuration extends AbstractModelObject {
     private void loadPackages(File file) throws Exception {
         Serializer serializer = createSerializer();
         PackagesConfigurationHolder holder =
-                serializer.read(PackagesConfigurationHolder.class, file);
+                ProConfigurationExtensions.read(serializer, PackagesConfigurationHolder.class, file);
         for (Package pkg : holder.packages) {
             addPackage(pkg);
         }
@@ -1069,7 +1067,7 @@ public class Configuration extends AbstractModelObject {
 
     private void loadParts(File file) throws Exception {
         Serializer serializer = createSerializer();
-        PartsConfigurationHolder holder = serializer.read(PartsConfigurationHolder.class, file);
+        PartsConfigurationHolder holder = ProConfigurationExtensions.read(serializer, PartsConfigurationHolder.class, file);
         for (Part part : holder.parts) {
             addPart(part);
         }
@@ -1089,7 +1087,7 @@ public class Configuration extends AbstractModelObject {
      */
     private void loadBoards(File file) throws Exception {
         Serializer serializer = createSerializer();
-        BoardsConfigurationHolder holder = serializer.read(BoardsConfigurationHolder.class, file);
+        BoardsConfigurationHolder holder = ProConfigurationExtensions.read(serializer, BoardsConfigurationHolder.class, file);
         for (File boardFile : holder.boards) {
             try {
                 addBoard(boardFile);
@@ -1127,7 +1125,7 @@ public class Configuration extends AbstractModelObject {
      */
     private void loadPanels(File file) throws Exception {
         Serializer serializer = createSerializer();
-        PanelsConfigurationHolder holder = serializer.read(PanelsConfigurationHolder.class, file);
+        PanelsConfigurationHolder holder = ProConfigurationExtensions.read(serializer, PanelsConfigurationHolder.class, file);
         for (File panelFile : holder.panels) {
             try {
                 addPanel(panelFile);
@@ -1187,7 +1185,7 @@ public class Configuration extends AbstractModelObject {
     private void loadVisionSettings(File file) throws Exception {
         Serializer serializer = createSerializer();
         VisionSettingsConfigurationHolder holder =
-                serializer.read(VisionSettingsConfigurationHolder.class, file);
+                ProConfigurationExtensions.read(serializer, VisionSettingsConfigurationHolder.class, file);
         for (AbstractVisionSettings visionSettings : holder.visionSettings) {
             addVisionSettings(visionSettings);
         }
@@ -1201,7 +1199,7 @@ public class Configuration extends AbstractModelObject {
 
     private void loadScriptState(File file) throws Exception {
         Serializer serializer = createSerializer();
-        ScriptStateConfigurationHolder holder = serializer.read(ScriptStateConfigurationHolder.class, file);
+        ScriptStateConfigurationHolder holder = ProConfigurationExtensions.read(serializer, ScriptStateConfigurationHolder.class, file);
         scriptState = holder.scriptState;
     }
 
@@ -1219,7 +1217,7 @@ public class Configuration extends AbstractModelObject {
      */
     public Job loadJob(File file) throws Exception {
         Serializer serializer = createSerializer();
-        Job job = serializer.read(Job.class, file);
+        Job job = ProConfigurationExtensions.read(serializer, Job.class, file);
         job.setFile(file);
         convertLegacyJob(job);
         
@@ -1607,8 +1605,7 @@ public class Configuration extends AbstractModelObject {
     public void saveJob(Job job, File file) throws Exception {
         saveJobEnabledAndErrorHandlingSettings(job, job.getRootPanelLocation());
         Serializer serializer = createSerializer();
-        serializer.write(job, new ByteArrayOutputStream());
-        serializer.write(job, file);
+        serializeObject(job, file);
         job.setFile(file);
         job.setDirty(false);
     }
@@ -1624,8 +1621,7 @@ public class Configuration extends AbstractModelObject {
      */
     public void savePanel(Panel panel) throws Exception {
         Serializer serializer = createSerializer();
-        serializer.write(panel, new ByteArrayOutputStream());
-        serializer.write(panel, panel.getFile());
+        serializeObject(panel, panel.getFile());
         panel.setDirty(false);
     }
 
@@ -1639,7 +1635,7 @@ public class Configuration extends AbstractModelObject {
      */
     private Panel loadPanel(File file) throws Exception {
         Serializer serializer = createSerializer();
-        Panel panel = serializer.read(Panel.class, file);
+        Panel panel = ProConfigurationExtensions.read(serializer, Panel.class, file);
         panel.setFile(file);
         for (PlacementsHolderLocation<?> child : panel.getChildren()) {
             File childFile = new File(child.getFileName());
@@ -1676,8 +1672,7 @@ public class Configuration extends AbstractModelObject {
      */
     public void saveBoard(Board board) throws Exception {
         Serializer serializer = createSerializer();
-        serializer.write(board, new ByteArrayOutputStream());
-        serializer.write(board, board.getFile());
+        serializeObject(board, board.getFile());
         board.setDirty(false);
     }
 
@@ -1689,7 +1684,7 @@ public class Configuration extends AbstractModelObject {
      */
     private Board loadBoard(File file) throws Exception {
         Serializer serializer = createSerializer();
-        Board board = serializer.read(Board.class, file);
+        Board board = ProConfigurationExtensions.read(serializer, Board.class, file);
         board.setFile(file);
         board.setDirty(false);
         return board;

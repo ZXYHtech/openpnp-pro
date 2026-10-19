@@ -171,7 +171,8 @@ public class ReferenceBottomVision extends AbstractPartAlignment {
                         throw new Exception("快速底部视觉检测到无效坐标或器件尺寸。");
                     }
                     Location offset = new Location(upp.getUnits(), (rect.center.x - width / 2.0) * upp.getX(),
-                            (height / 2.0 - rect.center.y) * upp.getY(), 0, 0);
+                            (height / 2.0 - rect.center.y) * upp.getY(), 0, 0)
+                            .add(NozzleVisionCentering.offset((org.openpnp.machine.reference.ReferenceNozzle) nozzle, camera));
                     double residual = VisionUtils.getPixelAngle(camera, rect.angle) - angle;
                     residual = settings.getMaxRotation() == MaxRotation.Adjust
                             ? Utils2D.angleNorm(residual) : Utils2D.angleNorm(residual, 180);
@@ -426,6 +427,10 @@ public class ReferenceBottomVision extends AbstractPartAlignment {
                 // Create the offsets object. This is the physical distance from
                 // the center of the camera to the located part.
                 offsets = VisionUtils.getPixelCenterOffsets(camera, rect.center.x, rect.center.y);
+                // Moving the imaging pose must not move the placement reference.
+                if (nozzle instanceof org.openpnp.machine.reference.ReferenceNozzle) {
+                    offsets = offsets.add(NozzleVisionCentering.offset((org.openpnp.machine.reference.ReferenceNozzle) nozzle, camera));
+                }
 
                 double angleOffset = VisionUtils.getPixelAngle(camera, rect.angle) - wantedAngle;
                 // Most OpenCV Pipelines can only tell us the angle of the recognized rectangle in a   
@@ -519,6 +524,9 @@ public class ReferenceBottomVision extends AbstractPartAlignment {
             // Create the offsets object. This is the physical distance from
             // the center of the camera to the located part.
             Location offsets = VisionUtils.getPixelCenterOffsets(camera, rect.center.x, rect.center.y);
+            if (nozzle instanceof org.openpnp.machine.reference.ReferenceNozzle) {
+                offsets = offsets.add(NozzleVisionCentering.offset((org.openpnp.machine.reference.ReferenceNozzle) nozzle, camera));
+            }
 
             double angleOffset = VisionUtils.getPixelAngle(camera, rect.angle);
             // Most OpenCV Pipelines can only tell us the angle of the recognized rectangle in a   
@@ -589,6 +597,9 @@ public class ReferenceBottomVision extends AbstractPartAlignment {
                 angleOffset = Utils2D.angleNorm(angleOffset, 180);
             }
             partSizeCheck(part, settings, rect, camera);
+            if (nozzle instanceof org.openpnp.machine.reference.ReferenceNozzle) {
+                offsets = offsets.add(NozzleVisionCentering.offset((org.openpnp.machine.reference.ReferenceNozzle) nozzle, camera));
+            }
             offsets = normalizeExperimentalOffsets(offsets, angleOffset,
                     settings.getVisionOffset(), wantedAngle, preRotated);
             offsetsCheck(part, nozzle, offsets);

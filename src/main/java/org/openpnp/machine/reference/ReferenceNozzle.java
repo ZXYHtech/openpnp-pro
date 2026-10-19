@@ -465,16 +465,17 @@ public class ReferenceNozzle extends AbstractNozzle implements HeadMountable {
 
     @Override
     public Location getCameraToolCalibratedOffset(Camera camera) {
+        Location centering = org.openpnp.machine.reference.vision.NozzleVisionCentering.offset(this, camera);
         if (org.openpnp.corexy.precision.ToolPointRuntime.replacesNative(this)) {
-            return new Location(camera.getUnitsPerPixel().getUnits());
+            return centering.convertToUnits(camera.getUnitsPerPixel().getUnits());
         }
         // Apply the axis offset from runout calibration here. 
         ReferenceNozzleTip calibrationNozzleTip = getCalibrationNozzleTip();
         if (calibrationNozzleTip != null && calibrationNozzleTip.getCalibration().isCalibrated(this)) {
-            return calibrationNozzleTip.getCalibration().getCalibratedCameraOffset(this, camera);
+            return calibrationNozzleTip.getCalibration().getCalibratedCameraOffset(this, camera).add(centering);
         }
 
-        return new Location(camera.getUnitsPerPixel().getUnits());
+        return centering.convertToUnits(camera.getUnitsPerPixel().getUnits());
     }
 
     @Override
