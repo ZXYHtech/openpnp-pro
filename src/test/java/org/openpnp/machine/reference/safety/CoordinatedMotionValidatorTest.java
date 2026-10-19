@@ -15,6 +15,70 @@ import org.openpnp.machine.reference.safety.SafetyWorkbenchModel.Shape;
 
 class CoordinatedMotionValidatorTest {
     @Test
+    void calibratedTipCanFlyThroughCameraOpeningWithSiblingFullyRetracted() {
+        SafetyWorkbenchModel model = model();
+        SafetyObject camera = box(model, ObjectType.BOTTOM_CAMERA, 65, 65, -20, 70, 70, 25);
+        camera.apertureWidth = camera.apertureDepth = 28;
+        camera.clearance = 3;
+        ToolProfile profile = new ToolProfile();
+        profile.zIsNozzleTip = true;
+        profile.retractedZ = 15;
+        profile.extendedZ = -15;
+        profile.bodyMinZOffset = 8;
+        Waypoint start = new Waypoint(96, 100, 5.8);
+        DynamicTool selected = new DynamicTool("H1", "N1", "N1", start, profile,
+                .4, .8, .8, true, true, true, true);
+        DynamicTool sibling = new DynamicTool("H1", "N2", "N2", new Waypoint(117.8, 100, 15), profile,
+                .4, .8, .8, true, true, false, true);
+        assertTrue(CoordinatedMotionValidator.validate(model,
+                Arrays.asList(start, new Waypoint(104, 100, 5.8)), Arrays.asList(selected, sibling), start).isSafe());
+        assertFalse(CoordinatedMotionValidator.validate(model,
+                Arrays.asList(start, new Waypoint(109, 100, 5.8)), Arrays.asList(selected, sibling), start).isSafe(),
+                "The narrow tip must still collide with the edge of the optical opening");
+        box(model, ObjectType.KEEP_OUT, 98, 98, 30, 4, 4, 5);
+        assertFalse(CoordinatedMotionValidator.validate(model,
+                Arrays.asList(start, new Waypoint(104, 100, 5.8)), Arrays.asList(selected, sibling), start).isSafe(),
+                "Fixing the tip origin must not remove collisions with the fixed housing");
+    }
+
+    @Test
+    void rawCamSweepClearsAnObstacleAfterRisingButStillRejectsAnEarlyCollision() {
+        SafetyWorkbenchModel model = model();
+        Waypoint start = new Waypoint(0, 0, 0);
+        DynamicTool tool = tool(start);
+        tool.conservativeSegmentZ = true;
+        tool.segmentZ = (from, to) -> f -> 20 * Math.sin(Math.PI * f / 3);
+        java.util.List<Waypoint> path = Arrays.asList(start, new Waypoint(100, 0, 17.320508));
+        SafetyObject obstacle = box(model, ObjectType.KEEP_OUT, 70, -.1, 0, 1, .2, 5);
+        assertTrue(CoordinatedMotionValidator.validate(model, path, Collections.singletonList(tool), start).isSafe());
+        tool.segmentZ = null;
+        assertFalse(CoordinatedMotionValidator.validate(model, path, Collections.singletonList(tool), start).isSafe(),
+                "Old full-segment bounds rejected the already-cleared obstacle");
+        tool.segmentZ = (from, to) -> f -> 20 * Math.sin(Math.PI * f / 3);
+        obstacle.x = .23;
+        obstacle.width = .001;
+        assertFalse(CoordinatedMotionValidator.validate(model, path, Collections.singletonList(tool), start).isSafe(),
+                "Continuous interval bounds must catch a thin obstacle between samples");
+    }
+
+    @Test
+    void nonlinearCamCannotBeReplacedByLinearNozzleZAndSiblingIsStillChecked() {
+        SafetyWorkbenchModel model = model();
+        Waypoint start = new Waypoint(0, 0, 20);
+        DynamicTool selected = tool(start);
+        DynamicTool sibling = new DynamicTool("H1", "N2", "N2", new Waypoint(0, 10, 20),
+                profile(), 0, 0, 0, true, true, true, false);
+        sibling.selectedTool = false;
+        sibling.segmentZ = (from, to) -> f -> 20 * Math.cos(Math.PI * f / 2);
+        box(model, ObjectType.KEEP_OUT, 49.9, 9.9, 13.1, .2, .2, .2);
+        assertFalse(CoordinatedMotionValidator.validate(model,
+                Arrays.asList(start, new Waypoint(100, 0, 0)), Arrays.asList(selected, sibling), start).isSafe());
+        sibling.segmentZ = (from, to) -> f -> Double.NaN;
+        assertFalse(CoordinatedMotionValidator.validate(model,
+                Arrays.asList(start, new Waypoint(100, 0, 0)), Arrays.asList(selected, sibling), start).isSafe());
+    }
+
+    @Test
     void camTransformsAreResolvedOncePerSegmentWithTheSameConservativeCollisionEnvelope() {
         SafetyWorkbenchModel model = model();
         Waypoint start = new Waypoint(0, 0, 20);

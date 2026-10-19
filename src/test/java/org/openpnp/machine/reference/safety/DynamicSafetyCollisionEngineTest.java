@@ -68,6 +68,22 @@ class DynamicSafetyCollisionEngineTest {
     }
 
     @Test
+    void calibratedTipCoordinatesDoNotSubtractThePhysicalNozzleLengthAgain() {
+        ToolProfile profile = new ToolProfile();
+        profile.zIsNozzleTip = true;
+        profile.retractedZ = 15;
+        profile.extendedZ = -15;
+        DynamicTool nozzle = new DynamicTool("H1", "N1", "N1", new Waypoint(100, 100, 5.8),
+                profile, 0.4, 0.8, 0.8, true, true, true, true);
+        org.junit.jupiter.api.Assertions.assertEquals(0.8, nozzle.tipLengthAt(5.8), 1e-9);
+        org.junit.jupiter.api.Assertions.assertEquals(3.0, nozzle.minimumZAt(5.8), 1e-9);
+        org.junit.jupiter.api.Assertions.assertEquals(17.0, nozzle.bodyMinimumZAt(5.8), 1e-9);
+        org.junit.jupiter.api.Assertions.assertEquals(-2.8, profile.getMinimumZOffset(5.8, 0.8), 1e-9);
+        org.junit.jupiter.api.Assertions.assertEquals(17.0, nozzle.bodyMinimumZAt(-15), 1e-9);
+        org.junit.jupiter.api.Assertions.assertEquals(-17.8, nozzle.minimumZAt(-15), 1e-9);
+    }
+
+    @Test
     void nozzleEnvelopeChangesBetweenRetractedAndExtendedZ() {
         ToolProfile profile = new ToolProfile();
         profile.retractedZ = 10;

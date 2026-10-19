@@ -1772,6 +1772,53 @@ public class ReferencePnpJobProcessor extends AbstractPnpJobProcessor {
      */
     protected class Align extends PlannedPlacementStep {
         private PlannedPlacement failedPlacement;
+        private final Map<PlannedPlacement, org.openpnp.machine.reference.vision.CoordinatedVisionTask<PartAlignment.PartAlignmentOffset>>
+                pendingVision = new java.util.LinkedHashMap<>();
+
+        @Override
+        public Step step() throws JobProcessorException {
+            resolveVision(false);
+            Step next = super.step();
+            if (next != this) {
+                resolveVision(true);
+            }
+            return next;
+        }
+
+        private void resolveVision(boolean all) throws JobProcessorException {
+            for (PlannedPlacement p : new ArrayList<>(pendingVision.keySet())) {
+                org.openpnp.machine.reference.vision.CoordinatedVisionTask<PartAlignment.PartAlignmentOffset> task = pendingVision.get(p);
+                if (!all && !task.isDone()) {
+                    continue;
+                }
+                try {
+                    PartAlignment.PartAlignmentOffset offsets = task.await();
+                    if (p.nozzle.getPart() != p.jobPlacement.getPlacement().getPart()
+                            || p.nozzle.getNozzleTip() != p.nozzleTip) {
+                        throw new Exception("识别期间吸嘴或器件改变，已停止贴装。");
+                    }
+                    checkPartOn(p.nozzle);
+                    if (p.nozzle.isAligningRotationMode()) {
+                        double previous = p.nozzle.getRotationModeOffset() == null
+                                ? 0 : p.nozzle.getRotationModeOffset();
+                        p.nozzle.setRotationModeOffset(previous + offsets.getLocation().getRotation());
+                        offsets = new PartAlignment.PartAlignmentOffset(
+                                offsets.getLocation().derive(null, null, null, 0.0), offsets.getPreRotated());
+                    }
+                    p.alignmentOffsets = offsets;
+                    completed.add(p);
+                    pendingVision.remove(p);
+                    Logger.info("Async bottom vision accepted {} on {}; placement barrier passed.",
+                            p.jobPlacement.getPlacement().getDisplayId(), p.nozzle.getName());
+                } catch (Exception failure) {
+                    pendingVision.remove(p);
+                    completed.remove(p);
+                    p.alignmentOffsets = null;
+                    failedPlacement = p;
+                    throw new JobProcessorException(p.nozzle, failure, true);
+                }
+            }
+        }
 
         public Align(List<PlannedPlacement> plannedPlacements) {
             super(plannedPlacements);
@@ -1799,11 +1846,50 @@ public class ReferencePnpJobProcessor extends AbstractPnpJobProcessor {
 
             fireJobPlacementProcessing(jobPlacement, JobPlacementProcessingEvent.Stage.Align);
             try {
+                if (partAlignment instanceof org.openpnp.machine.reference.vision.ReferenceBottomVision) {
+                    try {
+                        org.openpnp.machine.reference.vision.CoordinatedVisionTask<PartAlignment.PartAlignmentOffset> task =
+                                ((org.openpnp.machine.reference.vision.ReferenceBottomVision) partAlignment)
+                                        .beginCoordinatedAlignment(part, jobPlacement.getBoardLocation(), placement, nozzle);
+                        if (task != null) {
+                            pendingVision.put(plannedPlacement, task);
+                            // Exposure is complete; the next required safe retreat
+                            // can overlap image-only processing.
+                            boolean directHandoff = false;
+                            for (PlannedPlacement candidate : plannedPlacements) {
+                                if (candidate == plannedPlacement || completed.contains(candidate)
+                                        || pendingVision.containsKey(candidate)
+                                        || candidate.jobPlacement.getStatus() != Status.Processing) {
+                                    continue;
+                                }
+                                directHandoff = org.openpnp.machine.reference.vision.BottomVisionTransition.canKeepHeight(
+                                        (org.openpnp.machine.reference.vision.ReferenceBottomVision) partAlignment,
+                                        nozzle, candidate.nozzle, candidate.jobPlacement.getPlacement().getPart(),
+                                        candidate.jobPlacement.getBoardLocation(), candidate.jobPlacement.getPlacement());
+                                break;
+                            }
+                            if (directHandoff) {
+                                Logger.info("Bottom vision keeps {} at imaging height for a certified direct nozzle handoff.",
+                                        nozzle.getName());
+                            } else {
+                                nozzle.moveToSafeZ();
+                            }
+                            resolveVision(false);
+                            return this;
+                        }
+                    } catch (JobProcessorException failure) {
+                        throw failure;
+                    } catch (Exception failure) {
+                        throw new JobProcessorException(nozzle, failure, true);
+                    }
+                }
                 align(plannedPlacement, partAlignment);
                 checkPartOn(nozzle);
             }
             catch (JobProcessorException failure) {
-                failedPlacement = plannedPlacement;
+                if (failedPlacement == null) {
+                    failedPlacement = plannedPlacement;
+                }
                 throw failure;
             }
 
@@ -2699,7 +2785,7 @@ public class ReferencePnpJobProcessor extends AbstractPnpJobProcessor {
     
     protected abstract class PlannedPlacementStep implements Step {
         protected List<PlannedPlacement> plannedPlacements;
-        private Set<PlannedPlacement> completed = new HashSet<>();
+        protected Set<PlannedPlacement> completed = new HashSet<>();
         
         protected PlannedPlacementStep(List<PlannedPlacement> plannedPlacements) {
             this.plannedPlacements = plannedPlacements;

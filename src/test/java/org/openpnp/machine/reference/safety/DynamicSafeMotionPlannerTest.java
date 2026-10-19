@@ -45,6 +45,49 @@ import org.openpnp.util.MovableUtils;
 
 class DynamicSafeMotionPlannerTest {
     @Test
+    void camSnapshotInterpolatesSharedMotorAndBothNozzleOffsetsWithoutMotion() throws Exception {
+        org.openpnp.machine.reference.axis.ReferenceCamCounterClockwiseAxis ccw =
+                new org.openpnp.machine.reference.axis.ReferenceCamCounterClockwiseAxis();
+        ccw.setInputAxis(z);
+        ccw.setType(Axis.Type.Z);
+        ccw.setCamRadius(new Length(15, LengthUnit.Millimeters));
+        ccw.setCamArmsAngle(180);
+        machine.addAxis(ccw);
+        org.openpnp.machine.reference.axis.ReferenceCamClockwiseAxis cw =
+                new org.openpnp.machine.reference.axis.ReferenceCamClockwiseAxis();
+        cw.setInputAxis(ccw);
+        cw.setType(Axis.Type.Z);
+        machine.addAxis(cw);
+        nozzle.setAxisZ(ccw);
+        ReferenceNozzle sibling = new ReferenceNozzle();
+        sibling.setAxisX(x);
+        sibling.setAxisY(y);
+        sibling.setAxisZ(cw);
+        sibling.setHeadOffsets(new Location(LengthUnit.Millimeters, 30, 0, 3, 0));
+        head.addNozzle(sibling);
+        model.ensureToolProfile(head.getId(), sibling.getId(), "N2");
+        java.util.List<DynamicSafetyCollisionEngine.DynamicTool> tools =
+                DynamicSafetyCollisionEngine.snapshot(model, machine, nozzle);
+        Location a = nozzle.getLocation().derive(null, null, 0.0, null);
+        Location b = nozzle.getLocation().derive(null, null, 12.0, null);
+        AxesLocation rawA = nozzle.toRaw(nozzle.toHeadLocation(a));
+        AxesLocation rawB = nozzle.toRaw(nozzle.toHeadLocation(b));
+        for (int index = 0; index < tools.size(); index++) {
+            org.openpnp.spi.Nozzle actual = index == 0 ? nozzle : sibling;
+            java.util.function.DoubleUnaryOperator trajectory = tools.get(index).segmentZ.apply(a.getZ(), b.getZ());
+            for (double f : new double[] {0, .1, .5, .9, 1}) {
+                AxesLocation raw = new AxesLocation(machine).put(rawA.add(rawB.subtract(rawA).multiply(f)));
+                double expected = actual.toHeadMountableLocation(actual.toTransformed(raw)).getZ();
+                assertEquals(expected, trajectory.applyAsDouble(f), 1e-8);
+            }
+            java.util.function.DoubleUnaryOperator reverse = tools.get(index).segmentZ.apply(b.getZ(), a.getZ());
+            assertEquals(trajectory.applyAsDouble(.25), reverse.applyAsDouble(.75), 1e-8);
+        }
+        assertNotEquals(6.0, tools.get(0).segmentZ.apply(0.0, 12.0).applyAsDouble(.5), .01);
+        assertTrue(commands.isEmpty());
+    }
+
+    @Test
     void bottomVisionReachesImagingZDuringXyWithoutAFinalVerticalTail() throws Exception {
         Plan plan = DynamicSafeMotionPlanner.previewBottomVision(nozzle, target(), 1);
         assertTrue(plan.isOptimized(), plan.getReason());
@@ -362,6 +405,11 @@ class DynamicSafeMotionPlannerTest {
 
     @Test
     void replacingModelDuringExecutionCannotContinueOnTheOldCertification() throws Exception {
+        // Exercise execution invalidation, not first-use class loading against
+        // the production 40 ms planning budget (which correctly falls back).
+        for (int i = 0; i < 5; i++) {
+            assertTrue(DynamicSafeMotionPlanner.preview(nozzle, target(), 1).isOptimized());
+        }
         AtomicInteger attempts = new AtomicInteger();
         doAnswer(invocation -> {
             attempts.incrementAndGet();

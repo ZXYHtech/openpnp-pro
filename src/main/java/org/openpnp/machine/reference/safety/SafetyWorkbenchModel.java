@@ -84,6 +84,8 @@ public class SafetyWorkbenchModel {
         public double bodyMinZOffset = 4;
         public double bodyMaxZOffset = 72;
         public boolean bodyFollowsNozzleZ;
+        /** True when the machine Z coordinate already locates the calibrated nozzle tip. */
+        public boolean zIsNozzleTip;
         public double shaftRadius = 3;
         public double clearance = 2;
         public double retractedZ = 0;
@@ -113,7 +115,7 @@ public class SafetyWorkbenchModel {
 
         public double getMinimumZOffset(double currentZ, double carriedPartHeight) {
             return Math.min(bodyMinZOffset,
-                    -getTipLength(currentZ) - Math.max(0, carriedPartHeight) - clearance);
+                    -(zIsNozzleTip ? 0 : getTipLength(currentZ)) - Math.max(0, carriedPartHeight) - clearance);
         }
 
         public double getMaximumZOffset() {

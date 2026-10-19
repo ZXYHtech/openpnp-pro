@@ -195,6 +195,7 @@ public class SafetyWorkbenchDialog extends JDialog {
     private final JCheckBox profileEnabled = new JCheckBox("启用此吸嘴安全包络");
     private final JCheckBox profileBodyFollowsZ =
             new JCheckBox("机头本体随吸嘴 Z 一起升降");
+    private final JCheckBox profileZIsNozzleTip = new JCheckBox("Z 已是标定后的吸嘴尖端");
     private final JComboBox<Nozzle> workbenchNozzle = new JComboBox<>();
     private final JComboBox<Feeder> workbenchFeeder = new JComboBox<>();
     private final JSpinner coordinateX = new JSpinner(
@@ -264,8 +265,21 @@ public class SafetyWorkbenchDialog extends JDialog {
     private void synchronizeToolProfiles() {
         for (Head head : Configuration.get().getMachine().getHeads()) {
             for (Nozzle nozzle : head.getNozzles()) {
-                model.ensureToolProfile(head.getId(), nozzle.getId(),
+                boolean added = model.findToolProfile(head.getId(), nozzle.getId()) == null;
+                ToolProfile profile = model.ensureToolProfile(head.getId(), nozzle.getId(),
                         head.getName() + " · " + nozzle.getName());
+                if (added) {
+                    try {
+                        org.openpnp.model.Length safeZ = nozzle.getEffectiveSafeZ();
+                        if (safeZ != null) {
+                            profile.retractedZ = safeZ.convertToUnits(LengthUnit.Millimeters).getValue();
+                            profile.extendedZ = profile.retractedZ - 30;
+                            profile.zIsNozzleTip = true;
+                        }
+                    } catch (Exception unavailable) {
+                        org.pmw.tinylog.Logger.debug(unavailable, "No calibrated Safe-Z available for new envelope {}", nozzle.getName());
+                    }
+                }
             }
         }
         reloadToolProfiles();
@@ -341,7 +355,7 @@ public class SafetyWorkbenchDialog extends JDialog {
                 profileBodyRadiusY, profileBodyMinZ, profileBodyMaxZ,
                 profileShaftRadius, profileClearance, profileRetractedZ,
                 profileExtendedZ, profileRetractedLength, profileExtendedLength,
-                profileEnabled, profileBodyFollowsZ)) {
+                profileEnabled, profileBodyFollowsZ, profileZIsNozzleTip)) {
             component.setEnabled(enabled);
         }
         if (!enabled) {
@@ -360,6 +374,7 @@ public class SafetyWorkbenchDialog extends JDialog {
         profileExtendedLength.setText(format(profile.extendedTipLength));
         profileEnabled.setSelected(profile.enabled);
         profileBodyFollowsZ.setSelected(profile.bodyFollowsNozzleZ);
+        profileZIsNozzleTip.setSelected(profile.zIsNozzleTip);
     }
 
     private void applyToolProfile() {
@@ -395,6 +410,7 @@ public class SafetyWorkbenchDialog extends JDialog {
             profile.extendedTipLength = parsedExtendedLength;
             profile.enabled = profileEnabled.isSelected();
             profile.bodyFollowsNozzleZ = profileBodyFollowsZ.isSelected();
+            profile.zIsNozzleTip = profileZIsNozzleTip.isSelected();
             model.touch();
             toolProfileList.repaint();
             updateCertification();
@@ -996,6 +1012,8 @@ public class SafetyWorkbenchDialog extends JDialog {
         JPanel profileFlags = new JPanel(new FlowLayout(FlowLayout.LEFT, 5, 0));
         profileFlags.add(profileEnabled);
         profileFlags.add(profileBodyFollowsZ);
+        profileZIsNozzleTip.setToolTipText("已标定的吸嘴 Z 直接表示尖端位置，不再扣除一次吸嘴长度；固定外壳仍以收起标定 Z 为基准。");
+        profileFlags.add(profileZIsNozzleTip);
         profileFlags.add(new JLabel("长度按两标定点插值"));
         GridBagConstraints flagConstraints = new GridBagConstraints();
         flagConstraints.gridx = 0;
@@ -2669,6 +2687,7 @@ public class SafetyWorkbenchDialog extends JDialog {
                     && first.colorRgb == second.colorRgb
                     && first.carryingPart == second.carryingPart
                     && first.bodyFollowsNozzleZ == second.bodyFollowsNozzleZ
+                    && first.zIsNozzleTip == second.zIsNozzleTip
                     && first.bodyMinZOffset == second.bodyMinZOffset
                     && first.bodyMaxZOffset == second.bodyMaxZOffset
                     && first.carriedPartHeight == second.carriedPartHeight;
@@ -3878,6 +3897,7 @@ public class SafetyWorkbenchDialog extends JDialog {
             double bodyBottom = tool.bodyMinimumZAt(state.z);
             double bodyTop = tool.bodyMaximumZAt(state.z);
             double dynamicTipLength = tool.tipLengthAt(state.z);
+            double nozzleTipZ = tool.zIsNozzleTip ? state.z : state.z - dynamicTipLength;
             double bodyWidth = tool.radiusX * 2;
             double bodyDepth = tool.radiusY * 2;
             drawCuboid(g, state.x - tool.radiusX, state.y - tool.radiusY,
@@ -3886,7 +3906,7 @@ public class SafetyWorkbenchDialog extends JDialog {
                     new Color(208, 221, 229));
 
             Point shaftTop = project(state.x, state.y, bodyBottom + 2);
-            Point shaftBottom = project(state.x, state.y, state.z - dynamicTipLength);
+            Point shaftBottom = project(state.x, state.y, nozzleTipZ);
             g.setColor(new Color(184, 194, 202));
             g.setStroke(new BasicStroke((float) Math.max(2,
                     tool.shaftRadius * scale() * 1.6), BasicStroke.CAP_ROUND,
@@ -3895,11 +3915,11 @@ public class SafetyWorkbenchDialog extends JDialog {
 
             double coneRadius = Math.max(1.6, tool.shaftRadius * 0.9);
             Point coneLeft = project(state.x - coneRadius, state.y,
-                    state.z - dynamicTipLength + 4);
+                    nozzleTipZ + 4);
             Point coneRight = project(state.x + coneRadius, state.y,
-                    state.z - dynamicTipLength + 4);
+                    nozzleTipZ + 4);
             Point coneTip = project(state.x, state.y,
-                    state.z - dynamicTipLength - 1.5);
+                    nozzleTipZ - (tool.zIsNozzleTip ? 0 : 1.5));
             g.setColor(new Color(215, 220, 223));
             g.fillPolygon(polygon(coneLeft, coneRight, coneTip));
             g.setColor(new Color(103, 114, 121));

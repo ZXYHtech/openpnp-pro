@@ -53,6 +53,162 @@ import org.simpleframework.xml.ElementMap;
 import org.simpleframework.xml.Root;
 
 public class ReferenceBottomVision extends AbstractPartAlignment {
+    /** Single-shot job alignment; returns null before motion when unsupported. */
+    public CoordinatedVisionTask<PartAlignmentOffset> beginCoordinatedAlignment(Part part,
+            BoardLocation board, Placement placement, Nozzle nozzle) throws Exception {
+        BottomVisionSettings settings = getInheritedVisionSettings(part);
+        if (!org.openpnp.machine.reference.safety.DynamicSafeMotionSettings.isEnabled()
+                || !org.openpnp.machine.reference.safety.SafetyWorkbenchStore.get().isCertified()
+                || !isEnabled() || settings == null || !settings.isEnabled()
+                || nozzle.getClass() != org.openpnp.machine.reference.ReferenceNozzle.class
+                || !(settings.getPreRotateUsage() == PreRotateUsage.AlwaysOn
+                     || settings.getPreRotateUsage() == PreRotateUsage.Default && preRotate)
+                || FlyingBottomVisionService.shouldAttempt(part)
+                || !Configuration.get().getScripting().hasNoScript("Vision.PartAlignment.Before")
+                || !Configuration.get().getScripting().hasNoScript("Vision.PartAlignment.After")) {
+            return null;
+        }
+        if (part != nozzle.getPart()) {
+            throw new Exception("吸嘴器件与待识别器件不一致。");
+        }
+        Camera camera = VisionUtils.getBottomVisionCamera();
+        if (camera.getHead() != null) {
+            return null;
+        }
+        // Each task owns an independent pipeline. Settings.getPipeline() is shared.
+        CvPipeline frozen = new CvPipeline(settings.getPipeline().toXmlStringPreservingRuntimeStageValues());
+        boolean submitted = false;
+        try {
+            org.openpnp.vision.pipeline.stages.ImageCapture capture = null;
+            java.util.Set<String> allowed = new java.util.HashSet<>(java.util.Arrays.asList(
+                    "ImageCapture", "ParameterNumeric", "ParameterBool", "BlurGaussian", "MaskCircle",
+                    "MaskRectangle", "ConvertColor", "MaskHsv", "Threshold", "FindContours",
+                    "FilterContours", "MinAreaRect", "DetectRectlinearSymmetry", "ImageRecall",
+                    "DrawContours", "DrawRotatedRects", "ImageWriteDebug"));
+            for (org.openpnp.vision.pipeline.CvStage stage : frozen.getStages()) {
+                if (!stage.isEnabled()) {
+                    continue;
+                }
+                if (!stage.getClass().getPackage().getName().equals("org.openpnp.vision.pipeline.stages")
+                        || !allowed.contains(stage.getClass().getSimpleName())) {
+                    return null;
+                }
+                if (stage instanceof org.openpnp.vision.pipeline.stages.ImageCapture) {
+                    if (capture != null || ((org.openpnp.vision.pipeline.stages.ImageCapture) stage).getCount() != 1) {
+                        return null;
+                    }
+                    capture = (org.openpnp.vision.pipeline.stages.ImageCapture) stage;
+                }
+            }
+            if (capture == null || capture.getSettleOption() == Camera.SettleOption.Skip) {
+                return null;
+            }
+            double wantedAngle = board == null ? placement.getLocation().getRotation()
+                    : Utils2D.calculateBoardPlacementLocation(board, placement.getLocation()).getRotation();
+            final double angle = Utils2D.angleNorm(wantedAngle, 180);
+            Location wanted = getCameraLocationAtPartHeight(part, camera, nozzle, angle);
+            preparePipeline(frozen, settings.getPipelineParameterAssignments(), camera, part.getPackage(),
+                    nozzle, nozzle.getNozzleTip(), wanted, wanted, settings);
+            if (frozen.getPipelineShotsCount() != 1) {
+                return null;
+            }
+            PipelineShot shot = frozen.getPipelineShots().get(0);
+            // This is the only positioning call: never invoke shot.apply() on the worker.
+            shot.apply();
+            if (capture.getSettleOption() == Camera.SettleOption.Settle
+                    || capture.getSettleOption() == Camera.SettleOption.SettleFullArea) {
+                capture.setSettleOption(Camera.SettleOption.SettleFast);
+            }
+            long captureStarted = System.nanoTime();
+            Result captured;
+            try (FastBottomVision.CaptureScope scope = FastBottomVision.prepareCapture(frozen, camera)) {
+                captured = capture.process(frozen);
+            }
+            BufferedImage frame;
+            try {
+                BufferedImage source = frozen.getLastCapturedImage();
+                if (source == null) {
+                    throw new Exception("底部视觉未取得有效图像。");
+                }
+                frame = new BufferedImage(source.getWidth(), source.getHeight(), BufferedImage.TYPE_3BYTE_BGR);
+                java.awt.Graphics2D graphics = frame.createGraphics();
+                try {
+                    graphics.drawImage(source, 0, 0, null);
+                } finally {
+                    graphics.dispose();
+                }
+            } finally {
+                if (captured != null && captured.image != null) {
+                    captured.image.release();
+                }
+            }
+            long capturedNs = System.nanoTime() - captureStarted;
+            frozen.setProperty(org.openpnp.vision.pipeline.stages.ImageCapture.EXPERIMENTAL_CAPTURE_PROPERTY, frame);
+            // Freeze metric conversion before another part is moved to the camera.
+            Location upp = camera.getUnitsPerPixelAtZ();
+            int width = camera.getWidth(), height = camera.getHeight();
+            final double maxLinear = getMaxLinearOffset().convertToUnits(LengthUnit.Millimeters).getValue();
+            final double maxAngle = getMaxAngularOffset();
+            CoordinatedVisionTask<PartAlignmentOffset> task = new CoordinatedVisionTask<>(() -> {
+                long analysisStarted = System.nanoTime();
+                try (CvPipeline owned = frozen) {
+                    FastBottomVision.process(owned);
+                    Result detection = owned.getResult(VisionUtils.PIPELINE_RESULTS_NAME);
+                    if (detection == null) {
+                        detection = owned.getResult("result");
+                    }
+                    if (detection == null || !(detection.model instanceof RotatedRect)) {
+                        throw new Exception("快速底部视觉未找到有效器件，已停止贴装。");
+                    }
+                    shot.processResult(detection);
+                    RotatedRect rect = (RotatedRect) shot.processCompositeResult().getModel();
+                    if (rect == null) {
+                        throw new Exception("快速底部视觉合成结果为空。");
+                    }
+                    if (!Double.isFinite(rect.center.x) || !Double.isFinite(rect.center.y)
+                            || !Double.isFinite(rect.angle) || !Double.isFinite(rect.size.width)
+                            || !Double.isFinite(rect.size.height) || rect.size.width <= 0 || rect.size.height <= 0) {
+                        throw new Exception("快速底部视觉检测到无效坐标或器件尺寸。");
+                    }
+                    Location offset = new Location(upp.getUnits(), (rect.center.x - width / 2.0) * upp.getX(),
+                            (height / 2.0 - rect.center.y) * upp.getY(), 0, 0);
+                    double residual = VisionUtils.getPixelAngle(camera, rect.angle) - angle;
+                    residual = settings.getMaxRotation() == MaxRotation.Adjust
+                            ? Utils2D.angleNorm(residual) : Utils2D.angleNorm(residual, 180);
+                    Point[] corners = new Point[4];
+                    rect.points(corners);
+                    Location corner = new Location(upp.getUnits(),
+                            (corners[0].x - width / 2.0) * upp.getX(),
+                            (height / 2.0 - corners[0].y) * upp.getY(), 0, 0);
+                    double linear = offset.convertToUnits(LengthUnit.Millimeters).getLinearDistanceTo(Location.origin);
+                    double edge = corner.getLinearDistanceTo(corner.rotateXy(residual))
+                            * new Length(1, upp.getUnits()).convertToUnits(LengthUnit.Millimeters).getValue();
+                    if (linear > maxLinear || edge > maxLinear || Math.abs(residual) > maxAngle) {
+                        throw new Exception(String.format(java.util.Locale.ROOT,
+                                "快速底部视觉偏差超限：中心 %.4f mm、角度 %.3f°，请检查器件后重试。", linear, residual));
+                    }
+                    Location normalized = normalizeExperimentalOffsets(offset, residual,
+                            settings.getVisionOffset(), angle, true);
+                    offsetsCheck(part, nozzle, normalized);
+                    partSizeCheck(part, settings, rect, camera);
+                    Logger.info("Async bottom vision {}: capture={} ms, processing={} ms, offsets={}",
+                            part.getId(), capturedNs / 1e6, (System.nanoTime() - analysisStarted) / 1e6, normalized);
+                    return new PartAlignmentOffset(normalized, true);
+                } catch (Exception failure) {
+                    Logger.warn(failure, "Async bottom vision failed for {}", part.getId());
+                    throw failure;
+                }
+            });
+            submitted = true;
+            Logger.info("Async bottom vision captured {} on {} at {}; image processing released machine thread.",
+                    part.getId(), nozzle.getName(), wanted);
+            return task;
+        } finally {
+            if (!submitted) {
+                frozen.close();
+            }
+        }
+    }
 
     @Deprecated
     @Element(required = false)

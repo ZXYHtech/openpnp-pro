@@ -96,9 +96,11 @@ final class CoordinatedMotionValidator {
             // Resolve those identical axis transforms once per segment, not once per sample.
             List<Waypoint> segmentStarts = new ArrayList<>();
             List<Waypoint> segmentEnds = new ArrayList<>();
+            List<java.util.function.DoubleUnaryOperator> segmentZ = new ArrayList<>();
             for (DynamicTool tool : tools) {
-                segmentStarts.add(tool.conservativeSegmentZ ? tool.at(anchor, first) : null);
-                segmentEnds.add(tool.conservativeSegmentZ ? tool.at(anchor, last) : null);
+                segmentZ.add(tool.segmentZ == null ? null : tool.segmentZ.apply(first.z, last.z));
+                segmentStarts.add(tool.conservativeSegmentZ && tool.segmentZ == null ? tool.at(anchor, first) : null);
+                segmentEnds.add(tool.conservativeSegmentZ && tool.segmentZ == null ? tool.at(anchor, last) : null);
             }
             for (int index = 1; index < fractions.size(); index++) {
                 if ((index & 31) == 1 && System.nanoTime() > deadline) {
@@ -112,7 +114,21 @@ final class CoordinatedMotionValidator {
                     DynamicTool tool = tools.get(toolIndex);
                     Waypoint poseA;
                     Waypoint poseB;
-                    if (tool.conservativeSegmentZ) {
+                    if (segmentZ.get(toolIndex) != null) {
+                        // Supported cam transforms are monotone in controller
+                        // position. Endpoint Z bounds cover this entire interval;
+                        // Envelope also includes tip-extension breakpoints.
+                        double za = segmentZ.get(toolIndex).applyAsDouble(fractions.get(index - 1));
+                        double zb = segmentZ.get(toolIndex).applyAsDouble(fractions.get(index));
+                        if (!Double.isFinite(za) || !Double.isFinite(zb)) {
+                            return new ValidationResult(Collections.singletonList("凸轮联动坐标无效"), samples);
+                        }
+                        poseA = new Waypoint(tool.reference.x + (tool.followsX ? a.x - anchor.x : 0),
+                                tool.reference.y + (tool.followsY ? a.y - anchor.y : 0), za);
+                        poseB = new Waypoint(tool.reference.x + (tool.followsX ? b.x - anchor.x : 0),
+                                tool.reference.y + (tool.followsY ? b.y - anchor.y : 0), zb);
+                    }
+                    else if (tool.conservativeSegmentZ) {
                         // Cam Z is monotone in raw motor position, but nonlinear
                         // in time. Cover the complete segment Z range at every XY
                         // interval instead of assuming linear physical Z motion.

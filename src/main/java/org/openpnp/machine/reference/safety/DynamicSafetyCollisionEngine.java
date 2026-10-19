@@ -66,6 +66,8 @@ public final class DynamicSafetyCollisionEngine {
         public final double carriedPartHeight;
         boolean selectedTool;
         boolean conservativeSegmentZ;
+        public boolean zIsNozzleTip;
+        java.util.function.BiFunction<Double, Double, DoubleUnaryOperator> segmentZ;
         DoubleUnaryOperator mappedZ;
 
         DynamicTool(String headId, String toolId, String name, Waypoint reference,
@@ -130,6 +132,7 @@ public final class DynamicSafetyCollisionEngine {
             selectedTool = followsZ;
             this.carryingPart = carryingPart;
             bodyFollowsNozzleZ = profile.bodyFollowsNozzleZ;
+            zIsNozzleTip = profile.zIsNozzleTip;
             bodyMinZOffset = profile.bodyMinZOffset;
             bodyMaxZOffset = profile.bodyMaxZOffset;
             clearance = profile.clearance;
@@ -155,6 +158,11 @@ public final class DynamicSafetyCollisionEngine {
         }
 
         public double tipLengthAt(double nozzleZ) {
+            if (zIsNozzleTip) {
+                // getLocation() already includes nozzle-tip calibration. Only the
+                // held component extends below that point; do not subtract a tip twice.
+                return carriedPartHeight;
+            }
             double denominator = extendedZ - retractedZ;
             double length;
             if (Math.abs(denominator) < 0.000001) {
@@ -253,6 +261,34 @@ public final class DynamicSafetyCollisionEngine {
                 boolean cam = selectedTool.getAxisZ() instanceof ReferenceCamCounterClockwiseAxis
                         || selectedTool.getAxisZ() instanceof ReferenceCamClockwiseAxis;
                 dynamic.conservativeSegmentZ = sameHead && cam;
+                if (sameHead && cam && (nozzle == selectedTool || sharedZ)) {
+                    // Coordinated G1 interpolates controller coordinates, not
+                    // the sinusoidal nozzle Z. Freeze endpoint transforms once
+                    // per segment and resolve both nozzles from that same motor.
+                    dynamic.segmentZ = (from, to) -> {
+                        try {
+                            AxesLocation rawFrom = selectedTool.toRaw(selectedTool.toHeadLocation(
+                                    selectedOrigin.derive(null, null, from, null), LocationOption.Quiet),
+                                    LocationOption.Quiet).byType(Axis.Type.Z);
+                            AxesLocation rawTo = selectedTool.toRaw(selectedTool.toHeadLocation(
+                                    selectedOrigin.derive(null, null, to, null), LocationOption.Quiet),
+                                    LocationOption.Quiet).byType(Axis.Type.Z);
+                            AxesLocation delta = rawTo.subtract(rawFrom);
+                            return fraction -> {
+                                try {
+                                    AxesLocation interpolated = initialAxes.put(rawFrom.add(delta.multiply(fraction)));
+                                    return nozzle.toHeadMountableLocation(nozzle.toTransformed(interpolated,
+                                            LocationOption.Quiet), LocationOption.Quiet)
+                                            .convertToUnits(LengthUnit.Millimeters).getZ();
+                                } catch (Exception failure) {
+                                    throw new IllegalStateException("无法验证凸轮联动轨迹", failure);
+                                }
+                            };
+                        } catch (Exception failure) {
+                            throw new IllegalStateException("无法建立凸轮联动轨迹", failure);
+                        }
+                    };
+                }
                 if (sharedZ && nozzle != selectedTool) {
                     dynamic.mappedZ = selectedZ -> {
                         try {

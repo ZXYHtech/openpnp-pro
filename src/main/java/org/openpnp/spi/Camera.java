@@ -123,6 +123,7 @@ public interface Camera extends HeadMountable, WizardConfigurable,
     public enum SettleOption {
         Skip,
         Settle,
+        SettleFast,
         SettleFullArea;
     }
 

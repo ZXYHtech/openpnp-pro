@@ -263,7 +263,7 @@ public abstract class AbstractSettlingCamera extends AbstractCamera {
         }
     }
 
-    private BufferedImage autoSettleAndCapture(double settleMaskCircle) throws Exception {
+    private BufferedImage autoSettleAndCapture(double settleMaskCircle, boolean fast) throws Exception {
         Mat mask = null;
         Mat maskFullsize = null;
         Mat lastSettleMat = null;
@@ -298,7 +298,8 @@ public abstract class AbstractSettlingCamera extends AbstractCamera {
                 }
 
                 // Convert to Mat and if not full color, convert to gray.
-                Mat mat = OpenCvUtils.toMat(image);
+                Mat mat = OpenCvUtils.toMat(fast && settleMaskCircle == 0
+                        ? org.openpnp.machine.reference.vision.FastBottomVision.settlingImage(image) : image);
                 if (!settleFullColor) {
                     Imgproc.cvtColor(mat, mat, Imgproc.COLOR_BGR2GRAY);
                 }
@@ -416,7 +417,11 @@ public abstract class AbstractSettlingCamera extends AbstractCamera {
                     // Register one "bounce" under the limit.
                     debounceCount++;
                 }
-                if (t > timeout || debounceCount > settleDebounce) {
+                boolean settled = debounceCount > (fast ? Math.min(settleDebounce, 1) : settleDebounce);
+                if (fast && t > timeout && !settled) {
+                    throw new Exception("快速底部视觉画面未稳定，已停止；请检查曝光、振动或相机帧率。");
+                }
+                if (t > timeout || settled) {
                     // Timeout or debounced settleThreshold reached.
                     // Cleanup.
                     lastSettleMat.release();
@@ -677,7 +682,8 @@ public abstract class AbstractSettlingCamera extends AbstractCamera {
                 return capture();
             }
             else {
-                return autoSettleAndCapture(settleOption == SettleOption.SettleFullArea ? 0 : settleMaskCircle);
+                return autoSettleAndCapture(settleOption == SettleOption.SettleFullArea ? 0 : settleMaskCircle,
+                        settleOption == SettleOption.SettleFast);
             }
         }
         finally {

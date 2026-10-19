@@ -303,8 +303,11 @@ public class CvPipeline implements AutoCloseable {
             }
             // If the result image is null and there is a working image,
             // replace the result image with a clone of the working image.
+            Object retainedStages = getProperty("openpnp.pro.retainedStageImages");
+            boolean retainImage = !(retainedStages instanceof java.util.Set)
+                    || ((java.util.Set<?>) retainedStages).contains(stage.getName());
             if (image == null) {
-                if (workingImage != null) {
+                if (workingImage != null && retainImage) {
                     image = workingImage.clone();
                 }
             }
@@ -317,7 +320,7 @@ public class CvPipeline implements AutoCloseable {
                     workingImage.release();
                 }
                 workingImage = image;
-                image = image.clone();
+                image = retainImage ? image.clone() : null;
             }
 
             // If the result colorSpace is null and there is a working colorSpace,

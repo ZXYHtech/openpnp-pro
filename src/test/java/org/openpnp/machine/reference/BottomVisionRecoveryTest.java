@@ -30,6 +30,99 @@ import org.openpnp.spi.PnpJobProcessor.JobPlacement;
 import org.openpnp.spi.PnpJobProcessor.JobPlacement.Status;
 
 class BottomVisionRecoveryTest {
+    @Test
+    void asynchronousAlignmentAppliesAligningRotationModeExactlyOnce() throws Exception {
+        when(failedNozzle.isAligningRotationMode()).thenReturn(true);
+        when(failedNozzle.getRotationModeOffset()).thenReturn(.5);
+        org.openpnp.machine.reference.vision.CoordinatedVisionTask<PartAlignmentOffset> task =
+                new org.openpnp.machine.reference.vision.CoordinatedVisionTask<>(() ->
+                        new PartAlignmentOffset(new Location(LengthUnit.Millimeters, .02, -.01, 0, 1.25), true));
+        task.await();
+        when(vision.beginCoordinatedAlignment(any(), any(), any(), eq(failedNozzle))).thenReturn(task);
+        assertTrue(processor.next());
+        assertTrue(processor.next());
+        verify(failedNozzle, times(1)).setRotationModeOffset(1.75);
+        assertEquals(.02, failed.alignmentOffsets.getLocation().getX(), 1e-9);
+        assertEquals(0, failed.alignmentOffsets.getLocation().getRotation(), 1e-9);
+    }
+
+    @Test
+    void capturedImageReleasesMachineThreadButPlacementWaitsForVision() throws Exception {
+        java.util.concurrent.CountDownLatch release = new java.util.concurrent.CountDownLatch(1);
+        org.openpnp.machine.reference.vision.CoordinatedVisionTask<PartAlignmentOffset> task =
+                new org.openpnp.machine.reference.vision.CoordinatedVisionTask<>(() -> {
+                    if (!release.await(2, java.util.concurrent.TimeUnit.SECONDS)) {
+                        throw new Exception("test gate timed out");
+                    }
+                    return new PartAlignmentOffset(new Location(LengthUnit.Millimeters, .02, -.01, 0, .1), true);
+                });
+        when(vision.beginCoordinatedAlignment(any(), any(), any(), eq(failedNozzle))).thenReturn(task);
+        assertTrue(processor.next());
+        verify(failedNozzle).moveToSafeZ();
+        assertFalse(task.isDone());
+        // A different nozzle can be moved/aligned while the first image is pending.
+        assertTrue(processor.next());
+        verify(vision).findOffsets(any(), any(), any(), eq(otherNozzle));
+        verify(failedNozzle, never()).moveToPlacementLocation(any(), any());
+        java.util.concurrent.ExecutorService executor = java.util.concurrent.Executors.newSingleThreadExecutor();
+        try {
+            java.util.concurrent.Future<Boolean> barrier = executor.submit(() -> processor.next());
+            assertThrows(java.util.concurrent.TimeoutException.class,
+                    () -> barrier.get(50, java.util.concurrent.TimeUnit.MILLISECONDS));
+            release.countDown();
+            assertTrue(barrier.get(2, java.util.concurrent.TimeUnit.SECONDS));
+            assertTrue(failed.alignmentOffsets.getPreRotated());
+            assertEquals(.02, failed.alignmentOffsets.getLocation().getX(), 1e-9);
+            verify(failedNozzle, never()).place();
+        } finally {
+            release.countDown();
+            executor.shutdownNow();
+        }
+    }
+
+    @Test
+    void asynchronousFailureInterruptsEvenDeferredPlacementsAndRetainsCorrectRecoveryNozzle() throws Exception {
+        java.util.concurrent.CountDownLatch release = new java.util.concurrent.CountDownLatch(1);
+        org.openpnp.machine.reference.vision.CoordinatedVisionTask<PartAlignmentOffset> task =
+                new org.openpnp.machine.reference.vision.CoordinatedVisionTask<>(() -> {
+                    release.await(2, java.util.concurrent.TimeUnit.SECONDS);
+                    throw new Exception("image rejected");
+                });
+        failed.jobPlacement.getPlacement().setErrorHandling(Placement.ErrorHandling.Defer);
+        when(vision.beginCoordinatedAlignment(any(), any(), any(), eq(failedNozzle))).thenReturn(task);
+        assertTrue(processor.next());
+        release.countDown();
+        try {
+            task.await();
+        } catch (Exception expected) {
+            assertEquals("image rejected", expected.getMessage());
+        }
+        JobProcessorException failure = assertThrows(JobProcessorException.class, processor::next);
+        assertTrue(failure.isInterrupting());
+        assertTrue(processor.canRecoverFailedAlignment(failedNozzle));
+        assertFalse(processor.canRecoverFailedAlignment(otherNozzle));
+        assertNull(failed.alignmentOffsets);
+        verify(failedNozzle, never()).place();
+        verify(otherNozzle, never()).place();
+    }
+
+    @Test
+    void replacingPartDuringAnalysisCannotApplyStaleOffsets() throws Exception {
+        java.util.concurrent.CountDownLatch release = new java.util.concurrent.CountDownLatch(1);
+        org.openpnp.machine.reference.vision.CoordinatedVisionTask<PartAlignmentOffset> task =
+                new org.openpnp.machine.reference.vision.CoordinatedVisionTask<>(() -> {
+                    release.await(2, java.util.concurrent.TimeUnit.SECONDS);
+                    return new PartAlignmentOffset(Location.origin, true);
+                });
+        when(vision.beginCoordinatedAlignment(any(), any(), any(), eq(failedNozzle))).thenReturn(task);
+        assertTrue(processor.next());
+        carried.set(new Part("REPLACED"));
+        release.countDown();
+        task.await();
+        assertThrows(JobProcessorException.class, processor::next);
+        verify(failedNozzle, never()).place();
+    }
+
     private ReferencePnpJobProcessor processor;
     private ReferenceBottomVision vision;
     private Nozzle failedNozzle;

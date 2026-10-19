@@ -39,7 +39,7 @@ public final class DynamicSafeMotionPanel extends JPanel {
         setName("xyz-coordinated-motion");
         toggle.setName("enable-xyz-overlap");
         status.setName("xyz-overlap-status");
-        toggle.setToolTipText("按当前配置保存。整段验证通过才联动；保留最后垂直取放，不改轴速、真空或视觉等待。再次点击关闭。");
+        toggle.setToolTipText("按当前配置保存。整段验证通过才联动；单帧底部视觉取帧后后台识别，与安全移动并行。结果通过前禁止贴装，失败或超时暂停；换吸嘴保持示教顺序。再次点击关闭。");
         toggle.addActionListener(event -> {
             try {
                 if (toggle.isSelected()) {
@@ -52,7 +52,7 @@ public final class DynamicSafeMotionPanel extends JPanel {
                     SafetyWorkbenchStore.save(model);
                 }
                 DynamicSafeMotionSettings.setEnabled(toggle.isSelected());
-                feedback.accept(toggle.isSelected() ? "XY/Z 联动已启用并保存。下一段拾取、贴装或底部视觉定位移动会自动评估；只有整段安全且预计更快时才使用。" + "取放后的抬嘴、真空检测和视觉等待保持原顺序。" : "XY/Z 联动已关闭并保存，恢复原安全 Z 路径。");
+                feedback.accept(toggle.isSelected() ? "XY/Z 联动已启用并保存。下一段拾取、贴装或底部视觉定位移动会自动评估；只有整段安全且预计更快时才使用。" + "单帧预旋转底部视觉自动并行识别，结果通过前不会下降贴装；失败或超时暂停。" : "XY/Z 联动已关闭并保存，恢复原安全 Z 路径。");
             } catch (Exception failure) {
                 feedback.accept("开关保存失败：" + failure.getMessage());
             }
