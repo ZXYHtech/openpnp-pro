@@ -15,7 +15,11 @@ import java.util.Locale;
 
 import javax.imageio.ImageIO;
 
-import org.openpnp.CameraListener;
+import java.util.Collections;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
+import org.openpnp.machine.reference.camera.ReferenceCamera;
 import org.openpnp.machine.reference.safety.DynamicSafetyCollisionEngine;
 import org.openpnp.machine.reference.safety.DynamicSafetyCollisionEngine.DynamicTool;
 import org.openpnp.machine.reference.safety.SafetyCollisionEngine;
@@ -54,11 +58,13 @@ public final class FlyingBottomVisionService {
         private final long nanoTime;
         private final double sharpness;
         private double pathOffsetXmm;
+        private boolean registered;
 
         FrameSample(BufferedImage image, long nanoTime) {
             this.image = image;
             this.nanoTime = nanoTime;
-            this.sharpness = FlyingVisionFrameEvaluator.sharpness(image);
+            this.sharpness = FlyingVisionFrameEvaluator.sharpness(image.getWidth() >= 128 && image.getHeight() >= 128
+                    ? image.getSubimage(image.getWidth() / 2 - 64, image.getHeight() / 2 - 64, 128, 128) : image);
         }
 
         public BufferedImage getImage() {
@@ -163,7 +169,7 @@ public final class FlyingBottomVisionService {
         long operationStarted = System.nanoTime();
         List<FrameSample> frames = capturePass(alignment, part, nozzle, camera, wantedAngle);
         if (frames.isEmpty()) {
-            throw new Exception("No camera frames were received during the flying pass.");
+            throw new Exception("没有通过同帧配准与运动方向检查的飞拍帧，请检查照明、参考标定和速度。");
         }
 
         long centerTime = estimateCenterTime(frames);
@@ -177,6 +183,7 @@ public final class FlyingBottomVisionService {
         FrameSample bestFrame = null;
         double bestScore = Double.NEGATIVE_INFINITY;
         Exception lastFailure = null;
+        List<PartAlignmentOffset> observations = new ArrayList<>();
         for (int index = 0; index < limit; index++) {
             FrameSample frame = candidates.get(index);
             if (frame.getSharpness() < FlyingVisionSettings.getMinimumSharpness()) {
@@ -188,6 +195,7 @@ public final class FlyingBottomVisionService {
                 offsets = correctForMotion(offsets, frame);
                 validateOffsets(offsets);
                 successful++;
+                observations.add(offsets);
                 double score = candidateScore(frame, centerTime);
                 if (score > bestScore) {
                     bestScore = score;
@@ -205,8 +213,20 @@ public final class FlyingBottomVisionService {
             throw new Exception("No flying-vision frame passed the configured pipeline and limits.",
                     lastFailure);
         }
+        bestOffsets = FlyingVisionRegistration.consensus(observations);
         if (FlyingVisionSettings.isSaveDebugImages()) {
             saveFrames(part, candidates, bestFrame);
+        }
+        try {
+            org.openpnp.gui.MainFrame frame = org.openpnp.gui.MainFrame.get();
+            if (frame != null) {
+                frame.getCameraViews().getCameraView(camera).showFilteredImage(bestFrame.getImage(),
+                        "飞拍补偿后 · " + nozzle.getName() + " · " + part.getId()
+                                + " · 有效 " + successful + "/" + frames.size()
+                                + " · " + bestOffsets.getLocation(), 2000);
+            }
+        } catch (Exception unavailableView) {
+            Logger.debug(unavailableView, "Flying-vision camera view unavailable.");
         }
         double elapsedMs = (System.nanoTime() - operationStarted) / 1_000_000.0;
         Logger.info("Flying bottom vision part={} mode={} angle={} frames={} valid={} sharpness={} elapsedMs={}",
@@ -235,6 +255,10 @@ public final class FlyingBottomVisionService {
         Location exit = center.derive(
                 center.getX() + FlyingVisionSettings.getExitDistanceMm(),
                 null, null, null);
+        FlyingVisionRegistration.Model registration = FlyingVisionRegistration.load(nozzle, camera, center);
+        if (!(camera instanceof ReferenceCamera)) {
+            throw new Exception("同帧飞拍需要支持直接连续采集的底部相机。");
+        }
         if (!nozzle.isReachable(approach) || !nozzle.isReachable(exit)) {
             throw new Exception("Flying-vision path exceeds the nozzle reach or soft limits.");
         }
@@ -262,53 +286,87 @@ public final class FlyingBottomVisionService {
                     + String.join("; ", safety.getIssues()));
         }
 
-        MovableUtils.moveToLocationAtSafeZ(nozzle, approach, Math.min(speed, 0.20));
-        nozzle.waitForCompletion(CompletionType.WaitForStillstand);
-        BoundedFrameCollector frames = new BoundedFrameCollector(
+        List<FrameSample> frames = Collections.synchronizedList(new ArrayList<>());
+        List<Throwable> errors = Collections.synchronizedList(new ArrayList<>());
+        AtomicBoolean running = new AtomicBoolean(true);
+        CountDownLatch ready = new CountDownLatch(1);
+        int capacity = frameBufferCapacity(camera.getWidth(), camera.getHeight(),
                 FlyingVisionSettings.getFrameCount(), Runtime.getRuntime().maxMemory());
-        CameraListener listener = image -> {
-            if (image != null) {
-                frames.offer(image, System.nanoTime());
+        Thread capture = new Thread(() -> {
+            Thread.currentThread().setContextClassLoader(Configuration.class.getClassLoader());
+            double previous = Double.NaN;
+            try {
+                while (running.get()) {
+                    BufferedImage image = ((ReferenceCamera)camera).captureTransformed();
+                    long received = System.nanoTime();
+                    ready.countDown();
+                    try {
+                        FlyingVisionRegistration.RegisteredFrame result =
+                                FlyingVisionRegistration.register(registration, image, camera);
+                        double delta = result.x - previous;
+                        previous = result.x;
+                        if (!Double.isFinite(delta) || delta < .015) {
+                            if (delta < -.02) {
+                                frames.clear();
+                            }
+                            continue;
+                        }
+                        FrameSample sample = new FrameSample(result.image, received);
+                        sample.pathOffsetXmm = result.x;
+                        sample.registered = true;
+                        synchronized (frames) {
+                            frames.add(sample);
+                            if (frames.size() > capacity) {
+                                FrameSample worst = Collections.max(frames,
+                                        Comparator.comparingDouble(f -> Math.abs(f.pathOffsetXmm)));
+                                frames.remove(worst);
+                            }
+                        }
+                    } catch (Exception rejected) {
+                        // Outside the small validated imaging window is expected during travel.
+                    }
+                }
+            } catch (Throwable failure) {
+                errors.add(failure);
             }
-        };
+        }, "Flying-vision-direct-capture");
+        capture.setDaemon(true);
+        boolean completed = false;
         try {
             camera.actuateLightBeforeCapture();
-            camera.startContinuousCapture(listener);
-            long started = System.nanoTime();
+            capture.start();
+            if (!ready.await(FlyingVisionSettings.getCaptureTimeoutMs(), TimeUnit.MILLISECONDS)) {
+                throw new Exception("飞拍相机未及时返回新图像。");
+            }
+            // Queue the imaging-height approach and +X pass together, without an approach stop.
+            MovableUtils.moveToBottomVisionLocation(nozzle, approach,
+                    Configuration.get().getMachine().getSpeed());
             nozzle.moveTo(exit, speed);
             nozzle.waitForCompletion(CompletionType.WaitForStillstand);
-            long finished = System.nanoTime();
-            long timeoutAt = System.currentTimeMillis()
-                    + FlyingVisionSettings.getCaptureTimeoutMs();
-            while (frames.size() < 3 && System.currentTimeMillis() < timeoutAt) {
-                Thread.sleep(20);
+            long drainUntil = System.nanoTime() + 150_000_000L;
+            while (frames.size() < 4 && System.nanoTime() < drainUntil && capture.isAlive()) {
+                Thread.sleep(5);
             }
-            List<FrameSample> captured = frames.snapshot();
-            captured.removeIf(frame -> frame.getNanoTime() < started
-                    || frame.getNanoTime() > finished + 150_000_000L);
-            double duration = Math.max(1, finished - started);
-            double latencyNs = FlyingVisionSettings.isTimestampCompensationEnabled()
-                    ? FlyingVisionSettings.getCameraLatencyMs() * 1_000_000.0 : 0;
-            double distance = FlyingVisionSettings.getApproachDistanceMm()
-                    + FlyingVisionSettings.getExitDistanceMm();
-            for (FrameSample frame : captured) {
-                double exposureTime = frame.getNanoTime() - latencyNs;
-                double fraction = Math.max(0, Math.min(1,
-                        (exposureTime - started) / duration));
-                frame.pathOffsetXmm = -FlyingVisionSettings.getApproachDistanceMm()
-                        + distance * fraction;
+            running.set(false);
+            capture.join(1500);
+            if (capture.isAlive() || !errors.isEmpty()) {
+                throw new Exception("飞拍采集线程异常，未采用结果。", errors.isEmpty() ? null : errors.get(0));
             }
-            return captured;
+            synchronized (frames) {
+                completed = true;
+                return new ArrayList<>(frames);
+            }
         }
         finally {
+            running.set(false);
+            if (capture.isAlive()) {
+                capture.join(1500);
+            }
             try {
-                camera.stopContinuousCapture(listener);
+                camera.actuateLightAfterCapture();
             }
             finally {
-                try {
-                    camera.actuateLightAfterCapture();
-                }
-                finally {
+                if (!completed) {
                     nozzle.moveToSafeZ(Math.min(speed, 0.20));
                     nozzle.waitForCompletion(CompletionType.WaitForStillstand);
                 }
@@ -438,7 +496,8 @@ public final class FlyingBottomVisionService {
 
     private static PartAlignmentOffset correctForMotion(PartAlignmentOffset result,
             FrameSample frame) {
-        return correctForMotion(result, frame.getPathOffsetXmm());
+        // Registered images have already been restored to the nominal camera reference.
+        return frame.registered ? result : correctForMotion(result, frame.getPathOffsetXmm());
     }
 
     static PartAlignmentOffset correctForMotion(PartAlignmentOffset result,

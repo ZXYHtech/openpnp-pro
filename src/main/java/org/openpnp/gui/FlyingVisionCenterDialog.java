@@ -82,9 +82,9 @@ public class FlyingVisionCenterDialog extends JDialog {
     private final JSpinner speed = new JSpinner(new SpinnerNumberModel(
             FlyingVisionSettings.getSpeed(), 0.02, 0.35, 0.01));
     private final JSpinner approach = new JSpinner(new SpinnerNumberModel(
-            FlyingVisionSettings.getApproachDistanceMm(), 3.0, 40.0, 1.0));
+            FlyingVisionSettings.getApproachDistanceMm(), 1.0, 40.0, 1.0));
     private final JSpinner exit = new JSpinner(new SpinnerNumberModel(
-            FlyingVisionSettings.getExitDistanceMm(), 3.0, 40.0, 1.0));
+            FlyingVisionSettings.getExitDistanceMm(), 1.0, 40.0, 1.0));
     private final JSpinner frames = new JSpinner(new SpinnerNumberModel(
             FlyingVisionSettings.getFrameCount(), 3, 30, 1));
     private final JSpinner repeats = new JSpinner(new SpinnerNumberModel(1, 1, 20, 1));
@@ -174,12 +174,34 @@ public class FlyingVisionCenterDialog extends JDialog {
         staticTest.addActionListener(event -> runStaticTest());
         flightTest.addActionListener(event -> runFlightTest());
         JButton close = new JButton("关闭");
+        JButton calibrate = new JButton("空吸嘴标定同帧位移");
+        calibrate.addActionListener(event -> {
+            saveValues();
+            UiUtils.submitUiMachineTask(() -> {
+                String partId = FlyingVisionSettings.getEnabledPartIds().stream().findFirst()
+                        .orElseThrow(() -> new Exception("请先在白名单填写一个测试Part ID，用于确定拍摄高度。"));
+                Part part = Configuration.get().getPart(partId);
+                if (part == null || !Configuration.get().getMachine().isEnabled()
+                        || !Configuration.get().getMachine().isHomed()) {
+                    throw new Exception("请检查测试Part ID，并先启用机器、完成复位。");
+                }
+                for (Nozzle nozzle : Configuration.get().getMachine().getDefaultHead().getNozzles()) {
+                    org.openpnp.machine.reference.vision.FlyingVisionRegistration.calibrate(nozzle, part, 0,
+                            message -> javax.swing.SwingUtilities.invokeLater(() -> results.setText(message)));
+                }
+                return "两只吸嘴同帧位移标定完成；适用于本次高度及0°附近角度。复位后原生校准改变时需重新标定。";
+            }, message -> results.setText(message), failure -> {
+                results.setText("标定失败：" + failure.getMessage());
+                UiUtils.showError(failure);
+            });
+        });
         close.addActionListener(event -> dispose());
         buttons.add(followGuide);
         buttons.add(autoGuide);
         buttons.add(save);
         buttons.add(export);
         buttons.add(staticTest);
+        buttons.add(calibrate);
         buttons.add(flightTest);
         buttons.add(close);
         root.add(buttons, BorderLayout.SOUTH);

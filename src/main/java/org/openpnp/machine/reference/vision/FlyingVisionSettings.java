@@ -50,19 +50,19 @@ public final class FlyingVisionSettings {
     }
 
     public static double getApproachDistanceMm() {
-        return clamp(PREFS.getDouble(PREFIX + "approachMm", 12.0), 3.0, 40.0);
+        return clamp(PREFS.getDouble(PREFIX + "approachMm", 12.0), 1.0, 40.0);
     }
 
     public static void setApproachDistanceMm(double value) {
-        PREFS.putDouble(PREFIX + "approachMm", clamp(value, 3.0, 40.0));
+        PREFS.putDouble(PREFIX + "approachMm", clamp(value, 1.0, 40.0));
     }
 
     public static double getExitDistanceMm() {
-        return clamp(PREFS.getDouble(PREFIX + "exitMm", 12.0), 3.0, 40.0);
+        return clamp(PREFS.getDouble(PREFIX + "exitMm", 12.0), 1.0, 40.0);
     }
 
     public static void setExitDistanceMm(double value) {
-        PREFS.putDouble(PREFIX + "exitMm", clamp(value, 3.0, 40.0));
+        PREFS.putDouble(PREFIX + "exitMm", clamp(value, 1.0, 40.0));
     }
 
     public static int getFrameCount() {

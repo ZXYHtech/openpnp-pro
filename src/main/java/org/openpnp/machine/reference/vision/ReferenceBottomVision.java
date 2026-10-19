@@ -577,15 +577,11 @@ public class ReferenceBottomVision extends AbstractPartAlignment {
         BottomVisionSettings settings = getInheritedVisionSettings(part);
         Location wantedLocation = getCameraLocationAtPartHeight(
                 part, camera, nozzle, preRotated ? wantedAngle : 0.0);
-        try (CvPipeline pipeline = settings.getPipeline()) {
+        try (CvPipeline pipeline = new CvPipeline(settings.getPipeline().toXmlStringPreservingRuntimeStageValues())) {
             preparePipeline(pipeline, settings.getPipelineParameterAssignments(), camera,
                     part.getPackage(), nozzle, nozzle.getNozzleTip(), wantedLocation,
                     wantedLocation, settings);
-            pipeline.setProperty(
-                    org.openpnp.vision.pipeline.stages.ImageCapture.EXPERIMENTAL_CAPTURE_PROPERTY,
-                    image);
-            RotatedRect rect = processPipelineAndGetResult(pipeline, camera, part, nozzle,
-                    wantedLocation, wantedLocation, settings, false);
+            RotatedRect rect = FlyingVisionFrozenAnalysis.analyze(pipeline, camera, image);
             Location offsets = VisionUtils.getPixelCenterOffsets(
                     camera, rect.center.x, rect.center.y);
             double angleOffset = VisionUtils.getPixelAngle(camera, rect.angle)
