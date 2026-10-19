@@ -140,6 +140,7 @@ public final class FlyingBottomVisionService {
     public static boolean shouldAttempt(Part part) {
         return FlyingVisionSettings.shouldUseFor(part)
                 && SafetyWorkbenchStore.get().isCertified()
+                && (FlyingVisionMotion.direction() == 1 || FlyingVisionEvaluation.managed(part))
                 && (!FlyingVisionEvaluation.managed(part) || FlyingVisionEvaluation.enabled(part));
     }
 
@@ -254,13 +255,14 @@ public final class FlyingBottomVisionService {
     public static List<FrameSample> capturePass(ReferenceBottomVision alignment,
             Part part, Nozzle nozzle, Camera camera, double wantedAngle) throws Exception {
         double speed = FlyingVisionSettings.getSpeed();
+        int direction = FlyingVisionMotion.direction();
         Location center = alignment.getCameraLocationAtPartHeight(part, camera, nozzle, wantedAngle)
                 .convertToUnits(LengthUnit.Millimeters);
         Location approach = center.derive(
-                center.getX() - FlyingVisionSettings.getApproachDistanceMm(),
+                center.getX() - direction * FlyingVisionSettings.getApproachDistanceMm(),
                 null, null, null);
         Location exit = center.derive(
-                center.getX() + FlyingVisionSettings.getExitDistanceMm(),
+                center.getX() + direction * FlyingVisionSettings.getExitDistanceMm(),
                 null, null, null);
         FlyingVisionRegistration.Model registration = FlyingVisionRegistration.load(nozzle, camera, center);
         if (!(camera instanceof ReferenceCamera)) {
@@ -301,6 +303,7 @@ public final class FlyingBottomVisionService {
                 FlyingVisionSettings.getFrameCount(), Runtime.getRuntime().maxMemory());
         Thread capture = new Thread(() -> {
             Thread.currentThread().setContextClassLoader(Configuration.class.getClassLoader());
+            int captureDirection = FlyingVisionMotion.direction();
             double previous = Double.NaN;
             try {
                 while (running.get()) {
@@ -312,8 +315,8 @@ public final class FlyingBottomVisionService {
                                 FlyingVisionRegistration.register(registration, image, camera);
                         double delta = result.x - previous;
                         previous = result.x;
-                        if (!Double.isFinite(delta) || delta < .015) {
-                            if (delta < -.02) {
+                        if (!FlyingVisionMotion.forwardDelta(delta, captureDirection)) {
+                            if (delta * captureDirection < -.02) {
                                 frames.clear();
                             }
                             continue;
@@ -345,9 +348,11 @@ public final class FlyingBottomVisionService {
             if (!ready.await(FlyingVisionSettings.getCaptureTimeoutMs(), TimeUnit.MILLISECONDS)) {
                 throw new Exception("飞拍相机未及时返回新图像。");
             }
-            // Queue the imaging-height approach and +X pass together, without an approach stop.
-            MovableUtils.moveToBottomVisionLocation(nozzle, approach,
-                    Configuration.get().getMachine().getSpeed());
+            // Queue entry and the same-direction pass together, without an approach stop.
+            if (!FlyingVisionMotion.tryDirectEntry(alignment, part, nozzle, camera, approach)) {
+                MovableUtils.moveToBottomVisionLocation(nozzle, approach,
+                        Configuration.get().getMachine().getSpeed());
+            }
             nozzle.moveTo(exit, speed);
             nozzle.waitForCompletion(CompletionType.WaitForStillstand);
             long drainUntil = System.nanoTime() + 150_000_000L;

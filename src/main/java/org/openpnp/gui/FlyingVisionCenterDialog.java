@@ -250,6 +250,7 @@ public class FlyingVisionCenterDialog extends JDialog {
         panel.setLayout(new BoxLayout(panel, BoxLayout.Y_AXIS));
         panel.setBorder(BorderFactory.createTitledBorder("安全参数（速度为机器最大速度比例）"));
         panel.add(row(enabled, production, fallback, saveImages));
+        panel.add(org.openpnp.machine.reference.vision.FlyingVisionMotion.directionSelector());
         panel.add(row(label("速度", speed), label("进入距离 mm", approach),
                 label("离开距离 mm", exit), label("采集帧数", frames),
                 label("重复次数", repeats)));

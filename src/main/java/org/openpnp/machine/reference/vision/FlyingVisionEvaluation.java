@@ -227,7 +227,7 @@ public final class FlyingVisionEvaluation {
     }
 
     public static String progress() {
-        return progress;
+        return (FlyingVisionMotion.direction() == 1 ? "飞拍 +X · " : "飞拍 -X · ") + progress;
     }
 
     public static boolean isArmed() {
@@ -269,6 +269,7 @@ public final class FlyingVisionEvaluation {
                 + "|" + footprint + "|" + FlyingVisionSettings.getSpeed()
                 + "|" + FlyingVisionSettings.getApproachDistanceMm() + "|" + FlyingVisionSettings.getExitDistanceMm()
                 + "|" + FlyingVisionSettings.getFrameCount() + "|" + FlyingVisionSettings.getMinimumSharpness()
+                + "|" + FlyingVisionMotion.direction()
                 + "|" + SafetyWorkbenchStore.get().getRevision();
         byte[] bytes = MessageDigest.getInstance("SHA-256").digest(raw.getBytes(java.nio.charset.StandardCharsets.UTF_8));
         StringBuilder hex = new StringBuilder();

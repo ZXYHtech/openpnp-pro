@@ -1718,6 +1718,8 @@ public class ReferencePnpJobProcessor extends AbstractPnpJobProcessor {
 
             // sort plannedPlacements for alignment with place as next/end location using TSM
             List<PlannedPlacement> optimizedPlannedPlacements = optimizePlacements(alignLocator, placeLocator);
+            optimizedPlannedPlacements = org.openpnp.machine.reference.vision.FlyingVisionMotion
+                    .orderForFlying(optimizedPlannedPlacements);
             
             // continue with alignment
             return new PrerotateAllNozzlesForAlign(optimizedPlannedPlacements);

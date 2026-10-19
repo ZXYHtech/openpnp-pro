@@ -376,6 +376,9 @@ public final class DynamicSafeMotionPlanner {
     }
 
     public static Plan previewBottomVision(HeadMountable tool, Location destination, double speed) {
+        if (isNozzleTipChanging()) {
+            return rejected("更换吸嘴过程中保持原安全路径");
+        }
         return preview(tool, destination, speed, Long.MAX_VALUE, true, null);
     }
 

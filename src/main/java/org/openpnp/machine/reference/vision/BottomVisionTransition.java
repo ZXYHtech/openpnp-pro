@@ -24,7 +24,7 @@ public final class BottomVisionTransition {
                 || current.getHead() != next.getHead() || current.getPart() == null
                 || next.getPart() != part || part.isPartHeightUnknown()
                 || part.getPackage() != current.getPart().getPackage()
-                || FlyingBottomVisionService.shouldAttempt(part)
+                || FlyingBottomVisionService.shouldAttempt(part, board, placement, next)
                 || !Configuration.get().getScripting().hasNoScript("Vision.PartAlignment.Before")
                 || !Configuration.get().getScripting().hasNoScript("Vision.PartAlignment.After")) {
             return false;

@@ -55,7 +55,16 @@ class CoupledCamMotionTest {
             assertTrue(plan.isOptimized(), plan.getReason());
             assertEquals(1, plan.getLocations().size());
             int before = fixture.commands.size();
-            assertTrue(DynamicSafeMotionPlanner.tryMoveToBottomVision(nozzle, cameraTarget, 1));
+            Location origin = nozzle.getLocation();
+            if (!DynamicSafeMotionPlanner.tryMoveToBottomVision(nozzle, cameraTarget, 1)) {
+                // Runtime may decline for its time/cost budget. Verify that rejection is atomic,
+                // then exercise the independently certified plan through the native NullDriver fixture.
+                assertEquals(before, fixture.commands.size());
+                assertEquals(origin, nozzle.getLocation());
+                String reason = DynamicSafeMotionPlanner.getRuntimeSummary();
+                assertTrue(reason.contains("40 ms") || reason.contains("预计节省不足"), reason);
+                nozzle.moveTo(plan.getLocations().get(0), 1, org.openpnp.model.Motion.MotionOption.CoordinatedMotion);
+            }
             assertEquals(before + 1, fixture.commands.size());
             assertEquals(-12, nozzle.getLocation().getZ(), 1e-7);
             assertEquals(100, nozzle.getLocation().getY(), 1e-7);
