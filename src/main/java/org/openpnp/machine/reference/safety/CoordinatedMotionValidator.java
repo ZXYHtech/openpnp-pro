@@ -28,11 +28,29 @@ final class CoordinatedMotionValidator {
     private CoordinatedMotionValidator() {
     }
 
+    static final class FeederContact {
+        final String sourceKey;
+        final Waypoint pick;
+        FeederContact(String sourceKey, Waypoint pick) {
+            this.sourceKey = sourceKey;
+            this.pick = pick;
+        }
+        boolean permits(SafetyObject object, Waypoint point) {
+            return object.type == ObjectType.FEEDER && sourceKey.equals(object.sourceKey)
+                    && Math.abs(point.x - pick.x) < .05 && Math.abs(point.y - pick.y) < .05
+                    && Math.abs(point.z - pick.z) < .05;
+        }
+    }
+
     static ValidationResult validate(SafetyWorkbenchModel model, List<Waypoint> path, List<DynamicTool> tools, Waypoint anchor) {
         return validate(model, path, tools, anchor, Long.MAX_VALUE);
     }
 
     static ValidationResult validate(SafetyWorkbenchModel model, List<Waypoint> path, List<DynamicTool> tools, Waypoint anchor, long deadline) {
+        return validate(model, path, tools, anchor, deadline, null);
+    }
+
+    static ValidationResult validate(SafetyWorkbenchModel model, List<Waypoint> path, List<DynamicTool> tools, Waypoint anchor, long deadline, FeederContact contact) {
         Set<String> issues = new LinkedHashSet<>();
         List<Waypoint> samples = new ArrayList<>();
         if (path == null || path.isEmpty() || tools == null || tools.isEmpty()) {
@@ -119,7 +137,7 @@ final class CoordinatedMotionValidator {
                         if (object == null || !object.enabled || !object.obstacle) {
                             continue;
                         }
-                        if (envelope.intersects(object) && !terminalContact(envelope, object, first, last, path.get(0), path.get(path.size() - 1), segment == 1, segment == path.size() - 1)) {
+                        if (envelope.intersects(object) && !terminalContact(envelope, object, first, last, path.get(0), path.get(path.size() - 1), segment == 1, segment == path.size() - 1, contact)) {
                             issues.add("“" + tool.name + "”的联动扫掠进入“" + object.name + "”。");
                         }
                     }
@@ -146,16 +164,18 @@ final class CoordinatedMotionValidator {
         return new ValidationResult(new ArrayList<>(issues), samples);
     }
 
-    private static boolean terminalContact(Envelope envelope, SafetyObject object, Waypoint first, Waypoint last, Waypoint source, Waypoint target, boolean firstSegment, boolean lastSegment) {
+    private static boolean terminalContact(Envelope envelope, SafetyObject object, Waypoint first, Waypoint last, Waypoint source, Waypoint target, boolean firstSegment, boolean lastSegment, FeederContact contact) {
         // Only the selected tip may leave/approach a feeder or board, vertically.
         // Never waive contact during a diagonal or for a sibling nozzle.
         if (!envelope.tool.selectedTool || (object.type != ObjectType.BOARD && object.type != ObjectType.FEEDER && object.type != ObjectType.LOOSE_PARTS_FEEDER) || Math.abs(first.x - last.x) > EPSILON || Math.abs(first.y - last.y) > EPSILON || envelope.bodyMinZ <= object.z + object.height + object.clearance) {
             return false;
         }
-        if (firstSegment && last.z > first.z && sameXy(first, source) && envelope.tool.minimumZAt(envelope.b.z) >= envelope.tool.minimumZAt(envelope.a.z) && source.z >= object.z + object.height - EPSILON) {
+        if (firstSegment && last.z > first.z && sameXy(first, source) && envelope.tool.minimumZAt(envelope.b.z) >= envelope.tool.minimumZAt(envelope.a.z)
+                && (source.z >= object.z + object.height - EPSILON || contact != null && contact.permits(object, source))) {
             return true;
         }
-        return lastSegment && last.z < first.z && sameXy(last, target) && envelope.tool.minimumZAt(envelope.b.z) <= envelope.tool.minimumZAt(envelope.a.z) && target.z >= object.z + object.height - EPSILON;
+        return lastSegment && last.z < first.z && sameXy(last, target) && envelope.tool.minimumZAt(envelope.b.z) <= envelope.tool.minimumZAt(envelope.a.z)
+                && (target.z >= object.z + object.height - EPSILON || contact != null && contact.permits(object, target));
     }
 
     private static boolean sameXy(Waypoint a, Waypoint b) {

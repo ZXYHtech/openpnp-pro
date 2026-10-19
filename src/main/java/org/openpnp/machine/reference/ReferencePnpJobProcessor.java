@@ -1672,7 +1672,7 @@ public class ReferencePnpJobProcessor extends AbstractPnpJobProcessor {
                 nozzle.pick(part,feeder);
 
                 // Retract
-                nozzle.moveToSafeZ();
+                org.openpnp.machine.reference.safety.DynamicSafeMotionPlanner.retractAfterPick(nozzle, feeder);
             }
             catch (Exception e) {
                 throw new JobProcessorException(nozzle, e);
@@ -1964,8 +1964,9 @@ public class ReferencePnpJobProcessor extends AbstractPnpJobProcessor {
             
             scriptComplete(plannedPlacement, placementLocation);
 
-            // Emitted only after the part is released, verified off the nozzle, retracted to safe
-            // Z and recorded as placed. UI workflows may therefore observe it without racing the
+            // Emitted after release, enabled part-off checks and a safe retreat
+            // (certified local clearance or stock Safe-Z), and recording the placement.
+            // UI workflows may therefore observe it without racing the
             // physical placement operation.
             fireJobPlacementProcessing(jobPlacement, JobPlacementProcessingEvent.Stage.Complete);
 
@@ -1991,7 +1992,7 @@ public class ReferencePnpJobProcessor extends AbstractPnpJobProcessor {
                 nozzle.place();
 
                 // Retract
-                nozzle.moveToSafeZ();
+                org.openpnp.machine.reference.safety.DynamicSafeMotionPlanner.retractAfterPlace(nozzle);
             }
             catch (Exception e) {
                 throw new JobProcessorException(nozzle, e);

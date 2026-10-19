@@ -25,6 +25,44 @@ import org.openpnp.spi.HeadMountable;
 import org.openpnp.spi.Locatable.LocationOption;
 
 class CoupledCamMotionTest {
+    @Test
+    void twoLoadedNozzlesSwitchCameraWithXyAndCamZInTheSameCommand() throws Exception {
+        setup(180);
+        org.openpnp.model.Package packag = new org.openpnp.model.Package("0603");
+        packag.getFootprint().setBodyWidth(1.6);
+        packag.getFootprint().setBodyHeight(.8);
+        java.lang.reflect.Field carried = org.openpnp.spi.base.AbstractNozzle.class.getDeclaredField("part");
+        carried.setAccessible(true);
+        for (ReferenceNozzle nozzle : new ReferenceNozzle[] {fixture.nozzle, clockwiseNozzle}) {
+            org.openpnp.model.Part part = new org.openpnp.model.Part(nozzle.getId());
+            part.setPackage(packag);
+            part.setHeight(new Length(.8, LengthUnit.Millimeters));
+            carried.set(nozzle, part);
+        }
+        SafetyWorkbenchModel.SafetyObject camera = fixture.model.createObject(SafetyWorkbenchModel.ObjectType.BOTTOM_CAMERA);
+        camera.x = 280;
+        camera.y = 80;
+        camera.z = -60;
+        camera.width = camera.depth = 40;
+        camera.height = 20;
+        camera.apertureWidth = camera.apertureDepth = 0;
+        fixture.model.addObject(camera);
+        fixture.model.certify("Both vision planes clear camera shell");
+        DynamicSafeMotionSettings.setEnabled(true);
+        Location cameraTarget = new Location(LengthUnit.Millimeters, 300, 100, -12, 0);
+        for (ReferenceNozzle nozzle : new ReferenceNozzle[] {fixture.nozzle, clockwiseNozzle}) {
+            Plan plan = DynamicSafeMotionPlanner.previewBottomVision(nozzle, cameraTarget, 1);
+            assertTrue(plan.isOptimized(), plan.getReason());
+            assertEquals(1, plan.getLocations().size());
+            int before = fixture.commands.size();
+            assertTrue(DynamicSafeMotionPlanner.tryMoveToBottomVision(nozzle, cameraTarget, 1));
+            assertEquals(before + 1, fixture.commands.size());
+            assertEquals(-12, nozzle.getLocation().getZ(), 1e-7);
+            assertEquals(100, nozzle.getLocation().getY(), 1e-7);
+        }
+        assertEquals(2, fixture.commands.size());
+        assertTrue(fixture.options.stream().allMatch(flags -> flags.contains(org.openpnp.model.Motion.MotionOption.CoordinatedMotion)));
+    }
     @TempDir Path temporary;
     DynamicSafeMotionPlannerTest fixture;
     ReferenceCamCounterClockwiseAxis counter;

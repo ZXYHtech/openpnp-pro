@@ -29,6 +29,26 @@ public class MovableUtils {
         if (DynamicSafeMotionPlanner.tryMoveToLocationAtSafeZ(hm, location, speed)) {
             return;
         }
+        moveToLocationAtSafeZOriginal(hm, location, speed);
+    }
+
+    /** Non-contact camera target: allow Z to reach imaging height during XY travel. */
+    public static void moveToBottomVisionLocation(HeadMountable hm, Location location, double speed) throws Exception {
+        if (DynamicSafeMotionPlanner.tryMoveToBottomVision(hm, location, speed)) {
+            return;
+        }
+        moveToLocationAtSafeZOriginal(hm, location, speed);
+    }
+
+    public static void moveToFeederPickLocation(HeadMountable hm, Location location, org.openpnp.spi.Feeder feeder) throws Exception {
+        double speed = hm.getHead().getMachine().getSpeed();
+        if (DynamicSafeMotionPlanner.tryMoveToPick(hm, location, speed, feeder)) {
+            return;
+        }
+        moveToLocationAtSafeZOriginal(hm, location, speed);
+    }
+
+    private static void moveToLocationAtSafeZOriginal(HeadMountable hm, Location location, double speed) throws Exception {
         Head head = hm.getHead();
         Location currentLocationWithNewZ = hm.getLocation().derive(location, false, false, true, false);
         AxesLocation rawLocation = hm.toRaw(hm.toHeadLocation(location, LocationOption.Quiet), LocationOption.Quiet);

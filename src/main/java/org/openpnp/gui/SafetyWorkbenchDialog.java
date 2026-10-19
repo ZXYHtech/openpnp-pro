@@ -691,6 +691,11 @@ public class SafetyWorkbenchDialog extends JDialog {
         previewCoordinated.setToolTipText("使用运动/预演页的目标 XYZ，只计算路径，不移动机器。");
         previewCoordinated.addActionListener(event -> previewCoordinatedMotion());
         coordinatedMotion.add(previewCoordinated);
+        JButton previewVision = new JButton("预览视觉直达");
+        previewVision.setName("preview-bottom-vision-transit");
+        previewVision.setToolTipText("按运动/预演页的拍摄 XYZ 检查非接触路径；Z 可在 XY 行程中达到拍摄高度，不移动机器。");
+        previewVision.addActionListener(event -> previewCoordinatedMotion(true));
+        coordinatedMotion.add(previewVision);
         JButton visionTiming = new JButton("底部视觉耗时");
         visionTiming.setName("bottom-vision-timing");
         visionTiming.setToolTipText("查看真实静拍调用的移动下发、采图/稳定、流水线耗时和复拍轮数，不额外拍照。");
@@ -2218,6 +2223,10 @@ public class SafetyWorkbenchDialog extends JDialog {
     }
 
     private void previewCoordinatedMotion() {
+        previewCoordinatedMotion(false);
+    }
+
+    private void previewCoordinatedMotion(boolean imaging) {
         for (int index = 0; index < propertyTabs.getTabCount(); index++) {
             if (propertyTabs.getTitleAt(index).contains("预演")) {
                 propertyTabs.setSelectedIndex(index);
@@ -2232,7 +2241,8 @@ public class SafetyWorkbenchDialog extends JDialog {
         Location start = tool.getLocation().convertToUnits(LengthUnit.Millimeters);
         Location target = new Location(LengthUnit.Millimeters, number(targetX),
                 number(targetY), number(targetZ), start.getRotation());
-        Plan plan = DynamicSafeMotionPlanner.preview(tool, target, number(speed));
+        Plan plan = imaging ? DynamicSafeMotionPlanner.previewBottomVision(tool, target, number(speed))
+                : DynamicSafeMotionPlanner.preview(tool, target, number(speed));
         if (!plan.isOptimized()) {
             canvas.setPath(new ArrayList<>(), false);
             result.setText("此段保持原安全 Z 路径：" + plan.getReason()
@@ -2248,7 +2258,9 @@ public class SafetyWorkbenchDialog extends JDialog {
         result.setText(String.format(Locale.ROOT,
                 "联动路径通过：原分段 %.3f 秒 → 联动 %.3f 秒，预计减少 %.1f%%。\n"
                         + "按当前轴限速/加速度计算，属于软件估算；实机执行还受控制器、真空与视觉耗时影响。\n"
-                        + "取放前保留末段垂直下降；取放后的抬嘴和检测不变。预览没有移动机器。",
+                        + (imaging ? "视觉直达：在 XY 行进中达到拍摄 Z，无额外末段垂直下降。"
+                                : "先到局部安全高度再边走 XY 边调整 Z；接触前保留必要的竖直段。")
+                        + "预览没有移动机器。",
                 plan.getOriginalSeconds(), plan.getCoordinatedSeconds(),
                 100 * (1 - plan.getCoordinatedSeconds() / plan.getOriginalSeconds())));
     }

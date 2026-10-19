@@ -345,7 +345,7 @@ public class ReferenceNozzle extends AbstractNozzle implements HeadMountable {
             Length partHeight = getSafePartHeight(feeder.getPart());
             pickLocation = pickLocation.add(new Location(partHeight.getUnits(), 0, 0, partHeight.getValue(), 0));
         }
-        MovableUtils.moveToLocationAtSafeZ(this, pickLocation);
+        MovableUtils.moveToFeederPickLocation(this, pickLocation, feeder);
     }
 
     @Override

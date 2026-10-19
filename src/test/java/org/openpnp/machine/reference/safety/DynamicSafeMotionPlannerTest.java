@@ -45,6 +45,36 @@ import org.openpnp.util.MovableUtils;
 
 class DynamicSafeMotionPlannerTest {
     @Test
+    void bottomVisionReachesImagingZDuringXyWithoutAFinalVerticalTail() throws Exception {
+        Plan plan = DynamicSafeMotionPlanner.previewBottomVision(nozzle, target(), 1);
+        assertTrue(plan.isOptimized(), plan.getReason());
+        assertEquals(1, plan.getLocations().size());
+        assertEquals(target(), plan.getLocations().get(0));
+        assertTrue(plan.getReason().contains("视觉直达"));
+        DynamicSafeMotionSettings.setEnabled(true);
+        org.openpnp.util.MovableUtils.moveToBottomVisionLocation(nozzle, target(), 1);
+        assertEquals(1, commands.size(), "No preliminary Safe-Z or vertical tail before imaging");
+        assertTrue(options.get(0).contains(MotionOption.CoordinatedMotion));
+        assertEquals(300, nozzle.getLocation().getX(), 1e-9);
+        assertEquals(0, nozzle.getLocation().getZ(), 1e-9);
+    }
+
+    @Test
+    void bottomVisionCannotPassThroughCameraHousingEvenInImagingMode() throws Exception {
+        SafetyObject camera = model.createObject(ObjectType.BOTTOM_CAMERA);
+        camera.x = 290;
+        camera.y = 90;
+        camera.z = -10;
+        camera.width = camera.depth = 20;
+        camera.height = 30;
+        camera.apertureWidth = camera.apertureDepth = 0;
+        model.addObject(camera);
+        model.certify("Camera housing obstruction");
+        DynamicSafeMotionSettings.setEnabled(true);
+        assertFalse(DynamicSafeMotionPlanner.tryMoveToBottomVision(nozzle, target(), 1));
+        assertTrue(commands.isEmpty());
+    }
+    @Test
     void savedCertificationSurvivesReloadAndEditsRequireRecertification() throws Exception {
         SafetyWorkbenchStore.save(model);
         SafetyWorkbenchModel loaded = SafetyWorkbenchStore.reload();
@@ -253,10 +283,8 @@ class DynamicSafeMotionPlannerTest {
         Plan plan = DynamicSafeMotionPlanner.preview(nozzle, target(), 1);
         assertTrue(plan.isOptimized(), plan.getReason());
         Location first = plan.getLocations().get(0);
-        Location second = plan.getLocations().get(1);
-        assertEquals(20, first.getX(), 1e-8);
-        assertTrue(second.getX() > first.getX());
-        assertTrue(second.getZ() > first.getZ());
+        assertTrue(first.getX() > 20, "Already clear: XY must start without a redundant vertical lift");
+        assertTrue(first.getZ() > 0, "The remaining ascent must occur together with XY");
     }
 
     @Test

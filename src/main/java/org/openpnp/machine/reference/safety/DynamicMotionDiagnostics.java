@@ -11,7 +11,7 @@ import org.pmw.tinylog.Logger;
 public final class DynamicMotionDiagnostics {
     private static final Deque<String> rows = new ArrayDeque<>();
     private static final Map<String, Integer> reasons = new LinkedHashMap<>();
-    private static long accepted, declined, skipped;
+    private static long accepted, declined, skipped, retractions;
     private static double totalMs, maxMs;
     private static String lastLogged = "";
 
@@ -41,7 +41,7 @@ public final class DynamicMotionDiagnostics {
         while (rows.size() > 1000) {
             rows.removeFirst();
         }
-        String state = optimized ? "已联动" : reason;
+        String state = reason;
         if (!state.equals(lastLogged) || (accepted + declined) % 50 == 0) {
             Logger.info("XY/Z {} · 规划 {} ms · 原路径 {} s / 联动 {} s · {}",
                     tool, Math.round(planningMs * 100) / 100., originalSeconds, coordinatedSeconds, state);
@@ -49,12 +49,19 @@ public final class DynamicMotionDiagnostics {
         }
     }
 
+    static synchronized void recordRetraction(String tool, String reason, double planningMs,
+            double originalSeconds, double coordinatedSeconds) {
+        record(tool, reason, true, planningMs, originalSeconds, coordinatedSeconds);
+        accepted--;
+        retractions++;
+    }
+
     public static synchronized String summary() {
-        long count = accepted + declined;
+        long count = accepted + declined + retractions;
         StringBuilder result = new StringBuilder(String.format(Locale.ROOT,
-                "本次启动：已联动 %d 段；已评估回退 %d 段；不适用 %d 段。\n"
+                "本次启动：已联动 %d 段；已评估回退 %d 段；不适用 %d 段；局部安全退出 %d 次。\n"
                 + "平均规划 %.2f ms；最大 %.2f ms。\n\n回退原因：\n",
-                accepted, declined, skipped, count == 0 ? 0 : totalMs / count, maxMs));
+                accepted, declined, skipped, retractions, count == 0 ? 0 : totalMs / count, maxMs));
         reasons.entrySet().stream().sorted(Map.Entry.<String, Integer>comparingByValue().reversed())
                 .forEach(entry -> result.append(entry.getValue()).append(" 次：").append(entry.getKey()).append('\n'));
         return result.append("\n纯 Z、原地旋转和特殊工具不参与联动，也不计为失败。"
@@ -73,7 +80,7 @@ public final class DynamicMotionDiagnostics {
     public static synchronized void clear() {
         rows.clear();
         reasons.clear();
-        accepted = declined = skipped = 0;
+        accepted = declined = skipped = retractions = 0;
         totalMs = maxMs = 0;
         lastLogged = "";
     }

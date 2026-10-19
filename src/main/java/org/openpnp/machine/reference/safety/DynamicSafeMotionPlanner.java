@@ -16,6 +16,7 @@ import org.openpnp.machine.reference.axis.ReferenceControllerAxis.BacklashCompen
 import org.openpnp.machine.reference.driver.GcodeDriver;
 import org.openpnp.machine.reference.driver.GcodeDriver.CommandType;
 import org.openpnp.machine.reference.driver.NullDriver;
+import org.openpnp.machine.reference.driver.ReferenceAdvancedMotionPlanner;
 import org.openpnp.corexy.CoreXYAdvancedMotionPlanner;
 import org.openpnp.machine.reference.safety.DynamicSafetyCollisionEngine.DynamicTool;
 import org.openpnp.machine.reference.safety.SafetyCollisionEngine.ValidationResult;
@@ -29,11 +30,14 @@ import org.openpnp.model.Motion.MotionOption;
 import org.openpnp.spi.Axis;
 import org.openpnp.spi.ControllerAxis;
 import org.openpnp.spi.Driver;
+import org.openpnp.spi.Feeder;
 import org.openpnp.spi.Head;
 import org.openpnp.spi.HeadMountable;
 import org.openpnp.spi.Locatable.LocationOption;
 import org.openpnp.spi.Machine;
 import org.openpnp.spi.Nozzle;
+import org.openpnp.machine.reference.feeder.ReferenceAutoFeeder;
+import org.openpnp.machine.reference.feeder.ReferenceSlotAutoFeeder;
 import org.pmw.tinylog.Logger;
 
 /**
@@ -147,6 +151,130 @@ public final class DynamicSafeMotionPlanner {
     }
 
     public static boolean tryMoveToLocationAtSafeZ(HeadMountable tool, Location destination, double requestedSpeed) throws Exception {
+        return tryMove(tool, destination, requestedSpeed, false, null);
+    }
+
+    public static boolean tryMoveToBottomVision(HeadMountable tool, Location destination, double requestedSpeed) throws Exception {
+        return tryMove(tool, destination, requestedSpeed, true, null);
+    }
+
+    public static boolean tryMoveToPick(HeadMountable tool, Location destination, double speed, Feeder feeder) throws Exception {
+        if (!DynamicSafeMotionSettings.isEnabled() || !(tool instanceof Nozzle)) {
+            return false;
+        }
+        Location expected = pickLocation((Nozzle) tool, feeder);
+        if (expected.getXyzDistanceTo(destination.convertToUnits(LengthUnit.Millimeters)) >= .05) {
+            return false;
+        }
+        return tryMove(tool, destination, speed, false,
+                new CoordinatedMotionValidator.FeederContact("feeder:" + feeder.getId() + ":body", point(expected)));
+    }
+
+    private static Location pickLocation(Nozzle nozzle, Feeder feeder) throws Exception {
+        Location expected = feeder.getPickLocation().convertToUnits(LengthUnit.Millimeters);
+        if (feeder.isPartHeightAbovePickLocation()) {
+            expected = expected.add(new Location(LengthUnit.Millimeters, 0, 0,
+                    nozzle.getSafePartHeight(feeder.getPart()).convertToUnits(LengthUnit.Millimeters).getValue(), 0));
+        }
+        return expected;
+    }
+
+    public static void retractAfterPick(Nozzle nozzle, Feeder feeder) throws Exception {
+        boolean standardElectric = feeder.getClass() == ReferenceAutoFeeder.class
+                || feeder.getClass() == ReferenceSlotAutoFeeder.class;
+        if (DynamicSafeMotionSettings.isEnabled() && standardElectric
+                && org.openpnp.model.Configuration.get().getScripting().hasNoScript("Nozzle.AfterPick")) {
+            Location expected = pickLocation(nozzle, feeder);
+            if (nozzle.getLocation().convertToUnits(LengthUnit.Millimeters).getXyzDistanceTo(expected) < .05
+                    && tryLocalRetreat(nozzle, new CoordinatedMotionValidator.FeederContact(
+                            "feeder:" + feeder.getId() + ":body", point(expected.convertToUnits(LengthUnit.Millimeters))))) {
+                return;
+            }
+        }
+        nozzle.moveToSafeZ();
+    }
+
+    public static void retractAfterPlace(Nozzle nozzle) throws Exception {
+        if (DynamicSafeMotionSettings.isEnabled()
+                && !nozzle.isPartOffEnabled(Nozzle.PartOffStep.AfterPlace)
+                && org.openpnp.model.Configuration.get().getScripting().hasNoScript("Job.Placement.Complete")
+                && tryLocalRetreat(nozzle, null)) {
+            return;
+        }
+        nozzle.moveToSafeZ();
+    }
+
+    private static boolean tryLocalRetreat(Nozzle tool, CoordinatedMotionValidator.FeederContact contact) throws Exception {
+        if (tool.getClass() != ReferenceNozzle.class || !tool.getHead().getMachine().isEnabled()
+                || !tool.getHead().getMachine().isHomed()) {
+            return false;
+        }
+        SafetyWorkbenchModel live = SafetyWorkbenchStore.get();
+        long revision = live.getRevision();
+        long started = System.nanoTime();
+        Plan plan;
+        try {
+            String issue = enablementIssue(live, tool.getHead().getMachine());
+            if (!issue.isEmpty() || !hardwareIssue(tool, tool.getHead().getMachine()).isEmpty()) {
+                return false;
+            }
+            SafetyWorkbenchModel frozen = prepare(live).frozen;
+            if (contact != null && frozen.getObjects().stream().noneMatch(object -> object.enabled
+                    && object.obstacle && object.type == SafetyWorkbenchModel.ObjectType.FEEDER
+                    && contact.sourceKey.equals(object.sourceKey))) {
+                return declineRetreat(tool, "缺少与此飞达关联的已认证外形", started);
+            }
+            Location start = tool.getLocation().convertToUnits(LengthUnit.Millimeters);
+            double safeZ = tool.getEffectiveSafeZ().convertToUnits(LengthUnit.Millimeters).getValue();
+            if (!finite(start) || !Double.isFinite(safeZ) || safeZ <= start.getZ() + EPSILON) {
+                return false;
+            }
+            long deadline = started + 40_000_000L;
+            List<DynamicTool> tools = DynamicSafetyCollisionEngine.snapshot(frozen, tool.getHead().getMachine(), tool);
+            double exitZ = clearHeight(start, safeZ, start, frozen, tools, deadline, false);
+            if (!Double.isFinite(exitZ) || exitZ >= safeZ - EPSILON || System.nanoTime() > deadline) {
+                return declineRetreat(tool, "局部间隙不足或规划超时，保留完整安全 Z", started);
+            }
+            Location exit = start.derive(null, null, exitZ, null);
+            ValidationResult swept = CoordinatedMotionValidator.validate(frozen,
+                    Arrays.asList(point(start), point(exit)), tools, point(start), deadline, contact);
+            if (!swept.isSafe()) {
+                return declineRetreat(tool, swept.getIssues().get(0), started);
+            }
+            double fullSeconds = estimate(tool, start, Collections.singletonList(start.derive(null, null, safeZ, null)),
+                    tool.getHead().getMachine().getSpeed());
+            double localSeconds = estimate(tool, start, Collections.singletonList(exit), tool.getHead().getMachine().getSpeed());
+            plan = new Plan(Collections.singletonList(exit), "局部安全退出：先抬离当前位置，剩余 Z 留给下一段 XY 联动",
+                    fullSeconds, localSeconds);
+        }
+        catch (Exception declined) {
+            Logger.debug(declined, "Local retreat declined before issuing motion.");
+            return declineRetreat(tool, declined.getMessage(), started);
+        }
+        double planningMs = (System.nanoTime() - started) / 1e6;
+        if (planningMs >= 40 || (plan.originalSeconds - plan.coordinatedSeconds) * 1000 <= planningMs + 5
+                || SafetyWorkbenchStore.get() != live || revision != live.getRevision() || !live.isCertified()) {
+            return false;
+        }
+        // Execution errors propagate. Never issue a second fallback after a partial move.
+        Location exit = plan.locations.get(0);
+        if (!raw(tool, tool.getLocation()).matches(raw(tool, exit))) {
+            tool.moveTo(exit, tool.getHead().getMachine().getSpeed(), MotionOption.CoordinatedMotion);
+        }
+        DynamicMotionDiagnostics.recordRetraction(tool.getName(), plan.reason, planningMs,
+                plan.originalSeconds, plan.coordinatedSeconds);
+        lastReason = plan.reason;
+        return true;
+    }
+
+    private static boolean declineRetreat(Nozzle tool, String reason, long started) {
+        String message = "局部退出回退：" + reason;
+        DynamicMotionDiagnostics.record(tool.getName(), message, false, (System.nanoTime() - started) / 1e6,
+                Double.NaN, Double.NaN);
+        return fallback(message);
+    }
+
+    private static boolean tryMove(HeadMountable tool, Location destination, double requestedSpeed, boolean imaging, CoordinatedMotionValidator.FeederContact contact) throws Exception {
         if (!DynamicSafeMotionSettings.isEnabled()) {
             return false;
         }
@@ -160,7 +288,7 @@ public final class DynamicSafeMotionPlanner {
         SafetyWorkbenchModel model = SafetyWorkbenchStore.get();
         long revision = model.getRevision();
         long started = System.nanoTime();
-        Plan plan = preview(tool, destination, requestedSpeed, started + 40_000_000L);
+        Plan plan = preview(tool, destination, requestedSpeed, started + 40_000_000L, imaging, contact);
         double planningMs = (System.nanoTime() - started) / 1e6;
         if (!plan.isOptimized()) {
             DynamicMotionDiagnostics.record(tool.getName(), plan.reason, false, planningMs,
@@ -206,7 +334,11 @@ public final class DynamicSafeMotionPlanner {
      * Read-only preview: no homing, motion, actuation, camera capture or settings changes.
      */
     public static Plan preview(HeadMountable tool, Location destination, double speed) {
-        return preview(tool, destination, speed, Long.MAX_VALUE);
+        return preview(tool, destination, speed, Long.MAX_VALUE, false, null);
+    }
+
+    public static Plan previewBottomVision(HeadMountable tool, Location destination, double speed) {
+        return preview(tool, destination, speed, Long.MAX_VALUE, true, null);
     }
 
     private static boolean ineligible(HeadMountable tool, Location destination, double speed) {
@@ -223,7 +355,7 @@ public final class DynamicSafeMotionPlanner {
         catch (Exception unavailable) { return false; } // preview will report the actual failure
     }
 
-    private static Plan preview(HeadMountable tool, Location destination, double speed, long deadline) {
+    private static Plan preview(HeadMountable tool, Location destination, double speed, long deadline, boolean imaging, CoordinatedMotionValidator.FeederContact contact) {
         try {
             if (ineligible(tool, destination, speed)) {
                 return rejected("纯 Z、原地旋转、特殊工具或无效坐标保持原路径");
@@ -236,7 +368,7 @@ public final class DynamicSafeMotionPlanner {
             // The workbench can be edited while the machine thread is planning.
             // Freeze geometry and reject a changed certification before execution.
             SafetyWorkbenchModel model = prepare(live).frozen;
-            return plan(tool, destination, speed, model, deadline);
+            return plan(tool, destination, speed, model, deadline, imaging, contact);
         } catch (Exception planningFailure) {
             Logger.debug(planningFailure, "3D coordinated planning declined before motion.");
             return rejected("规划条件不满足：" + planningFailure.getMessage());
@@ -244,10 +376,10 @@ public final class DynamicSafeMotionPlanner {
     }
 
     static Plan plan(HeadMountable tool, Location destination, double speed, SafetyWorkbenchModel model) throws Exception {
-        return plan(tool, destination, speed, model, Long.MAX_VALUE);
+        return plan(tool, destination, speed, model, Long.MAX_VALUE, false, null);
     }
 
-    private static Plan plan(HeadMountable tool, Location destination, double speed, SafetyWorkbenchModel model, long deadline) throws Exception {
+    private static Plan plan(HeadMountable tool, Location destination, double speed, SafetyWorkbenchModel model, long deadline, boolean imaging, CoordinatedMotionValidator.FeederContact contact) throws Exception {
         if (tool == null || tool.getClass() != ReferenceNozzle.class || destination == null || !Double.isFinite(speed) || speed <= 0) {
             return rejected("探针、特殊工具或无效坐标保持原路径");
         }
@@ -260,6 +392,21 @@ public final class DynamicSafeMotionPlanner {
         Location target = destination.convertToUnits(LengthUnit.Millimeters);
         if (!finite(start) || !finite(target) || Math.hypot(target.getX() - start.getX(), target.getY() - start.getY()) < EPSILON) {
             return rejected("纯 Z、原地旋转或未指定的坐标保持原路径");
+        }
+        List<DynamicTool> tools = DynamicSafetyCollisionEngine.snapshot(model, machine, tool);
+        double originalSeconds = estimateStock(tool, target, speed);
+        if (imaging) {
+            // Imaging has no contact/release step. Do not insert an artificial
+            // final vertical approach or require both cam nozzles in global Safe-Z.
+            ValidationResult direct = CoordinatedMotionValidator.validate(model,
+                    Arrays.asList(point(start), point(target)), tools, point(start), deadline);
+            if (direct.isSafe()) {
+                List<Location> path = Collections.singletonList(target);
+                double seconds = estimate(tool, start, path, speed);
+                if (Double.isFinite(seconds) && seconds + 0.001 < originalSeconds) {
+                    return new Plan(path, "视觉直达：XY 行进中达到拍摄 Z，双吸嘴整段包络通过", originalSeconds, seconds);
+                }
+            }
         }
         Length safe = tool.getEffectiveSafeZ();
         if (safe == null) {
@@ -274,10 +421,9 @@ public final class DynamicSafeMotionPlanner {
             }
         }
         double safeZ = Math.max(stockExitZ, Math.max(start.getZ(), target.getZ()));
-        if (!Double.isFinite(safeZ) || !tool.isInSafeZZone(new Length(safeZ, LengthUnit.Millimeters))) {
-            return rejected("所需巡航高度不在安全 Z 区间");
+        if (!Double.isFinite(safeZ)) {
+            return rejected("所需巡航高度无效");
         }
-        List<DynamicTool> tools = DynamicSafetyCollisionEngine.snapshot(model, machine, tool);
         for (DynamicTool dynamic : tools) {
             if (dynamic.carryingPart && dynamic.carriedPartHeight <= 0) {
                 return rejected("吸嘴物料高度未知");
@@ -286,18 +432,14 @@ public final class DynamicSafeMotionPlanner {
         if (System.nanoTime() > deadline) {
             return rejected("规划超过 40 ms 预算，保持原安全 Z");
         }
-        double sourceZ = clearHeight(start, safeZ, start, model, tools, deadline);
-        double targetZ = clearHeight(target, safeZ, start, model, tools, deadline);
+        double sourceZ = clearHeight(start, safeZ, start, model, tools, deadline, false);
+        double targetZ = clearHeight(target, safeZ, start, model, tools, deadline, !imaging);
         if (System.nanoTime() > deadline) {
             return rejected("规划超过 40 ms 预算，保持原安全 Z");
         }
         if (!Double.isFinite(sourceZ) || !Double.isFinite(targetZ)) {
             return rejected("安全高度仍有障碍或其他吸嘴未抬起");
         }
-        Length underside = start.getLengthZ().add(tool.getSafeZ()).subtract(safe);
-        double stockDepartureZ = tool.isInSafeZZone(start.getLengthZ()) && tool.isInSafeZZone(underside) ? start.getZ() : effectiveZ;
-        List<Location> original = compact(tool, start, Arrays.asList(start.derive(null, null, stockDepartureZ, null), target.derive(null, null, stockExitZ, null), target));
-        double originalSeconds = estimate(tool, start, original, speed);
         String reason = "没有可缩短耗时的安全联动段";
         for (double fraction : new double[] { 0, 0.4, 0.25, 0.12 }) {
             if (System.nanoTime() > deadline) {
@@ -321,7 +463,7 @@ public final class DynamicSafeMotionPlanner {
             for (Location location : path) {
                 points.add(point(location));
             }
-            ValidationResult result = CoordinatedMotionValidator.validate(model, points, tools, point(start), deadline);
+            ValidationResult result = CoordinatedMotionValidator.validate(model, points, tools, point(start), deadline, contact);
             if (!result.isSafe()) {
                 reason = result.getIssues().get(0);
                 continue;
@@ -415,11 +557,11 @@ public final class DynamicSafeMotionPlanner {
                 && Double.isFinite(cam.getCamArmsAngle()) && cam.getCamArmsAngle() >= 0 && cam.getCamArmsAngle() <= 180;
     }
 
-    private static double clearHeight(Location endpoint, double safeZ, Location start, SafetyWorkbenchModel model, List<DynamicTool> tools, long deadline) {
+    private static double clearHeight(Location endpoint, double safeZ, Location start, SafetyWorkbenchModel model, List<DynamicTool> tools, long deadline, boolean finalApproach) {
         double low = endpoint.getZ();
         if (clearAt(endpoint, start, model, tools, deadline)) {
             // Keep a short vertical final approach even on an unobstructed table.
-            return Math.min(safeZ, low + 1);
+            return Math.min(safeZ, low + (finalApproach ? 1 : 0));
         }
         if (!clearAt(endpoint.derive(null, null, safeZ, null), start, model, tools, deadline)) {
             return Double.NaN;
@@ -460,6 +602,54 @@ public final class DynamicSafeMotionPlanner {
             previous = next;
         }
         return seconds;
+    }
+
+    /** Simulate the original helper in raw axes, including all shared-Z head tools. */
+    private static double estimateStock(HeadMountable tool, Location target, double speed) throws Exception {
+        AxesLocation position = new AxesLocation(tool.getHead().getMachine());
+        double seconds = 0;
+        for (HeadMountable sibling : tool.getHead().getHeadMountables()) {
+            Length safe = sibling.getEffectiveSafeZ();
+            if (safe == null) {
+                continue;
+            }
+            if (!sibling.isInSafeZZone(safe)) {
+                throw new Exception("原安全 Z 不在安全区间：" + sibling.getName());
+            }
+            Location pose = sibling.toHeadMountableLocation(sibling.toTransformed(position, LocationOption.Quiet), LocationOption.Quiet);
+            Length underside = pose.getLengthZ().add(sibling.getSafeZ()).subtract(safe);
+            if (!sibling.isInSafeZZone(underside) && underside.compareTo(sibling.getSafeZ()) <= 0) {
+                AxesLocation next = position.put(raw(sibling, pose.deriveLengths(null, null, safe, null)));
+                seconds += stockSegmentTime(sibling, position, next, speed);
+                position = next;
+            }
+        }
+        Length exit = tool.getEffectiveSafeZ();
+        if (exit != null && target.getLengthZ().compareTo(exit) > 0) {
+            Length[] zone = tool.getSafeZZone();
+            if (zone[1] != null) {
+                exit = target.getLengthZ().compareTo(zone[1]) < 0 ? target.getLengthZ() : zone[1];
+            }
+        }
+        Location travel = target.derive(null, null, exit == null ? Double.NaN
+                : exit.convertToUnits(target.getUnits()).getValue(), null);
+        for (Location location : Arrays.asList(travel, target)) {
+            AxesLocation next = position.put(raw(tool, location));
+            seconds += stockSegmentTime(tool, position, next, speed);
+            position = next;
+        }
+        return seconds;
+    }
+
+    private static double stockSegmentTime(HeadMountable tool, AxesLocation first, AxesLocation last, double speed) {
+        int flags = 0;
+        if (tool.getHead().getMachine().getMotionPlanner() instanceof ReferenceAdvancedMotionPlanner
+                && ((ReferenceAdvancedMotionPlanner) tool.getHead().getMachine().getMotionPlanner()).isAllowUncoordinated()
+                && first.isInSafeZone() && last.isInSafeZone()) {
+            flags = MotionOption.UncoordinatedMotion.flag() | MotionOption.LimitToSafeZone.flag()
+                    | MotionOption.SynchronizeStraighten.flag();
+        }
+        return new Motion(tool, first, last, speed * tool.getHead().getMaxPartSpeed(), flags).getTime();
     }
 
     private static AxesLocation raw(HeadMountable tool, Location location) throws Exception {
