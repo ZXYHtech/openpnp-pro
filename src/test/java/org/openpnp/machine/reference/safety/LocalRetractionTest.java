@@ -85,6 +85,23 @@ class LocalRetractionTest {
         assertEquals(20, fixture.nozzle.getLocation().getZ(), 1e-8);
     }
 
+    @Test void aChangerHookCannotUseTheShortPickupRetraction() throws Exception {
+        try (DynamicSafeMotionPlanner.NozzleTipChangeScope ignored = DynamicSafeMotionPlanner.suspendForNozzleTipChange()) {
+            DynamicSafeMotionPlanner.retractAfterPick(fixture.nozzle, feeder);
+        }
+        assertEquals(20, fixture.nozzle.getLocation().getZ(), 1e-8);
+        assertEquals(1, fixture.commands.size());
+    }
+
+    @Test void aChangerHookCannotUseTheShortPlacementRetraction() throws Exception {
+        prepareBoard();
+        try (DynamicSafeMotionPlanner.NozzleTipChangeScope ignored = DynamicSafeMotionPlanner.suspendForNozzleTipChange()) {
+            DynamicSafeMotionPlanner.retractAfterPlace(fixture.nozzle);
+        }
+        assertEquals(20, fixture.nozzle.getLocation().getZ(), 1e-8);
+        assertEquals(1, fixture.commands.size());
+    }
+
     @Test void placementCanExitToLocalClearanceWhenNoFullSafeZCheckIsRequired() throws Exception {
         prepareBoard();
         DynamicSafeMotionPlanner.retractAfterPlace(fixture.nozzle);

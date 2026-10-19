@@ -51,6 +51,44 @@ public final class DynamicSafeMotionPlanner {
 
     private static final AtomicLong FALLBACKS = new AtomicLong();
 
+    private static final ThreadLocal<Integer> NOZZLE_TIP_CHANGE_DEPTH = new ThreadLocal<>();
+
+    /** Keeps the complete changer operation, including nested hooks, on its taught motion sequence. */
+    public static final class NozzleTipChangeScope implements AutoCloseable {
+        private final Thread owner = Thread.currentThread();
+        private boolean closed;
+
+        private NozzleTipChangeScope() {
+            Integer depth = NOZZLE_TIP_CHANGE_DEPTH.get();
+            NOZZLE_TIP_CHANGE_DEPTH.set(depth == null ? 1 : depth + 1);
+        }
+
+        @Override
+        public void close() {
+            if (Thread.currentThread() != owner) {
+                throw new IllegalStateException("Nozzle-tip change scope must close on its owning thread");
+            }
+            if (!closed) {
+                int depth = NOZZLE_TIP_CHANGE_DEPTH.get();
+                if (depth == 1) {
+                    NOZZLE_TIP_CHANGE_DEPTH.remove();
+                }
+                else {
+                    NOZZLE_TIP_CHANGE_DEPTH.set(depth - 1);
+                }
+                closed = true;
+            }
+        }
+    }
+
+    public static NozzleTipChangeScope suspendForNozzleTipChange() {
+        return new NozzleTipChangeScope();
+    }
+
+    private static boolean isNozzleTipChanging() {
+        return NOZZLE_TIP_CHANGE_DEPTH.get() != null;
+    }
+
     private static volatile String lastReason = "等待下一段移动";
     private static volatile Prepared prepared;
 
@@ -159,7 +197,7 @@ public final class DynamicSafeMotionPlanner {
     }
 
     public static boolean tryMoveToPick(HeadMountable tool, Location destination, double speed, Feeder feeder) throws Exception {
-        if (!DynamicSafeMotionSettings.isEnabled() || !(tool instanceof Nozzle)) {
+        if (isNozzleTipChanging() || !DynamicSafeMotionSettings.isEnabled() || !(tool instanceof Nozzle)) {
             return false;
         }
         Location expected = pickLocation((Nozzle) tool, feeder);
@@ -205,7 +243,7 @@ public final class DynamicSafeMotionPlanner {
     }
 
     private static boolean tryLocalRetreat(Nozzle tool, CoordinatedMotionValidator.FeederContact contact) throws Exception {
-        if (tool.getClass() != ReferenceNozzle.class || !tool.getHead().getMachine().isEnabled()
+        if (isNozzleTipChanging() || tool.getClass() != ReferenceNozzle.class || !tool.getHead().getMachine().isEnabled()
                 || !tool.getHead().getMachine().isHomed()) {
             return false;
         }
@@ -275,7 +313,7 @@ public final class DynamicSafeMotionPlanner {
     }
 
     private static boolean tryMove(HeadMountable tool, Location destination, double requestedSpeed, boolean imaging, CoordinatedMotionValidator.FeederContact contact) throws Exception {
-        if (!DynamicSafeMotionSettings.isEnabled()) {
+        if (isNozzleTipChanging() || !DynamicSafeMotionSettings.isEnabled()) {
             return false;
         }
         if (ineligible(tool, destination, requestedSpeed)) {
