@@ -242,6 +242,7 @@ public class PartsPanel extends JPanel implements WizardContainer {
               }
         };
         table.setSelectionMode(ListSelectionModel.MULTIPLE_INTERVAL_SELECTION);
+        ((AutoSelectTextTable) table).setMultiRowEditEnabled(true);
         table.setDefaultEditor(org.openpnp.model.Package.class,
                 new DefaultCellEditor(packagesCombo));
         table.setDefaultRenderer(org.openpnp.model.Package.class,
@@ -307,7 +308,9 @@ public class PartsPanel extends JPanel implements WizardContainer {
         });
 
         tableModel.addTableModelListener(e -> {
-            if (selectedPart != null && getSelectedPart() != selectedPart) { 
+            if (selectedPart != null && getSelectedPart() != selectedPart
+                    && table.getSelectedRowCount() <= 1
+                    && !((AutoSelectTextTable) table).isMultiRowEditInProgress()) {
                 // Reselect previously selected settings.
                 Helpers.selectObjectTableRow(table, selectedPart);
             }

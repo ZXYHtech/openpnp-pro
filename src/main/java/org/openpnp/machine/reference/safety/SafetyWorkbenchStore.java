@@ -23,19 +23,22 @@ import com.google.gson.GsonBuilder;
 public final class SafetyWorkbenchStore {
     private static final Gson GSON = new GsonBuilder().setPrettyPrinting().create();
     private static SafetyWorkbenchModel current;
+    private static File currentFile;
 
     private SafetyWorkbenchStore() {
     }
 
     public static synchronized SafetyWorkbenchModel get() {
-        if (current == null) {
+        if (current == null || !getFile().equals(currentFile)) {
             current = load();
+            currentFile = getFile();
         }
         return current;
     }
 
     public static synchronized SafetyWorkbenchModel reload() {
         current = load();
+        currentFile = getFile();
         return current;
     }
 
@@ -63,6 +66,11 @@ public final class SafetyWorkbenchStore {
                     StandardCopyOption.REPLACE_EXISTING);
         }
         current = model;
+        currentFile = file;
+    }
+
+    static SafetyWorkbenchModel snapshot(SafetyWorkbenchModel model) {
+        return GSON.fromJson(GSON.toJson(model), SafetyWorkbenchModel.class);
     }
 
     public static File getFile() {

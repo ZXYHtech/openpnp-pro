@@ -117,6 +117,66 @@ class DynamicSafetyCollisionEngineTest {
 
         assertTrue(result.isSafe(), result.getIssues().toString());
     }
+
+    @Test
+    void transitAllowsLeavingSourceAndApproachingDestination() {
+        SafetyWorkbenchModel model = baseModel();
+        SafetyObject source = box(model, "起点飞达", 15, 15, 10, 10, 20);
+        SafetyObject destination = box(model, "终点电路板", 175, 15, 10, 10, 20);
+        source.type = ObjectType.FEEDER;
+        destination.type = ObjectType.BOARD;
+        ToolProfile profile = new ToolProfile();
+        profile.bodyFollowsNozzleZ = true;
+        profile.bodyRadiusX = profile.bodyRadiusY = 4;
+        profile.clearance = 0;
+        profile.retractedTipLength = profile.extendedTipLength = 5;
+        DynamicTool nozzle = new DynamicTool("H1", "N1", "N1", new Waypoint(20, 20, 22),
+                profile, 0, 0, 0, true, true, true, false);
+
+        ValidationResult result = DynamicSafetyCollisionEngine.validateTransit(model,
+                Arrays.asList(new Waypoint(20, 20, 22),
+                        new Waypoint(20, 20, 30),
+                        new Waypoint(100, 100, 40),
+                        new Waypoint(180, 20, 30),
+                        new Waypoint(180, 20, 22)),
+                Arrays.asList(nozzle));
+
+        assertTrue(result.isSafe(), result.getIssues().toString());
+    }
+
+    @Test
+    void transitRejectsReenteringObstacleMidRoute() {
+        SafetyWorkbenchModel model = baseModel();
+        box(model, "中途障碍", 90, 90, 20, 20, 30);
+        DynamicTool nozzle = tool("H1", "N1", new Waypoint(20, 20, 15),
+                true, true, true);
+
+        ValidationResult result = DynamicSafetyCollisionEngine.validateTransit(model,
+                Arrays.asList(new Waypoint(20, 20, 15),
+                        new Waypoint(100, 100, 15),
+                        new Waypoint(180, 20, 15)),
+                Arrays.asList(nozzle));
+
+        assertFalse(result.isSafe());
+        assertTrue(result.getIssues().stream()
+                .anyMatch(issue -> issue.contains("扫掠进入")));
+    }
+
+    private static SafetyObject box(SafetyWorkbenchModel model, String name,
+            double x, double y, double width, double depth, double height) {
+        SafetyObject object = model.createObject(ObjectType.KEEP_OUT);
+        object.name = name;
+        object.x = x;
+        object.y = y;
+        object.z = 0;
+        object.width = width;
+        object.depth = depth;
+        object.height = height;
+        object.clearance = 0;
+        model.addObject(object);
+        return object;
+    }
+
     private static DynamicTool tool(String head, String nozzle, Waypoint reference,
             boolean followsX, boolean followsY, boolean followsZ) {
         return new DynamicTool(head, nozzle, head + " · " + nozzle,

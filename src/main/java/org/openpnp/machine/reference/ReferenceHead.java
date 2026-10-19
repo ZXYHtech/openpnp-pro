@@ -71,13 +71,23 @@ public class ReferenceHead extends AbstractHead {
             HeadMountable hm = getDefaultCamera();
             Part homePart = Configuration.get().getPart("FIDUCIAL-HOME");
             if (homePart == null) {
-                throw new Exception("Visual homing is missing the FIDUCIAL-HOME part. Please create it.");
+                throw new Exception("视觉复位缺少 FIDUCIAL-HOME 物料，请先建立 Home Marker 物料及其视觉配置。");
             }
-            Location homingLocation = Configuration.get().getMachine().getFiducialLocator()
-                    .getHomeFiducialLocation(getHomingFiducialLocation(), homePart);
+            Location homingLocation;
+            try {
+                homingLocation = Configuration.get().getMachine().getFiducialLocator()
+                        .getHomeFiducialLocation(getHomingFiducialLocation(), homePart);
+            }
+            catch (Exception failure) {
+                if (org.openpnp.machine.reference.driver.ControllerFaultException.causedBy(failure)) {
+                    throw failure;
+                }
+                throw new Exception("视觉复位失败（Home Marker，相机“" + hm.getName() + "”）：\n"
+                        + failure.getMessage(), failure);
+            }
             if (homingLocation == null) {
                 // Homing failed
-                throw new Exception("Visual homing failed");
+                throw new Exception("视觉复位失败：相机“" + hm.getName() + "”未找到 Home Marker。");
             }
             // The optimized fiducial locator no longer positions to the final detected location, so for homing, 
             // we must.

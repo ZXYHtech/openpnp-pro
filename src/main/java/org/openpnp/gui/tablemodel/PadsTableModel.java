@@ -33,7 +33,7 @@ import org.openpnp.model.Length;
 import org.openpnp.model.Location;
 
 @SuppressWarnings("serial")
-public class PadsTableModel extends AbstractTableModel {
+public class PadsTableModel extends AbstractTableModel implements NumericColumnTableModel {
     final Configuration configuration;
 
     private String[] columnNames = new String[] {"Name", "Side", "X", "Y", "Rot.", "Type"};
@@ -73,6 +73,18 @@ public class PadsTableModel extends AbstractTableModel {
     @Override
     public Class<?> getColumnClass(int columnIndex) {
         return columnTypes[columnIndex];
+    }
+
+    @Override
+    public boolean isNumericColumn(int column) {
+        return column == 4;
+    }
+
+    @Override
+    public Object getNumericValueAt(int row, int column) {
+        return column == 4
+                ? Double.toString(board.getSolderPastePads().get(row).getLocation().getRotation())
+                : getValueAt(row, column);
     }
 
     @Override

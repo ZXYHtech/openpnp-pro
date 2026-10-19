@@ -111,7 +111,7 @@ public class MessageBoxes {
         if (message == null) {
             message = "No message supplied.";
         }
-        Logger.debug("{}: {}", title, cause);
+        Logger.error(cause, "{}: {}", title, message);
         String listenerMessage = message;
         notifyErrorListeners(title, listenerMessage);
         message = message.replaceAll("<", "&lt;");

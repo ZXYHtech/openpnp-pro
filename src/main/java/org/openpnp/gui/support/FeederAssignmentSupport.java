@@ -4,6 +4,9 @@
 package org.openpnp.gui.support;
 
 import java.util.Locale;
+import java.util.function.Consumer;
+import javax.swing.SwingWorker;
+import org.openpnp.model.Configuration;
 
 import org.openpnp.machine.reference.ReferenceFeeder;
 import org.openpnp.model.Location;
@@ -15,6 +18,33 @@ import org.openpnp.spi.Feeder;
  */
 public final class FeederAssignmentSupport {
     private FeederAssignmentSupport() {
+    }
+
+    /** Save only machine data off the EDT; never prompt for unrelated dirty board files. */
+    public static SwingWorker<Void, Void> saveMachineAsync(Configuration configuration,
+            Runnable success, Consumer<Throwable> failure) {
+        return saveMachineAsync(configuration, false, success, failure);
+    }
+
+    public static SwingWorker<Void, Void> saveMachineAsync(Configuration configuration,
+            boolean materialDefinitions, Runnable success, Consumer<Throwable> failure) {
+        SwingWorker<Void, Void> worker = new SwingWorker<Void, Void>() {
+            @Override protected Void doInBackground() throws Exception {
+                if (materialDefinitions) { configuration.saveFeederConfiguration(); }
+                else { configuration.saveMachineConfiguration(); }
+                return null;
+            }
+            @Override protected void done() {
+                try { get(); }
+                catch (Exception exception) {
+                    failure.accept(exception.getCause() == null ? exception : exception.getCause());
+                    return;
+                }
+                success.run();
+            }
+        };
+        worker.execute();
+        return worker;
     }
 
     public static boolean matches(Feeder feeder, String query) {

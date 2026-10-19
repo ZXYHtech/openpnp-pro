@@ -359,7 +359,7 @@ public class ReferenceAdvancedMotionPlanner extends AbstractMotionPlanner {
     @Override
     protected Motion addMotion(HeadMountable hm, double speed, AxesLocation location0,
             AxesLocation location1, int options) {
-        if (allowUncoordinated) {
+        if (allowUncoordinated && !MotionOption.CoordinatedMotion.isSetIn(options)) {
             if (location0.isInSafeZone()
                     && location1.isInSafeZone()) {
                 // Both locations are in the Safe Zone. Add the uncoordinated flags.

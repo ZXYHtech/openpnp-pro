@@ -228,7 +228,20 @@ public abstract class ReferenceCamera extends AbstractBroadcastingCamera impleme
         globals.put("camera", this);
         Configuration.get().getScripting().on("Camera.BeforeCapture", globals);
 
-        BufferedImage image = captureTransformed();
+        Boolean previous = strictCapture.get();
+        BufferedImage image;
+        strictCapture.set(Boolean.TRUE);
+        try {
+            image = captureTransformed();
+        }
+        finally {
+            if (previous == null) {
+                strictCapture.remove();
+            }
+            else {
+                strictCapture.set(previous);
+            }
+        }
 
         Configuration.get().getScripting().on("Camera.AfterCapture", globals);
         return image;
@@ -274,6 +287,22 @@ public abstract class ReferenceCamera extends AbstractBroadcastingCamera impleme
     }
 
     protected abstract BufferedImage internalCapture();
+
+    // Preview may show a placeholder; machine vision must never analyse it.
+    // Thread scope prevents preview failures from contaminating machine captures.
+    private final ThreadLocal<Boolean> strictCapture = new ThreadLocal<>();
+
+    private BufferedImage failedCapture(String detail) {
+        if (Boolean.TRUE.equals(strictCapture.get())) {
+            throw new CameraCaptureException("相机“" + getName() + "”（" + getId()
+                    + "）采图失败：" + detail + "。已停止视觉识别，请检查相机连接和设备占用后重试。");
+        }
+        return getCaptureErrorImage();
+    }
+
+    public static final class CameraCaptureException extends RuntimeException {
+        CameraCaptureException(String message) { super(message); }
+    }
     
     /**
      * Wraps internalCapture() to ensure that a null image is never returned. Attempts to
@@ -285,7 +314,7 @@ public abstract class ReferenceCamera extends AbstractBroadcastingCamera impleme
      */
     protected synchronized BufferedImage safeInternalCapture() {
         if (! ensureOpen()) {
-            return getCaptureErrorImage();
+            return failedCapture("设备未打开");
         }
         long t1 = System.currentTimeMillis() + captureTryTimeoutMs;
         int i = 0;
@@ -306,7 +335,7 @@ public abstract class ReferenceCamera extends AbstractBroadcastingCamera impleme
             Thread.yield();
         }
         Logger.warn("Camera {} failed to return an image after {} tries.", this, i);
-        return getCaptureErrorImage();
+        return failedCapture("尝试 " + i + " 次后仍未收到图像");
     }
 
     protected int getCaptureTryCount() {

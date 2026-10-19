@@ -208,6 +208,7 @@ public class ReferencePnpJobProcessor extends AbstractPnpJobProcessor {
             throw new Exception("Can't initialize with a null Job.");
         }
         this.job = job;
+        pauseWhenNozzlesEmptyRequested = false;
         trialBoardLocation = null;
         trialPlacement = null;
         currentStep = new PreFlight();
@@ -239,39 +240,85 @@ public class ReferencePnpJobProcessor extends AbstractPnpJobProcessor {
      * @return true when the processor is paused on a recoverable alignment for this nozzle
      */
     public synchronized boolean canRecoverFailedAlignment(Nozzle nozzle) {
+        return getFailedAlignmentPart(nozzle) != null;
+    }
+
+    public synchronized Part getFailedAlignmentPart(Nozzle nozzle) {
+        PlannedPlacement failed = getFailedAlignment(nozzle);
+        return failed == null ? null : failed.jobPlacement.getPlacement().getPart();
+    }
+
+    private PlannedPlacement getFailedAlignment(Nozzle nozzle) {
         if (!(currentStep instanceof Align) || nozzle == null) {
-            return false;
+            return null;
         }
-        Align alignStep = (Align) currentStep;
-        return alignStep.plannedPlacements.stream()
-                .anyMatch(planned -> planned.nozzle == nozzle
-                        && planned.jobPlacement.getStatus() == Status.Processing);
+        PlannedPlacement failed = ((Align) currentStep).failedPlacement;
+        return failed != null && failed.nozzle == nozzle
+                && failed.jobPlacement.getStatus() == Status.Processing ? failed : null;
     }
     /**
      * Discard the failed part and return its placement to Pending. The planner will pick it
      * again in a later cycle while other nozzles in the current cycle continue normally.
-     */    public synchronized boolean discardAndRequeueFailedAlignment(Nozzle nozzle)
+     */
+    public synchronized boolean discardAndRequeueFailedAlignment(Nozzle nozzle)
             throws JobProcessorException {
-        if (!(currentStep instanceof Align) || nozzle == null) {
+        return discardFailedAlignment(nozzle, true);
+    }
+
+    /** Re-pick immediately through the normal pick pipeline, without any discard operation. */
+    public synchronized boolean repickFailedAlignment(Nozzle nozzle) throws JobProcessorException {
+        PlannedPlacement failed = getFailedAlignment(nozzle);
+        if (failed == null) {
             return false;
         }
-        Align alignStep = (Align) currentStep;
-        PlannedPlacement failedPlacement = alignStep.plannedPlacements.stream()
-                .filter(planned -> planned.nozzle == nozzle)
-                .filter(planned -> planned.jobPlacement.getStatus() == Status.Processing)
-                .findFirst()
-                .orElse(null);
+        if (nozzle.getPart() != null && nozzle.getPart() != failed.jobPlacement.getPlacement().getPart()) {
+            throw new JobProcessorException(nozzle, "吸嘴上的器件已经改变，未重新拾取。请保持暂停并检查机器状态。");
+        }
+        try {
+            nozzle.clearPartForRepick();
+        }
+        catch (Exception failure) {
+            throw new JobProcessorException(nozzle, failure);
+        }
+        failed.alignmentOffsets = null;
+        // Keep this Align step and its other nozzles intact. A failed pick stays recoverable;
+        // only a successful pick clears the recovery token before normal vision resumes.
+        new Pick(java.util.Collections.singletonList(failed), false).stepImpl(failed);
+        ((Align) currentStep).failedPlacement = null;
+        return true;
+    }
+
+    /** Discard and skip this placement for this run, leaving it unplaced for later repair. */
+    public synchronized boolean discardAndSkipFailedAlignment(Nozzle nozzle)
+            throws JobProcessorException {
+        return discardFailedAlignment(nozzle, false);
+    }
+
+    private boolean discardFailedAlignment(Nozzle nozzle, boolean requeue)
+            throws JobProcessorException {
+        PlannedPlacement failedPlacement = getFailedAlignment(nozzle);
         if (failedPlacement == null) {
             return false;
         }
+        if (nozzle.getPart() != null && nozzle.getPart() != failedPlacement.jobPlacement.getPlacement().getPart()) {
+            throw new JobProcessorException(nozzle, "吸嘴上的器件已经改变，不能丢弃其他器件。请保持暂停并检查机器状态。");
+        }
 
         discard(nozzle);
-        failedPlacement.jobPlacement.setStatus(Status.Pending);
+        if (requeue) {
+            failedPlacement.jobPlacement.setStatus(Status.Pending);
+        }
+        else {
+            failedPlacement.jobPlacement.setError(new JobProcessorException(nozzle,
+                    "底部视觉识别失败，已按操作员选择抛料并跳过。该位号尚未贴装，可在后续补贴。"));
+        }
         failedPlacement.alignmentOffsets = null;
+        ((Align) currentStep).failedPlacement = null;
         return true;
     }
     @Override
     public synchronized boolean next() throws JobProcessorException {
+        if (currentStep != null && isEmptyNozzlePauseRequested()) { return true; }
         this.fireJobState(Configuration.get().getMachine().getSignalers(), AbstractJobProcessor.State.RUNNING);
         try {
             currentStep = currentStep.step();
@@ -285,6 +332,23 @@ public class ReferencePnpJobProcessor extends AbstractPnpJobProcessor {
             this.fireJobState(Configuration.get().getMachine().getSignalers(), AbstractJobProcessor.State.FINISHED);
         }
         return currentStep != null;
+    }
+
+    private volatile boolean pauseWhenNozzlesEmptyRequested;
+
+    /** Must remain lock-free: next() holds this processor's monitor during physical operations. */
+    public void requestPauseWhenNozzlesEmpty(boolean requested) {
+        pauseWhenNozzlesEmptyRequested = requested;
+    }
+
+    boolean isEmptyNozzlePauseRequested() {
+        if (!pauseWhenNozzlesEmptyRequested) { return false; }
+        for (Head candidate : Configuration.get().getMachine().getHeads()) {
+            for (Nozzle nozzle : candidate.getNozzles()) {
+                if (nozzle.getPart() != null) { return false; }
+            }
+        }
+        return true;
     }
 
     private void scriptJobError(Exception e1) throws JobProcessorException {
@@ -1395,9 +1459,15 @@ public class ReferencePnpJobProcessor extends AbstractPnpJobProcessor {
      */
     protected class Pick extends PlannedPlacementStep {
         HashMap<PlannedPlacement, Integer> retries = new HashMap<>();
+        private final boolean discardOnPickFailure;
         
         public Pick(List<PlannedPlacement> plannedPlacements) {
+            this(plannedPlacements, true);
+        }
+
+        private Pick(List<PlannedPlacement> plannedPlacements, boolean discardOnPickFailure) {
             super(plannedPlacements);
+            this.discardOnPickFailure = discardOnPickFailure;
         }
         
         @Override
@@ -1497,6 +1567,9 @@ public class ReferencePnpJobProcessor extends AbstractPnpJobProcessor {
                 }
                 catch (JobProcessorException jpe) {
                     lastException = jpe;
+                    if (!discardOnPickFailure) {
+                        throw jpe;
+                    }
                     discard(nozzle);
                     continue;
                 }
@@ -1599,7 +1672,7 @@ public class ReferencePnpJobProcessor extends AbstractPnpJobProcessor {
                 nozzle.pick(part,feeder);
 
                 // Retract
-                nozzle.moveToSafeZ();
+                org.openpnp.machine.reference.safety.DynamicSafeMotionPlanner.retractAfterPick(nozzle, feeder);
             }
             catch (Exception e) {
                 throw new JobProcessorException(nozzle, e);
@@ -1698,12 +1771,15 @@ public class ReferencePnpJobProcessor extends AbstractPnpJobProcessor {
      * Alignment step - align all parts on all nozzles
      */
     protected class Align extends PlannedPlacementStep {
+        private PlannedPlacement failedPlacement;
+
         public Align(List<PlannedPlacement> plannedPlacements) {
             super(plannedPlacements);
         }
         
         @Override
         public Step stepImpl(PlannedPlacement plannedPlacement) throws JobProcessorException {
+            failedPlacement = null;
             if (plannedPlacement == null) {
                 return new EndCameraBatchOperation(plannedPlacements);
             }
@@ -1722,9 +1798,14 @@ public class ReferencePnpJobProcessor extends AbstractPnpJobProcessor {
             }
 
             fireJobPlacementProcessing(jobPlacement, JobPlacementProcessingEvent.Stage.Align);
-            align(plannedPlacement, partAlignment);
-            
-            checkPartOn(nozzle);
+            try {
+                align(plannedPlacement, partAlignment);
+                checkPartOn(nozzle);
+            }
+            catch (JobProcessorException failure) {
+                failedPlacement = plannedPlacement;
+                throw failure;
+            }
 
             return this;
         }
@@ -1883,8 +1964,9 @@ public class ReferencePnpJobProcessor extends AbstractPnpJobProcessor {
             
             scriptComplete(plannedPlacement, placementLocation);
 
-            // Emitted only after the part is released, verified off the nozzle, retracted to safe
-            // Z and recorded as placed. UI workflows may therefore observe it without racing the
+            // Emitted after release, enabled part-off checks and a safe retreat
+            // (certified local clearance or stock Safe-Z), and recording the placement.
+            // UI workflows may therefore observe it without racing the
             // physical placement operation.
             fireJobPlacementProcessing(jobPlacement, JobPlacementProcessingEvent.Stage.Complete);
 
@@ -1910,7 +1992,7 @@ public class ReferencePnpJobProcessor extends AbstractPnpJobProcessor {
                 nozzle.place();
 
                 // Retract
-                nozzle.moveToSafeZ();
+                org.openpnp.machine.reference.safety.DynamicSafeMotionPlanner.retractAfterPlace(nozzle);
             }
             catch (Exception e) {
                 throw new JobProcessorException(nozzle, e);
@@ -2647,6 +2729,7 @@ public class ReferencePnpJobProcessor extends AbstractPnpJobProcessor {
              * Get the first planned placement from the list that is still in processing status
              * and that is not marked completed.
              */
+            if (this instanceof Pick && isEmptyNozzlePauseRequested()) { return this; }
             PlannedPlacement plannedPlacement = plannedPlacements
                     .stream()
                     .filter(p -> {
@@ -3039,7 +3122,10 @@ public class ReferencePnpJobProcessor extends AbstractPnpJobProcessor {
                         }
                     }
                 }
-                Logger.debug("Optimised: {} rank {} from {}",bestPlacement,bestPlacement.getRank(),compatibleJobPlacements.size());
+                if (bestPlacement != null) {
+                    Logger.debug("Optimised: {} rank {} from {}", bestPlacement,
+                            bestPlacement.getRank(), compatibleJobPlacements.size());
+                }
             }
             // if bestPlacement is still null, use the first
             if (bestPlacement == null) {

@@ -71,6 +71,8 @@ public class PlacementFeederAssignmentDialog extends JDialog implements WizardCo
     private Feeder selectedFeeder;
     private boolean selectionGuard;
     private boolean enabledGuard;
+    private boolean saving;
+    private final java.util.Map<Component, Boolean> savedEnabled = new java.util.IdentityHashMap<>();
 
     public PlacementFeederAssignmentDialog(JobPlacementsPanel placementsPanel,
             Placement placement) throws Exception {
@@ -99,10 +101,15 @@ public class PlacementFeederAssignmentDialog extends JDialog implements WizardCo
         refreshFeederList();
         selectInitialFeeder();
 
-        setDefaultCloseOperation(DISPOSE_ON_CLOSE);
+        setDefaultCloseOperation(DO_NOTHING_ON_CLOSE);
+        addWindowListener(new java.awt.event.WindowAdapter() {
+            @Override public void windowClosing(java.awt.event.WindowEvent event) { closeDialog(); }
+        });
         setAlwaysOnTop(true);
         setMinimumSize(new Dimension(760, 560));
-        setPreferredSize(new Dimension(960, 760));
+        Dimension screen = java.awt.Toolkit.getDefaultToolkit().getScreenSize();
+        setPreferredSize(new Dimension(Math.min(1040, screen.width - 60),
+                Math.min(920, screen.height - 80)));
         pack();
         setLocationRelativeTo(MainFrame.get());
     }
@@ -139,7 +146,7 @@ public class PlacementFeederAssignmentDialog extends JDialog implements WizardCo
         selector.add(filterRow, BorderLayout.NORTH);
 
         feederList.setSelectionMode(ListSelectionModel.SINGLE_SELECTION);
-        feederList.setVisibleRowCount(6);
+        feederList.setVisibleRowCount(11);
         feederList.setCellRenderer(new FeederRenderer());
         selector.add(new JScrollPane(feederList), BorderLayout.CENTER);
         JPanel selectionOptions = new JPanel(new BorderLayout(0, 6));
@@ -154,9 +161,9 @@ public class PlacementFeederAssignmentDialog extends JDialog implements WizardCo
 
         JSplitPane split = new JSplitPane(JSplitPane.VERTICAL_SPLIT,
                 configurationPanel, selector);
-        split.setResizeWeight(0.66);
+        split.setResizeWeight(0.48);
         split.setContinuousLayout(true);
-        split.setDividerLocation(470);
+        javax.swing.SwingUtilities.invokeLater(() -> split.setDividerLocation(.45));
         root.add(split, BorderLayout.CENTER);
 
         JPanel footer = new JPanel(new BorderLayout(8, 0));
@@ -257,7 +264,7 @@ public class PlacementFeederAssignmentDialog extends JDialog implements WizardCo
     }
 
     private void requestFeederSelection(Feeder candidate) {
-        if (candidate == null || candidate == selectedFeeder) {
+        if (saving || candidate == null || candidate == selectedFeeder) {
             return;
         }
         if (!resolveDirtyConfiguration()) {
@@ -351,7 +358,7 @@ public class PlacementFeederAssignmentDialog extends JDialog implements WizardCo
     }
 
     private void updateSelectedFeederEnabled() {
-        if (enabledGuard || selectedFeeder == null) {
+        if (saving || enabledGuard || selectedFeeder == null) {
             return;
         }
         boolean oldEnabled = selectedFeeder.isEnabled();
@@ -359,32 +366,22 @@ public class PlacementFeederAssignmentDialog extends JDialog implements WizardCo
         if (oldEnabled == newEnabled) {
             return;
         }
-        selectedFeeder.setEnabled(newEnabled);
-        if (!MainFrame.get().saveConfig()) {
-            selectedFeeder.setEnabled(oldEnabled);
-            enabledGuard = true;
-            try {
-                feederEnabled.setSelected(oldEnabled);
-            }
-            finally {
-                enabledGuard = false;
-            }
-            status.setForeground(new Color(190, 55, 55));
-            status.setText("飞达启用状态保存失败，已恢复原状态。");
-            return;
-        }
-        MainFrame.get().getFeedersTab().refresh(selectedFeeder);
-        feederList.repaint();
-        status.setForeground(new Color(36, 150, 70));
-        status.setText(newEnabled ? "已启用并保存所选飞达。" : "已停用并保存所选飞达。");
+        Feeder feeder = selectedFeeder;
+        feeder.setEnabled(newEnabled);
+        persistChange(() -> feeder.setEnabled(oldEnabled),
+                newEnabled ? "已启用并保存所选飞达。" : "已停用并保存所选飞达。", false);
     }
 
     private void applyAssignment() {
+        if (saving) { return; }
         UiUtils.messageBoxOnException(() -> {
             if (selectedFeeder == null) {
                 throw new Exception("请先从下方列表选择一个飞达。");
             }
             applyDirtyWizards();
+            Part previousPart = selectedFeeder.getPart();
+            org.openpnp.model.Location previousLocation = selectedFeeder instanceof org.openpnp.machine.reference.ReferenceFeeder
+                    ? ((org.openpnp.machine.reference.ReferenceFeeder) selectedFeeder).getLocation() : null;
             String oldPart = selectedFeeder.getPart() == null ? "未配置"
                     : selectedFeeder.getPart().getId();
             FeederAssignmentSupport.assign(selectedFeeder, part,
@@ -395,10 +392,61 @@ public class PlacementFeederAssignmentDialog extends JDialog implements WizardCo
                     + "    当前飞达物料：" + part.getId());
             String angle = overrideRotation.isSelected()
                     ? "，取料角度 " + rotation.getValue() + "°" : "";
-            status.setForeground(new Color(36, 150, 70));
-            status.setText("已应用：" + selectedFeeder.getName() + "，物料 " + oldPart
-                    + " → " + part.getId() + angle + "。窗口保持打开。 ");
+            Feeder feeder = selectedFeeder;
+            showFeeder(feeder); // Discard cached wizard bindings to the previous Part immediately.
+            persistChange(() -> {
+                feeder.setPart(previousPart);
+                if (previousLocation != null) {
+                    ((org.openpnp.machine.reference.ReferenceFeeder) feeder).setLocation(previousLocation);
+                }
+            }, "已保存：" + feeder.getName() + "，物料 " + oldPart
+                    + " → " + part.getId() + angle + "。窗口保持打开。", true);
         });
+    }
+
+    private void persistChange(Runnable rollback, String success, boolean reloadConfiguration) {
+        saving = true;
+        setBusy(getContentPane());
+        status.setText("正在保存所选飞达，窗口保持响应…");
+        FeederAssignmentSupport.saveMachineAsync(Configuration.get(), reloadConfiguration, () -> {
+            restoreControls();
+            MainFrame.get().getFeedersTab().refresh(selectedFeeder);
+            placementsRefresh.run();
+            refreshAfterSave(reloadConfiguration);
+            refreshFeederList();
+            status.setForeground(new Color(36, 150, 70));
+            status.setText(success);
+        }, failure -> {
+            restoreControls();
+            rollback.run();
+            MainFrame.get().getFeedersTab().refresh(selectedFeeder);
+            placementsRefresh.run();
+            refreshAfterSave(reloadConfiguration);
+            refreshFeederList();
+            status.setForeground(new Color(190, 55, 55));
+            status.setText("保存失败，已恢复原状态：" + failure.getMessage());
+        });
+    }
+
+    private void refreshAfterSave(boolean reloadConfiguration) {
+        if (reloadConfiguration) { showFeeder(selectedFeeder); }
+        enabledGuard = true;
+        try { feederEnabled.setSelected(selectedFeeder.isEnabled()); }
+        finally { enabledGuard = false; }
+    }
+
+    private void setBusy(Component component) {
+        savedEnabled.put(component, component.isEnabled());
+        component.setEnabled(false);
+        if (component instanceof java.awt.Container) {
+            for (Component child : ((java.awt.Container) component).getComponents()) { setBusy(child); }
+        }
+    }
+
+    private void restoreControls() {
+        savedEnabled.forEach(Component::setEnabled);
+        savedEnabled.clear();
+        saving = false;
     }
 
     private void applyDirtyWizards() {
@@ -419,6 +467,7 @@ public class PlacementFeederAssignmentDialog extends JDialog implements WizardCo
     }
 
     private void closeDialog() {
+        if (saving) { return; }
         dispose();
     }
 

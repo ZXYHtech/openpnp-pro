@@ -84,11 +84,14 @@ import javax.swing.border.EmptyBorder;
 
 import org.openpnp.gui.support.AdaptiveUiRefresh;
 import org.openpnp.gui.support.ExperimentalGuide;
+import org.openpnp.gui.support.DynamicSafeMotionPanel;
 import org.openpnp.gui.support.Icons;
 import org.openpnp.gui.support.SafetyWorkbenchViewTransform;
 import org.openpnp.gui.support.WrapLayout;
 import org.openpnp.gui.support.ExperimentalGuide.Step;
 import org.openpnp.machine.reference.safety.DynamicSafetyCollisionEngine;
+import org.openpnp.machine.reference.safety.DynamicSafeMotionPlanner;
+import org.openpnp.machine.reference.safety.DynamicSafeMotionPlanner.Plan;
 import org.openpnp.machine.reference.safety.DynamicSafetyCollisionEngine.DynamicTool;
 import org.openpnp.machine.reference.safety.SafetyCollisionEngine;
 import org.openpnp.machine.reference.safety.SafetyCollisionEngine.ValidationResult;
@@ -108,6 +111,7 @@ import org.openpnp.machine.reference.safety.SafetyWorkbenchModel.SafetyObject;
 import org.openpnp.machine.reference.safety.SafetyWorkbenchModel.Shape;
 import org.openpnp.machine.reference.safety.SafetyWorkbenchModel.ToolProfile;
 import org.openpnp.machine.reference.safety.SafetyWorkbenchStore;
+import org.openpnp.machine.reference.vision.BottomVisionTiming;
 import org.openpnp.model.Configuration;
 import org.openpnp.model.Length;
 import org.openpnp.model.LengthUnit;
@@ -133,6 +137,8 @@ public class SafetyWorkbenchDialog extends JDialog {
     private final JList<SafetyObject> objectList = new JList<>(objectListModel);
     private final WorkbenchCanvas canvas = new WorkbenchCanvas();
     private final JLabel certification = new JLabel();
+    private DynamicSafeMotionPanel coordinatedMotion;
+    private JDialog visionTimingDialog;
     private final JButton importConfiguration = new JButton("从 OpenPnP 导入…");
     private final JButton certifyButton = new JButton("检查并认证");
     private final JButton simulateButton = new JButton("3D 预演与碰撞检查");
@@ -440,6 +446,9 @@ public class SafetyWorkbenchDialog extends JDialog {
             return;
         }
         boolean machineActive = Configuration.get().getMachine().isBusy();
+        if (coordinatedMotion != null) {
+            coordinatedMotion.refresh();
+        }
         boolean sceneChanged = false;
         long now = System.currentTimeMillis();
         if (AdaptiveUiRefresh.shouldTakeSnapshot(now, lastLiveSnapshot, machineActive,
@@ -676,6 +685,38 @@ public class SafetyWorkbenchDialog extends JDialog {
         toolbar.add(save);
         toolbar.add(certifyButton);
         header.add(toolbar);
+        coordinatedMotion = new DynamicSafeMotionPanel(model, Configuration.get().getMachine(), result::setText);
+        JButton previewCoordinated = new JButton("预览联动路径与耗时");
+        previewCoordinated.setName("preview-xyz-overlap");
+        previewCoordinated.setToolTipText("使用运动/预演页的目标 XYZ，只计算路径，不移动机器。");
+        previewCoordinated.addActionListener(event -> previewCoordinatedMotion());
+        coordinatedMotion.add(previewCoordinated);
+        JButton previewVision = new JButton("预览视觉直达");
+        previewVision.setName("preview-bottom-vision-transit");
+        previewVision.setToolTipText("按运动/预演页的拍摄 XYZ 检查非接触路径；Z 可在 XY 行程中达到拍摄高度，不移动机器。");
+        previewVision.addActionListener(event -> previewCoordinatedMotion(true));
+        coordinatedMotion.add(previewVision);
+        JButton visionTiming = new JButton("底部视觉耗时");
+        visionTiming.setName("bottom-vision-timing");
+        visionTiming.setToolTipText("查看真实静拍调用的移动下发、采图/稳定、流水线耗时和复拍轮数，不额外拍照。");
+        visionTiming.addActionListener(event -> showBottomVisionTiming());
+        coordinatedMotion.add(visionTiming);
+        JButton motionDiagnostics = new JButton("联动运行诊断");
+        motionDiagnostics.setName("xyz-runtime-diagnostics");
+        motionDiagnostics.addActionListener(event -> {
+            JTextArea diagnosticText = new JTextArea(org.openpnp.machine.reference.safety.DynamicMotionDiagnostics.summary(), 18, 70);
+            diagnosticText.setEditable(false);
+            diagnosticText.setLineWrap(true);
+            diagnosticText.setWrapStyleWord(true);
+            Object[] options = { "关闭", "复制 CSV" };
+            if (JOptionPane.showOptionDialog(this, new JScrollPane(diagnosticText), "XY/Z 联动运行诊断 · 本次启动",
+                    JOptionPane.DEFAULT_OPTION, JOptionPane.INFORMATION_MESSAGE, null, options, options[0]) == 1) {
+                Toolkit.getDefaultToolkit().getSystemClipboard().setContents(new StringSelection(
+                        org.openpnp.machine.reference.safety.DynamicMotionDiagnostics.csv()), null);
+            }
+        });
+        coordinatedMotion.add(motionDiagnostics);
+        header.add(coordinatedMotion);
         return header;
     }
 
@@ -2146,6 +2187,84 @@ public class SafetyWorkbenchDialog extends JDialog {
                 ? object.z : object.z + object.height + object.clearance);
     }
 
+    private void showBottomVisionTiming() {
+        if (visionTimingDialog != null && visionTimingDialog.isDisplayable()) {
+            visionTimingDialog.toFront();
+            return;
+        }
+        JDialog dialog = new JDialog(this, "底部视觉静拍耗时 · 本次启动", false);
+        visionTimingDialog = dialog;
+        JTextArea text = new JTextArea(18, 65);
+        text.setEditable(false);
+        text.setLineWrap(true);
+        text.setWrapStyleWord(true);
+        text.setBorder(new EmptyBorder(12, 12, 12, 12));
+        text.setText(BottomVisionTiming.summary());
+        JPanel actions = new JPanel(new FlowLayout(FlowLayout.RIGHT));
+        JButton refresh = new JButton("刷新");
+        refresh.addActionListener(event -> text.setText(BottomVisionTiming.summary()));
+        JButton copy = new JButton("复制 CSV");
+        copy.addActionListener(event -> Toolkit.getDefaultToolkit().getSystemClipboard()
+                .setContents(new StringSelection(BottomVisionTiming.csv()), null));
+        JButton clear = new JButton("清空本次统计");
+        clear.addActionListener(event -> {
+            BottomVisionTiming.clear();
+            text.setText(BottomVisionTiming.summary());
+        });
+        actions.add(clear);
+        actions.add(copy);
+        actions.add(refresh);
+        dialog.add(new JScrollPane(text), BorderLayout.CENTER);
+        dialog.add(actions, BorderLayout.SOUTH);
+        dialog.setDefaultCloseOperation(DISPOSE_ON_CLOSE);
+        dialog.pack();
+        dialog.setLocationRelativeTo(this);
+        dialog.setVisible(true);
+    }
+
+    private void previewCoordinatedMotion() {
+        previewCoordinatedMotion(false);
+    }
+
+    private void previewCoordinatedMotion(boolean imaging) {
+        for (int index = 0; index < propertyTabs.getTabCount(); index++) {
+            if (propertyTabs.getTitleAt(index).contains("预演")) {
+                propertyTabs.setSelectedIndex(index);
+                break;
+            }
+        }
+        Nozzle tool = selectedWorkbenchNozzle();
+        if (tool == null) {
+            result.setText("请先选择吸嘴。预览不需要连接机器。");
+            return;
+        }
+        Location start = tool.getLocation().convertToUnits(LengthUnit.Millimeters);
+        Location target = new Location(LengthUnit.Millimeters, number(targetX),
+                number(targetY), number(targetZ), start.getRotation());
+        Plan plan = imaging ? DynamicSafeMotionPlanner.previewBottomVision(tool, target, number(speed))
+                : DynamicSafeMotionPlanner.preview(tool, target, number(speed));
+        if (!plan.isOptimized()) {
+            canvas.setPath(new ArrayList<>(), false);
+            result.setText("此段保持原安全 Z 路径：" + plan.getReason()
+                    + "\n目标坐标取自“运动/预演”页。预览只计算，不启用开关，不移动机器。");
+            return;
+        }
+        List<Waypoint> points = new ArrayList<>();
+        points.add(new Waypoint(start.getX(), start.getY(), start.getZ()));
+        for (Location location : plan.getLocations()) {
+            points.add(new Waypoint(location.getX(), location.getY(), location.getZ()));
+        }
+        canvas.setPath(points, true);
+        result.setText(String.format(Locale.ROOT,
+                "联动路径通过：原分段 %.3f 秒 → 联动 %.3f 秒，预计减少 %.1f%%。\n"
+                        + "按当前轴限速/加速度计算，属于软件估算；实机执行还受控制器、真空与视觉耗时影响。\n"
+                        + (imaging ? "视觉直达：在 XY 行进中达到拍摄 Z，无额外末段垂直下降。"
+                                : "先到局部安全高度再边走 XY 边调整 Z；接触前保留必要的竖直段。")
+                        + "预览没有移动机器。",
+                plan.getOriginalSeconds(), plan.getCoordinatedSeconds(),
+                100 * (1 - plan.getCoordinatedSeconds() / plan.getOriginalSeconds())));
+    }
+
     private void simulate() {
         HeadMountable tool = selectedWorkbenchTool();
         if (tool == null) {
@@ -2430,6 +2549,9 @@ public class SafetyWorkbenchDialog extends JDialog {
     }
 
     private void updateVisionHeightStatus() {
+        if (coordinatedMotion != null) {
+            coordinatedMotion.refresh();
+        }
         if (!model.isVisionHeightCompensationEnabled()) {
             visionHeightStatus.setText("高度定位：关闭");
             visionHeightStatus.setForeground(new Color(145, 151, 156));

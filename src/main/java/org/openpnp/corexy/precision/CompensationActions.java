@@ -49,7 +49,7 @@ public final class CompensationActions {
         try {
             if (activationFailure != null) { throw activationFailure; }
             Path report = FixedMarkerLifecycle.homeOnly(configuration, progress, cancelled);
-            configuration.saveMachineConfiguration();
+            CoreXYIntegration.saveMachineConfiguration(configuration);
             store.setEnabled(true);
             CoreXYIntegration.setStartupStatus("新补偿已启用并保存 · Home 基准检查通过，5点精度验证可手动执行。");
             return report;

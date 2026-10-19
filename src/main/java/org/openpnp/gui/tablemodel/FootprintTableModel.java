@@ -34,7 +34,8 @@ import org.openpnp.model.Footprint;
 import org.openpnp.model.Footprint.Pad;
 import org.openpnp.model.Length;
 
-public class FootprintTableModel extends AbstractTableModel implements RowReorderableTableModel {
+public class FootprintTableModel extends AbstractTableModel
+        implements RowReorderableTableModel, NumericColumnTableModel {
     private String[] columnNames =
             new String[] {
                     Translations.getString("FootPrintTableModel.ColumnName.Name"), //$NON-NLS-1$
@@ -86,6 +87,23 @@ public class FootprintTableModel extends AbstractTableModel implements RowReorde
     @Override
     public Class<?> getColumnClass(int columnIndex) {
         return columnTypes[columnIndex];
+    }
+
+    @Override
+    public boolean isNumericColumn(int column) {
+        return column == 6 || column == 7;
+    }
+
+    @Override
+    public Object getNumericValueAt(int row, int column) {
+        Pad pad = footprint.getPads().get(row);
+        if (column == 6) {
+            return Double.toString(pad.getRotation());
+        }
+        if (column == 7) {
+            return Double.toString(pad.getRoundness());
+        }
+        return getValueAt(row, column);
     }
 
     @Override

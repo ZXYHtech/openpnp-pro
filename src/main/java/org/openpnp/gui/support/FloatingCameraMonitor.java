@@ -166,6 +166,7 @@ public class FloatingCameraMonitor {
     private final JFrame window;
     private final CameraView cameraView = new CameraView();
     private final CameraLayerPane cameraContainer = new CameraLayerPane();
+    private final FloatingJobProgressOverlay jobProgress = new FloatingJobProgressOverlay();
     private final JPanel commandPanel = new JPanel(new java.awt.GridLayout(1, 4, 8, 0));
     private final JPanel footer = new JPanel(new BorderLayout(7, 0));
     private final JPanel warningPanel = new JPanel(new BorderLayout(8, 8));
@@ -175,6 +176,7 @@ public class FloatingCameraMonitor {
     private final JLabel cameraNameLabel = new JLabel("等待摄像头");
     private final Timer cameraTimer;
     private final Timer presentationTimer;
+    private final Timer progressTimer;
     private final Timer redockTimer;
     private final MessageBoxes.ErrorListener errorListener = new MessageBoxes.ErrorListener() {
         @Override
@@ -223,6 +225,7 @@ public class FloatingCameraMonitor {
             ensureInteractiveWindow();
         });
         presentationTimer = new Timer(50, event -> mirrorCameraPresentation());
+        progressTimer = new Timer(1000, event -> updateJobProgress());
         redockTimer = new Timer(700, event -> collapseToEdgeIfPointerOutside());
         redockTimer.setRepeats(false);
         MessageBoxes.addErrorListener(errorListener);
@@ -285,6 +288,7 @@ public class FloatingCameraMonitor {
         cameraContainer.setOpaque(true);
         cameraContainer.setBackground(Color.BLACK);
         cameraContainer.add(cameraView, Integer.valueOf(JLayeredPane.DEFAULT_LAYER));
+        cameraContainer.add(jobProgress, Integer.valueOf(JLayeredPane.PALETTE_LAYER));
         cameraContainer.add(warningPanel, Integer.valueOf(JLayeredPane.MODAL_LAYER));
         buildWarningPanel();
         window.add(cameraContainer, BorderLayout.CENTER);
@@ -1005,10 +1009,14 @@ public class FloatingCameraMonitor {
         startRefreshTimers();
         window.setVisible(true);
         updateActiveCamera();
+        updateJobProgress();
         ensureInteractiveWindow();
     }
 
     private void startRefreshTimers() {
+        if (!progressTimer.isRunning()) {
+            progressTimer.start();
+        }
         if (!cameraTimer.isRunning()) {
             cameraTimer.start();
         }
@@ -1018,9 +1026,14 @@ public class FloatingCameraMonitor {
     }
 
     private void stopRefreshTimers() {
+        progressTimer.stop();
         cameraTimer.stop();
         presentationTimer.stop();
         redockTimer.stop();
+    }
+
+    private void updateJobProgress() {
+        jobProgress.update(owner.getJobTab().getTelemetryManager().getCurrent(), System.currentTimeMillis());
     }
 
     private void updateCompactMode() {

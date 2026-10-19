@@ -38,7 +38,7 @@ import org.openpnp.gui.support.RowReorderSupport;
 
 @SuppressWarnings("serial")
 public class PartsTableModel extends AbstractObjectTableModel
-        implements PropertyChangeListener, RowReorderableTableModel {
+        implements PropertyChangeListener, RowReorderableTableModel, NumericColumnTableModel {
     private String[] columnNames =
             new String[] {Translations.getString("PartsTableModel.ColumnName.ID"), //$NON-NLS-1$
                     Translations.getString("PartsTableModel.ColumnName.Description"), //$NON-NLS-1$
@@ -81,6 +81,17 @@ public class PartsTableModel extends AbstractObjectTableModel
     @Override
     public Class<?> getColumnClass(int columnIndex) {
         return columnTypes[columnIndex];
+    }
+
+    @Override
+    public boolean isNumericColumn(int column) {
+        return column == 5;
+    }
+
+    @Override
+    public Object getNumericValueAt(int row, int column) {
+        return column == 5 ? Double.toString(parts.get(row).getSpeed() * 100) + "%"
+                : getValueAt(row, column);
     }
 
     @Override

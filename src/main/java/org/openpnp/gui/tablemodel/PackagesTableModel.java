@@ -61,7 +61,9 @@ public class PackagesTableModel extends AbstractObjectTableModel
         this.configuration = configuration;
         configuration.addPropertyChangeListener("packages", this);
         packages = new ArrayList<>(configuration.getPackages());
-
+        for (Package pkg : packages) {
+            pkg.addPropertyChangeListener(this);
+        }
     }
 
     @Override
@@ -169,7 +171,20 @@ public class PackagesTableModel extends AbstractObjectTableModel
 
     @Override
     public void propertyChange(PropertyChangeEvent arg0) {
+        if (arg0.getSource() instanceof Package) {
+            int row = packages.indexOf(arg0.getSource());
+            if (row >= 0) {
+                fireTableRowsUpdated(row, row);
+            }
+            return;
+        }
+        for (Package pkg : packages) {
+            pkg.removePropertyChangeListener(this);
+        }
         packages = new ArrayList<>(configuration.getPackages());
+        for (Package pkg : packages) {
+            pkg.addPropertyChangeListener(this);
+        }
         fireTableDataChanged();
     }
     @Override

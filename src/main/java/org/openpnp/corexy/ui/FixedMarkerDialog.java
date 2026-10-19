@@ -75,6 +75,9 @@ public class FixedMarkerDialog extends JDialog {
     private final JButton enable = new JButton("启用保存方案并校验");
     private final JButton disable = new JButton("停用补偿（保留方案）");
     private final JLabel compensation = new JLabel();
+    private final JLabel nextStep = new JLabel();
+    private final JPanel statusBanner = new JPanel(new BorderLayout(6, 6));
+    private final JButton recalibrate = new JButton("重新校准…");
     private final CalibrationLivePanel live = new CalibrationLivePanel();
     private final CalibrationCelebrationPanel celebration = new CalibrationCelebrationPanel();
     private final JButton save = new JButton("保存 Home 与四个覆盖点");
@@ -88,7 +91,22 @@ public class FixedMarkerDialog extends JDialog {
     private final JProgressBar progress = new JProgressBar(0, 100);
     private final JTextArea results = new JTextArea();
     private final JTabbedPane tabs = new JTabbedPane();
-    private boolean running, ownsWorkflow;
+    private boolean running, ownsWorkflow, hasSavedProfile;
+    private org.openpnp.spi.Machine observedMachine;
+    private boolean disposed;
+    private final org.openpnp.spi.MachineListener machineStateListener = new org.openpnp.spi.MachineListener.Adapter() {
+        private void changed() {
+            SwingUtilities.invokeLater(() -> {
+                if (!disposed) {
+                    updateSetupReadiness();
+                    refreshProfile(false);
+                }
+            });
+        }
+        @Override public void machineEnabled(org.openpnp.spi.Machine machine) { changed(); }
+        @Override public void machineDisabled(org.openpnp.spi.Machine machine, String reason) { changed(); }
+        @Override public void machineHomed(org.openpnp.spi.Machine machine, boolean homed) { changed(); }
+    };
     private double maximumOffset = .2;
     private int settleMillis = 300;
     private Path reportDirectory;
@@ -104,6 +122,12 @@ public class FixedMarkerDialog extends JDialog {
         setMinimumSize(new Dimension(900, 650));
         setSize(1090, 780);
         setLocationRelativeTo(owner);
+        compensation.setFont(compensation.getFont().deriveFont(java.awt.Font.BOLD, 21f));
+        statusBanner.setBorder(BorderFactory.createCompoundBorder(
+                BorderFactory.createEmptyBorder(12, 18, 6, 18), BorderFactory.createEmptyBorder(10, 12, 10, 12)));
+        statusBanner.add(compensation, BorderLayout.NORTH);
+        statusBanner.add(nextStep, BorderLayout.CENTER);
+        add(statusBanner, BorderLayout.NORTH);
         JPanel preparation = new JPanel(new BorderLayout(16, 16));
         preparation.setBorder(BorderFactory.createEmptyBorder(18, 18, 18, 18));
         preparation.add(new JLabel("<html><b>Home 自动读取，只需添加 4 个覆盖点。</b> 校准时四点保持固定、清晰、与 Home 同平面。"
@@ -129,13 +153,23 @@ public class FixedMarkerDialog extends JDialog {
         JPanel settings = new JPanel(new GridLayout(0, 2, 8, 10));
         field(settings, "圆形 marker 直径（mm）", diameter);
         field(settings, "目标 P95 偏差（mm）", target);
-        field(settings, "换向预行程（mm）", conditioning);
         field(settings, "marker 相机测量 Z（mm）", planeZ);
-        field(settings, "Home 允许偏移（mm）", homeOffset);
-        field(settings, "Home marker 搜索半径（mm）", homeRadius);
+        JPanel advanced = new JPanel(new GridLayout(0, 2, 8, 8));
+        field(advanced, "换向预行程（mm）", conditioning);
+        field(advanced, "Home 允许偏移（mm）", homeOffset);
+        field(advanced, "Home marker 搜索半径（mm）", homeRadius);
+        advanced.setVisible(false);
+        JCheckBox advancedToggle = new JCheckBox("显示高级参数（通常无需修改）");
+        advancedToggle.addActionListener(event -> {
+            advanced.setVisible(advancedToggle.isSelected());
+            preparation.revalidate();
+        });
         JPanel parameters = new JPanel(new BorderLayout(8, 12));
-        parameters.add(settings, BorderLayout.CENTER);
-        parameters.add(autoVerify, BorderLayout.SOUTH);
+        parameters.add(settings, BorderLayout.NORTH);
+        JPanel advancedOptions = new JPanel(new BorderLayout(4, 6));
+        advancedOptions.add(advancedToggle, BorderLayout.NORTH);
+        advancedOptions.add(advanced, BorderLayout.CENTER);
+        parameters.add(advancedOptions, BorderLayout.CENTER);
         input.add(parameters, BorderLayout.SOUTH);
         preparation.add(input, BorderLayout.CENTER);
         preparation.add(new JLabel("<html>① 自动读取机器 Home → ② 对齐并记录四个临时点 → ③ 自动校准并独立评估。"
@@ -144,41 +178,44 @@ public class FixedMarkerDialog extends JDialog {
         JScrollPane preparationScroll = new JScrollPane(preparation);
         preparationScroll.setBorder(BorderFactory.createEmptyBorder());
         preparationScroll.getVerticalScrollBar().setUnitIncrement(16);
-        tabs.addTab("1  固定点与开始", preparationScroll);
+        tabs.addTab("校准设置 · 首次 / 重校准", preparationScroll);
         results.setEditable(false);
         results.setLineWrap(true);
         results.setWrapStyleWord(true);
         results.setMargin(new java.awt.Insets(14, 14, 14, 14));
-        tabs.addTab("2  本次结果与历史", new JScrollPane(results));
-        tabs.addTab("3  实时画面与步骤", live);
+        tabs.addTab("详细记录", new JScrollPane(results));
+        tabs.addTab("实时画面与步骤", live);
         JScrollPane celebrationScroll = new JScrollPane(celebration);
         celebrationScroll.setBorder(BorderFactory.createEmptyBorder());
-        tabs.addTab("4  结果", celebrationScroll);
+        tabs.addTab("补偿状态与验证", celebrationScroll);
         add(tabs, BorderLayout.CENTER);
         JPanel footer = new JPanel(new BorderLayout(8, 8));
         footer.setBorder(BorderFactory.createEmptyBorder(10, 18, 16, 18));
-        JPanel actions = new JPanel(new GridLayout(0, 1, 0, 6));
-        JPanel management = new JPanel(new FlowLayout(FlowLayout.RIGHT, 8, 2));
-        management.add(history);
-        management.add(report);
-        management.add(save);
-        management.add(verify);
-        JPanel switching = new JPanel(new FlowLayout(FlowLayout.RIGHT, 8, 2));
-        switching.add(compensation);
-        switching.add(enable);
-        switching.add(disable);
-        JPanel calibration = new JPanel(new FlowLayout(FlowLayout.RIGHT, 8, 2));
-        calibration.add(simulation);
-        calibration.add(stop);
-        calibration.add(start);
-        actions.add(management);
-        actions.add(switching);
-        actions.add(calibration);
+        JPanel actions = new JPanel(new FlowLayout(FlowLayout.RIGHT, 8, 2));
+        JButton more = new JButton("更多操作 ▾");
+        javax.swing.JPopupMenu menu = new javax.swing.JPopupMenu();
+        for (JButton action : new JButton[] {history, report, save, simulation, disable}) {
+            javax.swing.JMenuItem item = new javax.swing.JMenuItem(action.getText());
+            item.addActionListener(event -> action.doClick());
+            item.setEnabled(action.isEnabled());
+            action.addPropertyChangeListener("enabled", event -> item.setEnabled(action.isEnabled()));
+            menu.add(item);
+        }
+        more.addActionListener(event -> menu.show(more, 0, more.getHeight()));
+        recalibrate.addActionListener(event -> tabs.setSelectedIndex(0));
+        start.setFont(start.getFont().deriveFont(java.awt.Font.BOLD));
+        actions.add(more);
+        actions.add(recalibrate);
+        actions.add(verify);
+        actions.add(enable);
+        actions.add(stop);
+        actions.add(start);
         progress.setStringPainted(true);
         footer.add(state, BorderLayout.NORTH);
         footer.add(progress, BorderLayout.CENTER);
         footer.add(actions, BorderLayout.SOUTH);
         add(footer, BorderLayout.SOUTH);
+        tabs.addChangeListener(event -> updateActionGuidance());
         stop.setEnabled(false);
         report.setEnabled(false);
         FixedMarkerSetup existing = CoreXYIntegration.store(configuration).loadFixedMarkers();
@@ -230,10 +267,13 @@ public class FixedMarkerDialog extends JDialog {
         CalibrationResultPresentation.attachActions(celebration, tabs, verify, enable, start, report);
         updateSetupReadiness();
         refreshProfile(false);
+        if (hasSavedProfile) { tabs.setSelectedIndex(3); }
         if (PrecisionRuntime.isActive()) {
             state.setText(CoreXYIntegration.getStartupStatus());
             progress.setValue(100);
         }
+        observedMachine = configuration.getMachine();
+        if (observedMachine != null) { observedMachine.addListener(machineStateListener); }
     }
 
     private void showLive() {
@@ -289,9 +329,18 @@ public class FixedMarkerDialog extends JDialog {
     private void refreshProfile(boolean celebrate) {
         try {
             PrecisionProfile profile = CoreXYIntegration.store(configuration).loadForRestore();
+            hasSavedProfile = profile != null;
             boolean saved = CoreXYIntegration.store(configuration).isEnabled();
             boolean active = PrecisionRuntime.isActive() && saved;
-            compensation.setText(active ? "● 新补偿已启用" : PrecisionRuntime.isActive() ? "● 已加载，等待校验/保存" : saved ? "⚠ 保存方案加载失败，可停用或重新校准" : "○ 新补偿停用");
+            compensation.setText(active ? configuration.getMachine().isHomed() ? "● 补偿已启用 · Home 已完成"
+                    : "● 补偿已启用 · 等待 Home" : PrecisionRuntime.isActive() ? "● 已加载，等待校验/保存"
+                            : saved ? "⚠ 保存方案加载失败，可停用或重新校准" : "○ 补偿已停用");
+            java.awt.Color banner = active ? new java.awt.Color(0x157347)
+                    : saved ? new java.awt.Color(0x9B4920) : new java.awt.Color(0x374B63);
+            statusBanner.setBackground(banner);
+            // These dark banner colors use white text, including when loaded in stock OpenPnP.
+            compensation.setForeground(java.awt.Color.WHITE);
+            nextStep.setForeground(compensation.getForeground());
             enable.setEnabled(!running && profile != null && !active);
             disable.setEnabled(!running && (PrecisionRuntime.isActive() || CoreXYIntegration.store(configuration).isEnabled()));
             verify.setEnabled(!running && PrecisionRuntime.isActive());
@@ -309,9 +358,12 @@ public class FixedMarkerDialog extends JDialog {
             enable.setEnabled(false);
             disable.setEnabled(!running);
         }
+        updateActionGuidance();
     }
 
     @Override public void dispose() {
+        disposed = true;
+        if (observedMachine != null) { observedMachine.removeListener(machineStateListener); }
         live.disconnect();
         super.dispose();
     }
@@ -672,6 +724,33 @@ public class FixedMarkerDialog extends JDialog {
         save.setEnabled(!running && complete);
         start.setEnabled(!running && complete);
         move.setEnabled(!running && complete);
+        org.openpnp.spi.Machine machine = configuration.getMachine();
+        record.setEnabled(!running && machine != null && machine.isEnabled() && machine.isHomed());
+        updateActionGuidance();
+    }
+
+    private void updateActionGuidance() {
+        boolean setup = tabs.getSelectedIndex() == 0;
+        boolean active = PrecisionRuntime.isActive();
+        start.setVisible(setup && !running);
+        enable.setVisible(!setup && !active && enable.isEnabled());
+        verify.setVisible(!setup && active && !running);
+        recalibrate.setVisible(!setup && !running);
+        stop.setVisible(running);
+        recalibrate.setEnabled(!running);
+        int missing = 0;
+        for (int row = 0; row < 5; row++) {
+            if (!(coordinates.getValueAt(row, 2) instanceof Number)
+                    || !(coordinates.getValueAt(row, 3) instanceof Number)) { missing++; }
+        }
+        org.openpnp.spi.Machine machine = configuration.getMachine();
+        boolean ready = machine != null && machine.isEnabled() && machine.isHomed();
+        nextStep.setText(running ? "操作进行中；如需中止，请点击“取消并恢复”，等待恢复完成。"
+                : !setup ? active ? "日常使用：完成机器 Home 即可；需要复查时再放回四点并运行5点精度验证。"
+                        : "有保存方案时可直接启用；首次使用请点击“重新校准”设置点位。"
+                : !ready ? "下一步：先启用机器并完成 Home，再记录四个覆盖点；复位后按钮会自动更新。"
+                : missing > 0 ? "下一步：记录四个覆盖点；当前还有 " + missing + " 个点未完成。"
+                        : "下一步：确认临时 marker 已放好，点击“自动校准并启用通过方案”。");
     }
 
     private void requestCancellation() {

@@ -176,8 +176,8 @@ public class SafetyWorkbenchModel {
     }
 
     private int schemaVersion = 4;
-    private long revision = 1;
-    private long certifiedRevision;
+    private volatile long revision = 1;
+    private volatile long certifiedRevision;
     private long certifiedAt;
     private String certificationNote = "";
 

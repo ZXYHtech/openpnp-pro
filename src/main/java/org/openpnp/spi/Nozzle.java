@@ -124,6 +124,14 @@ public interface Nozzle
     public void place() throws Exception;
 
     /**
+     * Forget only the software part/feeder state before an operator-requested re-pick.
+     * Must not move, release vacuum, blow air, place or discard. Normal pick checks still apply.
+     */
+    default void clearPartForRepick() throws Exception {
+        throw new UnsupportedOperationException("该吸嘴暂不支持无抛料重新拾取，请保持暂停并检查机器状态。");
+    }
+
+    /**
      * Changer interface:
      * 
      * Command the Nozzle to load the given NozzleTip as it's current NozzleTip. If this returns

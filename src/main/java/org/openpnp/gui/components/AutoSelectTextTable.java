@@ -21,12 +21,16 @@ import java.util.Vector;
 import java.util.prefs.Preferences;
 
 import javax.swing.InputMap;
+import javax.swing.BorderFactory;
+import javax.swing.DefaultCellEditor;
+import javax.swing.DefaultListSelectionModel;
 import javax.swing.JButton;
 import javax.swing.DefaultRowSorter;
 import javax.swing.JScrollPane;
 import javax.swing.JPopupMenu;
 import javax.swing.JViewport;
 import javax.swing.JTable;
+import javax.swing.JTextField;
 import javax.swing.KeyStroke;
 import javax.swing.ListSelectionModel;
 import javax.swing.RowSorter;
@@ -44,6 +48,10 @@ import javax.swing.table.TableModel;
 import javax.swing.text.JTextComponent;
 
 import org.openpnp.gui.support.TableUtils;
+import org.openpnp.gui.support.LengthCellValue;
+import org.openpnp.gui.support.NumericCellInput;
+import org.openpnp.gui.support.RotationCellValue;
+import org.openpnp.gui.tablemodel.NumericColumnTableModel;
 
 /**
  * From http://tips4java.wordpress.com/2008/10/20/table-select-all-editor/
@@ -62,6 +70,8 @@ public class AutoSelectTextTable extends JTable {
     private boolean isSelectAllForKeyEvent = true;
     private MouseAdapter sortColumnCycler = null;
     private boolean multiRowEditEnabled;
+    private boolean multiRowEditInProgress;
+    private boolean preserveSelectedRowsOnClick;
     private RowReorderHandler rowReorderHandler;
     private Point rowDragStart;
     private List<Integer> draggedModelRows;
@@ -288,32 +298,200 @@ public class AutoSelectTextTable extends JTable {
         this.multiRowEditEnabled = multiRowEditEnabled;
     }
 
+    public boolean isMultiRowEditInProgress() {
+        return multiRowEditInProgress;
+    }
+
+    @Override
+    protected void createDefaultEditors() {
+        super.createDefaultEditors();
+        setDefaultEditor(String.class, new ArithmeticCellEditor());
+        setDefaultEditor(Number.class, new ArithmeticCellEditor());
+        setDefaultEditor(LengthCellValue.class, new ArithmeticCellEditor());
+        setDefaultEditor(RotationCellValue.class, new ArithmeticCellEditor());
+    }
+
+    @Override
+    public TableCellEditor getCellEditor(int row, int column) {
+        TableCellEditor editor = super.getCellEditor(row, column);
+        // Some legacy models declare Object even for numeric or text cells.
+        if (getColumnClass(column) == Object.class
+                && getColumnModel().getColumn(column).getCellEditor() == null
+                && editor == getDefaultEditor(Object.class)) {
+            Object current = getValueAt(row, column);
+            if (current instanceof String) {
+                return getDefaultEditor(String.class);
+            }
+            if (current != null && NumericCellInput.isNumericType(current.getClass())) {
+                return getDefaultEditor(current.getClass());
+            }
+        }
+        return editor;
+    }
+
+    private List<Integer> editedModelRows() {
+        List<Integer> rows = new ArrayList<>();
+        if (multiRowEditEnabled) {
+            rows.addAll(captureSelectedModelRows());
+        }
+        int row = convertRowIndexToModel(getEditingRow());
+        if (!rows.contains(row)) {
+            rows.add(row);
+        }
+        return rows;
+    }
+
+    private final class ArithmeticCellEditor extends DefaultCellEditor {
+        private final JTextField field;
+        private List<Integer> rows;
+        private List<Object> values;
+
+        private ArithmeticCellEditor() {
+            super(new JTextField());
+            field = (JTextField) getComponent();
+            setClickCountToStart(2);
+        }
+
+        @Override
+        public Component getTableCellEditorComponent(JTable table, Object value, boolean selected,
+                int row, int column) {
+            rows = null;
+            values = null;
+            field.updateUI();
+            boolean numeric = NumericCellInput.isNumericType(table.getColumnClass(column))
+                    || table.getModel() instanceof NumericColumnTableModel
+                    && ((NumericColumnTableModel) table.getModel())
+                            .isNumericColumn(table.convertColumnIndexToModel(column));
+            field.setHorizontalAlignment(numeric ? JTextField.TRAILING : JTextField.LEADING);
+            field.setBorder(javax.swing.UIManager.getBorder("Table.focusCellHighlightBorder"));
+            field.setToolTipText("输入数值或算式，如 1.2 + 0.3；+=0.1 / -=0.1 按各行原值增减。"
+                    + "文本列以 = 开头计算；Enter 填充所选行，Esc 取消。");
+            return super.getTableCellEditorComponent(table, value, selected, row, column);
+        }
+
+        @Override
+        public boolean stopCellEditing() {
+            if (!isEditing()) {
+                return super.stopCellEditing();
+            }
+            int column = convertColumnIndexToModel(getEditingColumn());
+            TableModel model = getModel();
+            List<Integer> targets = editedModelRows();
+            List<Object> converted = new ArrayList<>();
+            boolean numericText = model instanceof NumericColumnTableModel
+                    && ((NumericColumnTableModel) model).isNumericColumn(column);
+            try {
+                for (int row : targets) {
+                    Object current = numericText
+                            ? ((NumericColumnTableModel) model).getNumericValueAt(row, column)
+                            : model.getValueAt(row, column);
+                    Class<?> type = model.getColumnClass(column);
+                    if (type == Object.class && current != null) {
+                        type = current.getClass();
+                    }
+                    converted.add(model.isCellEditable(row, column)
+                            ? NumericCellInput.convert(field.getText(), current,
+                                    type, numericText) : null);
+                }
+            }
+            catch (RuntimeException exception) {
+                field.setBorder(BorderFactory.createLineBorder(new Color(210, 65, 65), 2));
+                field.setToolTipText("未修改任何单元格。请输入有效算式；整数列不能填写小数，除数不能为零，"
+                        + "增减操作要求各行已有数值。");
+                Toolkit.getDefaultToolkit().beep();
+                return false;
+            }
+            rows = targets;
+            values = converted;
+            return super.stopCellEditing();
+        }
+    }
+
     @Override
     public void editingStopped(ChangeEvent event) {
         TableCellEditor editor = getCellEditor();
-        int editingViewRow = getEditingRow();
-        int editingViewColumn = getEditingColumn();
-        int editingModelRow = editingViewRow < 0 ? -1 : convertRowIndexToModel(editingViewRow);
-        int modelColumn = editingViewColumn < 0 ? -1 : convertColumnIndexToModel(editingViewColumn);
-        Object value = editor == null ? null : editor.getCellEditorValue();
-        List<Integer> selectedModelRows = new ArrayList<>();
-        if (multiRowEditEnabled && modelColumn >= 0) {
-            for (int viewRow : getSelectedRows()) {
-                selectedModelRows.add(convertRowIndexToModel(viewRow));
+        if (editor == null || getEditingRow() < 0 || getEditingColumn() < 0) {
+            return;
+        }
+        int modelColumn = convertColumnIndexToModel(getEditingColumn());
+        int[] selectedColumns = getSelectedColumns();
+        int leadColumn = getColumnModel().getSelectionModel().getLeadSelectionIndex();
+        List<Integer> selectedRows = captureSelectedModelRows();
+        int leadRow = captureLeadModelRow();
+        List<Integer> rows = editedModelRows();
+        List<Object> values = new ArrayList<>();
+        if (editor instanceof ArithmeticCellEditor) {
+            ArithmeticCellEditor arithmetic = (ArithmeticCellEditor) editor;
+            rows = arithmetic.rows;
+            values = arithmetic.values;
+        }
+        else {
+            for (int row : rows) {
+                values.add(editor.getCellEditorValue());
             }
         }
-
-        super.editingStopped(event);
-
-        if (multiRowEditEnabled && selectedModelRows.size() > 1) {
+        if (rows == null || values == null) {
+            return;
+        }
+        JViewport viewport = getParent() instanceof JViewport ? (JViewport) getParent() : null;
+        Point position = viewport == null ? null : viewport.getViewPosition();
+        removeEditor();
+        multiRowEditInProgress = rows.size() > 1;
+        getSelectionModel().setValueIsAdjusting(true);
+        try {
             TableModel model = getModel();
-            for (int modelRow : selectedModelRows) {
-                if (modelRow != editingModelRow && model.isCellEditable(modelRow, modelColumn)) {
-                    model.setValueAt(value, modelRow, modelColumn);
+            for (int index = 0; index < rows.size(); index++) {
+                int modelRow = rows.get(index);
+                if (model.isCellEditable(modelRow, modelColumn)) {
+                    model.setValueAt(values.get(index), modelRow, modelColumn);
                 }
             }
-            repaint();
+            restoreSelectedModelRows(selectedRows, leadRow);
+            ListSelectionModel columns = getColumnModel().getSelectionModel();
+            columns.clearSelection();
+            for (int column : selectedColumns) {
+                columns.addSelectionInterval(column, column);
+            }
+            if (columns instanceof DefaultListSelectionModel && leadColumn >= 0) {
+                ((DefaultListSelectionModel) columns).moveLeadSelectionIndex(leadColumn);
+            }
         }
+        finally {
+            getSelectionModel().setValueIsAdjusting(false);
+            multiRowEditInProgress = false;
+            if (viewport != null) {
+                viewport.setViewPosition(position);
+            }
+        }
+        repaint();
+    }
+
+    @Override
+    protected void processMouseEvent(MouseEvent event) {
+        preserveSelectedRowsOnClick = multiRowEditEnabled
+                && event.getID() == MouseEvent.MOUSE_PRESSED
+                && SwingUtilities.isLeftMouseButton(event)
+                && isRowSelected(rowAtPoint(event.getPoint())) && getSelectedRowCount() > 1;
+        try {
+            super.processMouseEvent(event);
+        }
+        finally {
+            preserveSelectedRowsOnClick = false;
+        }
+    }
+
+    @Override
+    public void changeSelection(int row, int column, boolean toggle, boolean extend) {
+        // BasicTableUI selects the clicked cell after starting its editor. Keep the batch intact.
+        if (multiRowEditEnabled && (preserveSelectedRowsOnClick || isEditing() && getEditingRow() == row)
+                && !toggle && !extend && isRowSelected(row) && getSelectedRowCount() > 1) {
+            getColumnModel().getSelectionModel().setSelectionInterval(column, column);
+            if (getSelectionModel() instanceof DefaultListSelectionModel) {
+                ((DefaultListSelectionModel) getSelectionModel()).moveLeadSelectionIndex(row);
+            }
+            return;
+        }
+        super.changeSelection(row, column, toggle, extend);
     }
     @Override
     protected void paintComponent(Graphics graphics) {
@@ -399,6 +577,7 @@ public class AutoSelectTextTable extends JTable {
     }
 
     public void autoFitColumnsToViewport() {
+        installPersistentColumnWidths();
         int columnCount = getColumnCount();
         if (columnCount == 0) {
             return;
@@ -464,6 +643,7 @@ public class AutoSelectTextTable extends JTable {
             tableColumn.setPreferredWidth(widths[column]);
             tableColumn.setWidth(widths[column]);
         }
+        TableUtils.saveColumnWidths(this);
         revalidate();
         repaint();
     }
@@ -476,6 +656,7 @@ public class AutoSelectTextTable extends JTable {
                 Math.max(80, (int) (viewportWidth * 0.65)));
         column.setPreferredWidth(width);
         column.setWidth(width);
+        TableUtils.saveColumnWidths(this);
         revalidate();
         repaint();
     }

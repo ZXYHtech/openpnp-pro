@@ -110,7 +110,13 @@ public class ImageCapture extends CvStage {
         }
         try {
             // Light, settle and capture the image. Keep the lights on for possible averaging.
-            camera.actuateLightBeforeCapture((defaultLight ? null : getLight()));
+            long lightStarted = System.nanoTime();
+            try {
+                camera.actuateLightBeforeCapture((defaultLight ? null : getLight()));
+            }
+            finally {
+                org.openpnp.machine.reference.vision.BottomVisionTiming.lighting(System.nanoTime() - lightStarted);
+            }
             try {
                 BufferedImage bufferedImage = camera.settleAndCapture(settleOption); 
                 // Remember the last captured image. This specifically records the native camera image, 
@@ -139,7 +145,13 @@ public class ImageCapture extends CvStage {
             }
             finally {
                 // Always switch off the light. 
-                camera.actuateLightAfterCapture();
+                long lightFinished = System.nanoTime();
+                try {
+                    camera.actuateLightAfterCapture();
+                }
+                finally {
+                    org.openpnp.machine.reference.vision.BottomVisionTiming.lighting(System.nanoTime() - lightFinished);
+                }
             }
         }
         catch (Exception e) {

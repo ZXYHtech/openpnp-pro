@@ -85,6 +85,7 @@ import org.openpnp.gui.components.ExistingBoardOrPanelDialog;
 import org.openpnp.gui.components.reticle.BoardPlacementReticle;
 import org.openpnp.gui.processes.MultiPlacementBoardLocationProcess;
 import org.openpnp.gui.support.ActionGroup;
+import org.openpnp.gui.support.BottomVisionRecoveryDialog;
 import org.openpnp.gui.support.CustomBooleanRenderer;
 import org.openpnp.gui.support.MonospacedFontTableCellRenderer;
 import org.openpnp.gui.support.MonospacedFontWithAffineStatusTableCellRenderer;
@@ -180,7 +181,7 @@ public class JobPanel extends JPanel {
     private JobProcessor jobProcessor;
     private final JobTelemetryManager telemetryManager;
     
-    private State state = State.Stopped;
+    private volatile State state = State.Stopped;
     private volatile boolean pauseWhenNozzlesEmptyRequested;
     
     public JobPanel(Configuration configuration, MainFrame frame) {
@@ -544,7 +545,8 @@ public class JobPanel extends JPanel {
             setPauseWhenNozzlesEmptyRequested(false);
         }
         telemetryManager.stateChanged(newState.name(), job);
-        updateJobActions();
+        if (SwingUtilities.isEventDispatchThread()) { updateJobActions(); }
+        else { SwingUtilities.invokeLater(this::updateJobActions); }
     }
 
     public boolean isJobInMotion() {
@@ -553,10 +555,19 @@ public class JobPanel extends JPanel {
 
     private void setPauseWhenNozzlesEmptyRequested(boolean requested) {
         pauseWhenNozzlesEmptyRequested = requested;
-        pauseWhenNozzlesEmptyAction.putValue(Action.SELECTED_KEY, requested);
-        pauseWhenNozzlesEmptyAction.putValue(Action.SHORT_DESCRIPTION, requested
-                ? "已请求：完成吸嘴上的物料贴装后暂停；再次点击可取消"
-                : "完成所有吸嘴上的物料贴装，确认吸嘴为空后暂停");
+        if (jobProcessor instanceof ReferencePnpJobProcessor) {
+            ((ReferencePnpJobProcessor) jobProcessor).requestPauseWhenNozzlesEmpty(requested);
+        }
+        Runnable update = () -> {
+            boolean armed = pauseWhenNozzlesEmptyRequested;
+            pauseWhenNozzlesEmptyAction.putValue(Action.SELECTED_KEY, armed);
+            pauseWhenNozzlesEmptyAction.putValue(Action.NAME, armed ? "已预约：本轮贴完后暂停" : "本轮贴完后暂停");
+            pauseWhenNozzlesEmptyAction.putValue(Action.SHORT_DESCRIPTION, armed
+                    ? "请求已生效：贴完当前吸嘴物料即暂停，不再取下一轮；再次点击可取消"
+                    : "可提前预约：贴完当前吸嘴物料即暂停，不再取下一轮");
+        };
+        if (SwingUtilities.isEventDispatchThread()) { update.run(); }
+        else { SwingUtilities.invokeLater(update); }
     }
 
     private boolean shouldPauseWithEmptyNozzles() {
@@ -1113,6 +1124,7 @@ public class JobPanel extends JPanel {
             } while (state == State.Running);
             
             if (state == State.Pausing) {
+                motionPlanner.waitForCompletion(null, org.openpnp.spi.MotionPlanner.CompletionType.WaitForStillstand);
                 setState(State.Paused);
             }
 
@@ -1153,58 +1165,49 @@ public class JobPanel extends JPanel {
     }
 
     private boolean showBottomVisionRecovery(JobProcessorException exception) {
-        if (!(jobProcessor instanceof ReferencePnpJobProcessor)
-                || !(exception.getSource() instanceof Part)
-                || !(exception.getSecondarySource() instanceof Nozzle)) {
+        if (!(jobProcessor instanceof ReferencePnpJobProcessor)) {
             return false;
         }
 
         ReferencePnpJobProcessor processor = (ReferencePnpJobProcessor) jobProcessor;
-        Nozzle nozzle = (Nozzle) exception.getSecondarySource();
-        if (!processor.canRecoverFailedAlignment(nozzle)) {
+        Nozzle nozzle = exception.getSource() instanceof Nozzle ? (Nozzle) exception.getSource()
+                : exception.getSecondarySource() instanceof Nozzle ? (Nozzle) exception.getSecondarySource() : null;
+        Part part = processor.getFailedAlignmentPart(nozzle);
+        if (part == null) {
             return false;
         }
-        Part part = (Part) exception.getSource();
-        Object[] options = {
-                "Discard + Re-pick",
-                "Retry Vision",
-                "Keep Paused",
-                "Abort Job",
-                "Details"
-        };
-        String message = "Bottom-vision alignment failed for " + part.getId()
-                + " on " + nozzle.getName() + ".\n\n"
-                + exception.getMessage() + "\n\nChoose a safe recovery action:";
-        int choice = JOptionPane.showOptionDialog(getTopLevelAncestor(), message,
-                "Bottom Vision Recovery", JOptionPane.DEFAULT_OPTION,
-                JOptionPane.WARNING_MESSAGE, null, options, options[0]);
+        BottomVisionRecoveryDialog.Choice choice = BottomVisionRecoveryDialog.show(
+                getTopLevelAncestor(), part, nozzle, exception);
 
-        if (choice == 0) {
+        if (choice == BottomVisionRecoveryDialog.Choice.REPICK
+                || choice == BottomVisionRecoveryDialog.Choice.DISCARD_AND_SKIP) {
+            boolean skip = choice == BottomVisionRecoveryDialog.Choice.DISCARD_AND_SKIP;
+            String action = skip ? "抛料并跳过" : "重新拾取";
             UiUtils.submitUiMachineTask(
-                    () -> processor.discardAndRequeueFailedAlignment(nozzle),
+                    () -> skip ? processor.discardAndSkipFailedAlignment(nozzle)
+                            : processor.repickFailedAlignment(nozzle),
                     requeued -> {
                         if (Boolean.TRUE.equals(requeued)) {
                             jobResume();
                         }
                         else {
-                            UiUtils.showError(new Exception(
-                                    "The failed alignment is no longer active; nothing was discarded."));
+                            UiUtils.showError(getTopLevelAncestor(), action + "未执行",
+                                    new Exception("当前识别失败的器件状态已改变，未执行抛料、跳过或重新拾取。"));
                         }
                     },
                     failure -> UiUtils.showError(getTopLevelAncestor(),
-                            "Bottom Vision Recovery", failure));
+                            action + "失败，任务保持暂停",
+                            new Exception(skip ? "未能完成抛料，任务保持暂停。请检查机器状态后再继续。"
+                                    : "未能完成重新拾取，任务保持暂停。请检查供料、吸嘴和取料检测后再继续。", failure)));
         }
-        else if (choice == 1) {
+        else if (choice == BottomVisionRecoveryDialog.Choice.RETRY_VISION) {
             jobResume();
         }
-        else if (choice == 3) {
+        else if (choice == BottomVisionRecoveryDialog.Choice.ABORT) {
             setState(State.Stopping);
             jobAbort();
         }
-        else if (choice == 4) {
-            UiUtils.showError(getTopLevelAncestor(), "Bottom Vision Details", exception);
-        }
-        // Keep Paused and closing the dialog intentionally leave the processor paused.
+        // Keeping paused or closing the dialog must not resume the machine.
         return true;
     }
     private void selectJobProcessorExceptionSource(Object source,boolean primary) {
@@ -1358,7 +1361,7 @@ public class JobPanel extends JPanel {
     };
 
     public final Action pauseWhenNozzlesEmptyAction = new AbstractAction(
-            "吸嘴清空后暂停", Icons.pauseWhenNozzlesEmpty) {
+            "本轮贴完后暂停", Icons.pauseWhenNozzlesEmpty) {
         {
             putValue(SHORT_DESCRIPTION,
                     "完成所有吸嘴上的物料贴装，确认吸嘴为空后暂停");
@@ -1371,13 +1374,8 @@ public class JobPanel extends JPanel {
             if (state != State.Running) {
                 return;
             }
-            if (shouldPauseImmediatelyWhenNozzlesEmpty(state, configuration.getMachine())) {
-                // With no carried part there is nothing to drain. Behave exactly like the normal
-                // pause button instead of arming a request that can appear to do nothing.
-                setPauseWhenNozzlesEmptyRequested(false);
-                setState(State.Pausing);
-                return;
-            }
+            // The processor checks emptiness at step boundaries. An EDT snapshot can see an empty
+            // nozzle midway through a pick, before that step has recorded the carried part.
             setPauseWhenNozzlesEmptyRequested(!pauseWhenNozzlesEmptyRequested);
         }
     };

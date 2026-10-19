@@ -322,7 +322,15 @@ public class GcodeDriver extends AbstractReferenceDriver implements Named {
     protected LinkedBlockingQueue<AxesLocation> reportedLocationsQueue = new LinkedBlockingQueue<>();
     protected LinkedBlockingQueue<Line> receivedConfirmationsQueue = new LinkedBlockingQueue<>();
 
-    protected Line errorResponse;
+    protected volatile Line errorResponse;
+    private volatile ControllerFaultException controllerFault;
+
+    protected final void checkControllerFault() throws ControllerFaultException {
+        ControllerFaultException fault = controllerFault;
+        if (fault != null) {
+            throw fault;
+        }
+    }
     private boolean motionPending;
 
     private PrintWriter gcodeLogger;
@@ -538,12 +546,13 @@ public class GcodeDriver extends AbstractReferenceDriver implements Named {
      * @throws Exception
      */
     protected void connectThreads() throws Exception {
+        errorResponse = null;
+        controllerFault = null;
+        receivedConfirmationsQueue = new LinkedBlockingQueue<>();
+        reportedLocationsQueue = new LinkedBlockingQueue<>();
         readerThread = new ReaderThread();
         readerThread.setDaemon(true);
         readerThread.start();
-        errorResponse = null;
-        receivedConfirmationsQueue = new LinkedBlockingQueue<>();
-        reportedLocationsQueue = new LinkedBlockingQueue<>();
     }
 
     @Override
@@ -791,7 +800,15 @@ public class GcodeDriver extends AbstractReferenceDriver implements Named {
         if (timeout == -1) {
             timeout = infinityTimeoutMilliseconds;
         }
-        AxesLocation lastReportedLocation = reportedLocationsQueue.poll(timeout, TimeUnit.MILLISECONDS);
+        long deadline = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(timeout);
+        AxesLocation lastReportedLocation;
+        do {
+            checkControllerFault();
+            long remaining = deadline - System.nanoTime();
+            lastReportedLocation = reportedLocationsQueue.poll(Math.max(1, Math.min(50,
+                    TimeUnit.NANOSECONDS.toMillis(remaining))), TimeUnit.MILLISECONDS);
+        } while (lastReportedLocation == null && System.nanoTime() < deadline);
+        checkControllerFault();
         if (lastReportedLocation != null) {
             Logger.trace("{} got lastReportedLocation {}", getName(), lastReportedLocation);
             return lastReportedLocation;
@@ -1278,6 +1295,7 @@ public class GcodeDriver extends AbstractReferenceDriver implements Named {
 
     protected Line waitForConfirmation(String command, long timeout)
             throws Exception {
+        checkControllerFault();
         if (getCommand(null, CommandType.COMMAND_CONFIRM_REGEX) == null) {
            Logger.warn(getName()+" configuration error: COMMAND_CONFIRM_REGEX missing. Not waiting for confirmation.");
            return null;
@@ -1287,6 +1305,7 @@ public class GcodeDriver extends AbstractReferenceDriver implements Named {
             timeout = infinityTimeoutMilliseconds;
         }
         Line receivedConfirmation = receivedConfirmationsQueue.poll(timeout, TimeUnit.MILLISECONDS);
+        checkControllerFault();
         if (receivedConfirmation != null) {
             Logger.trace("[{}] confirmed {}", getCommunications().getConnectionName(), command);
             return receivedConfirmation;
@@ -1296,6 +1315,7 @@ public class GcodeDriver extends AbstractReferenceDriver implements Named {
     }
 
     protected void bailOnError() throws Exception {
+        checkControllerFault();
         if (errorResponse != null) {
             Line error = errorResponse; 
             errorResponse = null;
@@ -1337,7 +1357,7 @@ public class GcodeDriver extends AbstractReferenceDriver implements Named {
                 }
                 return responses;
             }
-            Line response = responseQueue.poll(Math.max(1, t1 - System.currentTimeMillis()), TimeUnit.MILLISECONDS);
+            Line response = responseQueue.poll(Math.max(1, Math.min(50, t1 - System.currentTimeMillis())), TimeUnit.MILLISECONDS);
             if (response != null) {
                 responses.add(response);
                 continue;
@@ -1550,13 +1570,22 @@ public class GcodeDriver extends AbstractReferenceDriver implements Named {
      * @param line
      */
     protected void processResponse(Line line) {
-        String regex = getCommand(null, CommandType.COMMAND_CONFIRM_REGEX);
-        if (regex != null && line.getLine().matches(regex)) {
-            receivedConfirmationsQueue.add(line);
+        String text = line.getLine().trim();
+        String regex = getCommand(null, CommandType.COMMAND_ERROR_REGEX);
+        // These standard firmware errors must work even in older profiles with
+        // no error regex. Never accept an error as a broad confirmation match.
+        if (text.equals("!!") || text.matches("(?i)^(?:error|alarm)\\s*:.*")
+                || (regex != null && text.matches(regex))) {
+            if (controllerFault == null) {
+                controllerFault = new ControllerFaultException(getCommunications().getConnectionName(), text);
+                Logger.error(controllerFault.getMessage());
+            }
+            receivedConfirmationsQueue.offer(line); // wake a synchronous waiter
+            return;
         }
-        regex = getCommand(null, CommandType.COMMAND_ERROR_REGEX);
-        if (regex != null && line.getLine().matches(regex)) {
-            errorResponse = line;
+        regex = getCommand(null, CommandType.COMMAND_CONFIRM_REGEX);
+        if (regex != null && text.matches(regex)) {
+            receivedConfirmationsQueue.add(line);
         }
         processPositionReport(line);
     }

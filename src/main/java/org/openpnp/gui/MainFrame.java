@@ -640,6 +640,7 @@ public class MainFrame extends JFrame {
         mnWindows.add(new JMenuItem(editThemeAction));
         mnWindows.add(new JMenuItem(floatingCameraSettingsAction));
         mnWindows.add(new JMenuItem(backupRestoreAction));
+        mnWindows.add(new JMenuItem(stencilFixtureAction));
         mnWindows.addSeparator();
         JCheckBoxMenuItem experimentalModeItem = new JCheckBoxMenuItem("实验模式");
         experimentalModeItem.setSelected(
@@ -661,6 +662,7 @@ public class MainFrame extends JFrame {
         experimentalFeaturesMenu.add(new JMenuItem(flyingVisionCenterAction));
         experimentalFeaturesMenu.add(new JMenuItem(cameraDiagnosticsAction));
         experimentalFeaturesMenu.add(new JMenuItem(safetyWorkbenchAction));
+        experimentalFeaturesMenu.add(new JMenuItem(stencilFixtureAction));
         experimentalFeaturesMenu.setVisible(
                 ExperimentalMotionCenterDialog.isExperimentalModeEnabled());
         mnWindows.add(experimentalFeaturesMenu);
@@ -1969,6 +1971,25 @@ public class MainFrame extends JFrame {
         @Override
         public void actionPerformed(ActionEvent event) {
             new ExperimentalMotionCenterDialog(MainFrame.this, configuration).setVisible(true);
+        }
+    };
+
+    private StencilFixtureDialog stencilFixtureDialog;
+    private Action stencilFixtureAction = new AbstractAction("钢网夹具设计...") {
+        @Override
+        public void actionPerformed(ActionEvent event) {
+            try {
+                if (stencilFixtureDialog == null || !stencilFixtureDialog.isDisplayable()) {
+                    stencilFixtureDialog = new StencilFixtureDialog(MainFrame.this,
+                            configuration.getConfigurationDirectory().toPath());
+                }
+                stencilFixtureDialog.setVisible(true);
+                stencilFixtureDialog.toFront();
+            }
+            catch (Exception e) {
+                JOptionPane.showMessageDialog(MainFrame.this, e.getMessage(), "钢网夹具",
+                        JOptionPane.ERROR_MESSAGE);
+            }
         }
     };
 

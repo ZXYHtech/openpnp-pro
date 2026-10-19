@@ -18,6 +18,7 @@ import org.openpnp.gui.support.Wizard;
 import org.openpnp.machine.reference.ReferenceNozzleTip.VacuumMeasurementMethod;
 import org.openpnp.machine.reference.axis.ReferenceControllerAxis;
 import org.openpnp.machine.reference.camera.ReferenceCamera;
+import org.openpnp.machine.reference.safety.DynamicSafeMotionPlanner;
 import org.openpnp.machine.reference.solutions.ActuatorSolutions;
 import org.openpnp.machine.reference.wizards.ReferenceNozzleCameraOffsetWizard;
 import org.openpnp.machine.reference.wizards.ReferenceNozzleCompatibleNozzleTipsWizard;
@@ -345,7 +346,7 @@ public class ReferenceNozzle extends AbstractNozzle implements HeadMountable {
             Length partHeight = getSafePartHeight(feeder.getPart());
             pickLocation = pickLocation.add(new Location(partHeight.getUnits(), 0, 0, partHeight.getValue(), 0));
         }
-        MovableUtils.moveToLocationAtSafeZ(this, pickLocation);
+        MovableUtils.moveToFeederPickLocation(this, pickLocation, feeder);
     }
 
     @Override
@@ -584,7 +585,8 @@ public class ReferenceNozzle extends AbstractNozzle implements HeadMountable {
                             calibrationNozzleTip.getCalibration().calibrate(this, true, false);
                         }
                         catch (Exception e) {
-                            if (calibrationNozzleTip.getCalibration().isFailHoming()) {
+                            if (calibrationNozzleTip.getCalibration().isFailHoming()
+                                    || org.openpnp.machine.reference.driver.ControllerFaultException.causedBy(e)) {
                                 throw e; 
                             }
                             else {
@@ -606,6 +608,12 @@ public class ReferenceNozzle extends AbstractNozzle implements HeadMountable {
 
     @Override
     public void loadNozzleTip(NozzleTip nozzleTip, boolean withCalibration) throws Exception {
+        try (DynamicSafeMotionPlanner.NozzleTipChangeScope ignored = DynamicSafeMotionPlanner.suspendForNozzleTipChange()) {
+            loadNozzleTipUncoordinated(nozzleTip, withCalibration);
+        }
+    }
+
+    private void loadNozzleTipUncoordinated(NozzleTip nozzleTip, boolean withCalibration) throws Exception {
         // if the requested nozzle-tip is already loaded, skip the load step, but continue as calibration might be required.
         if (this.nozzleTip != nozzleTip) {
             if (getPart() != null) {
@@ -747,6 +755,12 @@ public class ReferenceNozzle extends AbstractNozzle implements HeadMountable {
     
     @Override
     public void unloadNozzleTip() throws Exception {
+        try (DynamicSafeMotionPlanner.NozzleTipChangeScope ignored = DynamicSafeMotionPlanner.suspendForNozzleTipChange()) {
+            unloadNozzleTipUncoordinated();
+        }
+    }
+
+    private void unloadNozzleTipUncoordinated() throws Exception {
         if (getPart() != null) {
             throw new Exception("Nozzle "+getName()+" still has a part loaded. Please discard first.");
         }

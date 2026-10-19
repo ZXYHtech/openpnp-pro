@@ -25,6 +25,34 @@ class FixedMarkerUiTest {
     @TempDir
     Path temporary;
 
+    @Test void recordingBecomesAvailableAfterHomingWithoutReopeningTheDialog() throws Exception {
+        org.junit.jupiter.api.Assumptions.assumeFalse(GraphicsEnvironment.isHeadless());
+        Configuration.initialize(temporary.toFile());
+        org.openpnp.corexy.precision.PrecisionRuntime.deactivate();
+        org.openpnp.machine.reference.ReferenceMachine machine = new org.openpnp.machine.reference.ReferenceMachine();
+        Configuration.get().setMachine(machine);
+        FixedMarkerDialog[] dialog = {null};
+        try {
+            SwingUtilities.invokeAndWait(() -> {
+                try {
+                    dialog[0] = new FixedMarkerDialog(null, Configuration.get());
+                    assertFalse(((JButton) field(dialog[0], "record")).isEnabled());
+                }
+                catch (Exception failure) { throw new IllegalStateException(failure); }
+            });
+            machine.setEnabled(true);
+            machine.setHomed(true); // State notification only; no Home operation or motion is run.
+            SwingUtilities.invokeAndWait(() -> {
+                try { assertTrue(((JButton) field(dialog[0], "record")).isEnabled()); }
+                catch (Exception failure) { throw new IllegalStateException(failure); }
+            });
+        }
+        finally {
+            SwingUtilities.invokeAndWait(() -> { if (dialog[0] != null) { dialog[0].dispose(); } });
+            machine.close();
+        }
+    }
+
     @Test
     void animationShowsExactlyFiveReferencesWithHomeAndAlignsEverySelectedPoint() throws Exception {
         SwingUtilities.invokeAndWait(() -> {

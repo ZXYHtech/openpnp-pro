@@ -121,6 +121,12 @@ public abstract class AbstractNozzle extends AbstractHeadMountable implements No
         return part;
     }
 
+    @Override
+    public void clearPartForRepick() {
+        setPart(null);
+        setPartsFeeder(null);
+    }
+
     protected void setPartsFeeder(Feeder feeder) {
         Object oldValue = this.partsFeeder;
         this.partsFeeder = feeder;

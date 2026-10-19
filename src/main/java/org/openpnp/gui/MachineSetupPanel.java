@@ -24,6 +24,7 @@ import java.awt.Component;
 import java.awt.Dimension;
 import java.awt.FlowLayout;
 import java.awt.Font;
+import java.awt.Point;
 import java.awt.event.ActionEvent;
 import java.beans.IndexedPropertyChangeEvent;
 import java.beans.PropertyChangeEvent;
@@ -35,6 +36,10 @@ import java.util.Enumeration;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Locale;
+import java.util.LinkedHashSet;
+import java.util.IdentityHashMap;
+import java.util.Map;
+import java.util.Set;
 import java.util.prefs.Preferences;
 
 import javax.swing.AbstractAction;
@@ -50,6 +55,7 @@ import javax.swing.JTabbedPane;
 import javax.swing.JTextField;
 import javax.swing.JToolBar;
 import javax.swing.JTree;
+import javax.swing.JViewport;
 import javax.swing.SwingUtilities;
 import javax.swing.event.ChangeEvent;
 import javax.swing.event.ChangeListener;
@@ -88,8 +94,14 @@ public class MachineSetupPanel extends JPanel implements WizardContainer {
     private JTree tree;
     private DefaultTreeModel treeModel;
     private JTabbedPane tabbedPane;
-    private JTabbedPane navigationTabs;
-    private JPanel tilePanel;
+    private javax.swing.JComboBox<String> navigationScope;
+    private final JButton favorite = new JButton("☆ 收藏当前");
+    private final java.util.Set<String> favorites = new java.util.LinkedHashSet<>();
+    private final java.util.List<String> recent = new ArrayList<>();
+    private NavigationState navigationBeforeSearch;
+    private final Map<PropertySheetHolderTreeNode, Boolean> pendingTreeChanges = new IdentityHashMap<>();
+    private boolean treeRefreshQueued;
+    private boolean filteringNavigation;
     private JLabel resultCountLabel;
     private JLabel breadcrumbLabel;
     private JToolBar toolBar;
@@ -109,6 +121,10 @@ public class MachineSetupPanel extends JPanel implements WizardContainer {
 
     public MachineSetupPanel() {
         setLayout(new BorderLayout(0, 0));
+        favorites.addAll(Arrays.asList(prefs.get("navigation.favorites", "").split("\n")));
+        recent.addAll(Arrays.asList(prefs.get("navigation.recent", "").split("\n")));
+        favorites.remove("");
+        recent.remove("");
 
         JPanel panel = new JPanel();
         add(panel, BorderLayout.NORTH);
@@ -161,31 +177,65 @@ public class MachineSetupPanel extends JPanel implements WizardContainer {
         });
         add(splitPane, BorderLayout.CENTER);
 
-        navigationTabs = new JTabbedPane(JTabbedPane.TOP);
-        splitPane.setLeftComponent(navigationTabs);
-
-        tilePanel = new JPanel(new WrapLayout(FlowLayout.LEFT, 8, 8));
-        tilePanel.setBorder(BorderFactory.createEmptyBorder(4, 4, 4, 4));
-        JScrollPane tileScrollPane = new JScrollPane(tilePanel);
-        tileScrollPane.setBorder(BorderFactory.createEmptyBorder());
-        JPanel tileContainer = new JPanel(new BorderLayout());
+        JPanel navigation = new JPanel(new BorderLayout(4, 6));
+        splitPane.setLeftComponent(navigation);
+        JPanel shortcuts = new JPanel(new BorderLayout(4, 0));
+        navigationScope = new javax.swing.JComboBox<>(new String[] {"全部配置", "收藏", "最近访问"});
+        shortcuts.add(navigationScope, BorderLayout.CENTER);
+        shortcuts.add(favorite, BorderLayout.EAST);
+        navigation.add(shortcuts, BorderLayout.NORTH);
         resultCountLabel = new JLabel("正在载入机器配置...");
         resultCountLabel.setBorder(BorderFactory.createEmptyBorder(5, 8, 5, 8));
-        tileContainer.add(resultCountLabel, BorderLayout.NORTH);
-        tileContainer.add(tileScrollPane, BorderLayout.CENTER);
-        navigationTabs.addTab("板块", tileContainer);
+        navigation.add(resultCountLabel, BorderLayout.SOUTH);
 
         JScrollPane scrollPane = new JScrollPane();
-        navigationTabs.addTab("树状", scrollPane);
+        navigation.add(scrollPane, BorderLayout.CENTER);
 
         tree = new JTree();
         tree.getSelectionModel().setSelectionMode(TreeSelectionModel.SINGLE_TREE_SELECTION);
         tree.setCellRenderer(treeCellRenderer);
+        tree.setShowsRootHandles(true);
+        tree.setRowHeight(28);
+        javax.swing.ToolTipManager.sharedInstance().registerComponent(tree);
         scrollPane.setViewportView(tree);
+        navigationScope.addActionListener(event -> search());
+        favorite.addActionListener(event -> {
+            TreePath path = tree.getSelectionPath();
+            if (path == null) { return; }
+            String key = ((PropertySheetHolderTreeNode) path.getLastPathComponent()).navigationKey();
+            if (!favorites.remove(key) && favorites.size() < 100) { favorites.add(key); }
+            prefs.put("navigation.favorites", String.join("\n", favorites));
+            updateFavorite();
+            if (navigationScope.getSelectedIndex() == 1) { search(); }
+        });
+        searchTextField.setToolTipText("搜索全部层级的名称、路径、类型与参数名；支持空格分词。Ctrl+F 定位搜索，Esc 清空。");
+        getInputMap(WHEN_ANCESTOR_OF_FOCUSED_COMPONENT).put(
+                javax.swing.KeyStroke.getKeyStroke("ctrl F"), "findConfiguration");
+        getActionMap().put("findConfiguration", new AbstractAction() {
+            @Override public void actionPerformed(ActionEvent event) {
+                searchTextField.requestFocusInWindow();
+                searchTextField.selectAll();
+            }
+        });
+        searchTextField.getInputMap().put(javax.swing.KeyStroke.getKeyStroke("ESCAPE"), "clearSearch");
+        searchTextField.getActionMap().put("clearSearch", new AbstractAction() {
+            @Override public void actionPerformed(ActionEvent event) { searchTextField.setText(""); }
+        });
+        searchTextField.addActionListener(event -> {
+            for (int row = 0; row < tree.getRowCount(); row++) {
+                PropertySheetHolderTreeNode node = (PropertySheetHolderTreeNode) tree.getPathForRow(row).getLastPathComponent();
+                if (directNavigationMatch(node, searchTextField.getText())) {
+                    tree.setSelectionRow(row);
+                    tree.scrollRowToVisible(row);
+                    tree.requestFocusInWindow();
+                    break;
+                }
+            }
+        });
 
         tabbedPane = new JTabbedPane(JTabbedPane.TOP);
         JPanel detailPanel = new JPanel(new BorderLayout());
-        breadcrumbLabel = new JLabel("请选择左侧配置板块");
+        breadcrumbLabel = new JLabel("请选择左侧树中的配置；Ctrl+F 可快速搜索");
         breadcrumbLabel.setBorder(BorderFactory.createEmptyBorder(6, 10, 6, 10));
         detailPanel.add(breadcrumbLabel, BorderLayout.NORTH);
         detailPanel.add(tabbedPane, BorderLayout.CENTER);
@@ -205,7 +255,7 @@ public class MachineSetupPanel extends JPanel implements WizardContainer {
         tree.getSelectionModel().addTreeSelectionListener(new TreeSelectionListener() {
             @Override
             public void valueChanged(TreeSelectionEvent e) {
-                selectCurrentTreePath();
+                if (!filteringNavigation) { selectCurrentTreePath(); }
             }
         });
 
@@ -215,9 +265,12 @@ public class MachineSetupPanel extends JPanel implements WizardContainer {
 
             @Override
             public void configurationComplete(Configuration configuration) throws Exception {
+                if (treeModel != null && treeModel.getRoot() instanceof PropertySheetHolderTreeNode) {
+                    ((PropertySheetHolderTreeNode) treeModel.getRoot()).dispose();
+                }
                 tree.setModel(treeModel = new DefaultTreeModel(
                         new PropertySheetHolderTreeNode(Configuration.get().getMachine(), null)));
-                rebuildTiles();
+                rebuildNavigation();
                 for (int i = 1; i < tree.getRowCount(); i++) {
                   if (cbExp.isSelected()) {
                     tree.expandRow(i);
@@ -231,54 +284,160 @@ public class MachineSetupPanel extends JPanel implements WizardContainer {
     }
 
     private void search() {
-        rebuildTiles();
+        rebuildNavigation();
     }
 
-    private void rebuildTiles() {
-        if (tilePanel == null) {
-            return;
-        }
-        tilePanel.removeAll();
-        if (treeModel == null || !(treeModel.getRoot() instanceof PropertySheetHolderTreeNode)) {
-            resultCountLabel.setText("机器配置尚未载入");
-            tilePanel.revalidate();
-            tilePanel.repaint();
-            return;
-        }
+    private void rebuildNavigation() {
+        if (treeModel == null || !(treeModel.getRoot() instanceof PropertySheetHolderTreeNode)) { return; }
+        rebuildNavigation(captureNavigation());
+    }
+
+    private void rebuildNavigation(NavigationState state) {
         String filter = searchTextField.getText();
-        List<PropertySheetHolderTreeNode> nodes = new ArrayList<>();
-        collectNodes((PropertySheetHolderTreeNode) treeModel.getRoot(), nodes);
-        int matches = 0;
-        for (PropertySheetHolderTreeNode node : nodes) {
-            String title = node.toString();
-            String path = node.getBreadcrumb();
-            String type = node.obj.getClass().getSimpleName();
-            if (!matchesNavigationFilter(filter, title, path, type)) {
-                continue;
+        boolean searching = !filter.trim().isEmpty() || navigationScope.getSelectedIndex() != 0;
+        if (searching && navigationBeforeSearch == null) {
+            navigationBeforeSearch = state;
+        }
+        PropertySheetHolderTreeNode root = (PropertySheetHolderTreeNode) treeModel.getRoot();
+        int count = updateVisibility(root, filter);
+        filteringNavigation = true;
+        try {
+            treeModel.reload();
+            NavigationState expanded = !searching && navigationBeforeSearch != null ? navigationBeforeSearch : state;
+            if (searching) {
+                for (int row = 0; row < tree.getRowCount(); row++) { tree.expandRow(row); }
             }
-            JButton card = new JButton("<html><b>" + escapeHtml(title)
-                    + "</b><br><font color='#808080'>" + escapeHtml(node.getParentBreadcrumb())
-                    + "</font></html>", node.obj.getPropertySheetHolderIcon());
-            card.setHorizontalAlignment(JButton.LEFT);
-            card.setVerticalAlignment(JButton.CENTER);
-            card.setFont(card.getFont().deriveFont(Font.PLAIN));
-            card.setPreferredSize(new Dimension(235, 70));
-            card.setMinimumSize(new Dimension(190, 64));
-            card.setToolTipText("<html>" + escapeHtml(path) + "<br>类型："
-                    + escapeHtml(type) + "</html>");
-            card.addActionListener(event -> tree.setSelectionPath(node.getTreePath()));
-            tilePanel.add(card);
-            matches++;
+            else {
+                for (int row = tree.getRowCount() - 1; row >= 0; row--) { tree.collapseRow(row); }
+                List<PropertySheetHolderTreeNode> nodes = new ArrayList<>();
+                collectNodes(root, nodes);
+                for (PropertySheetHolderTreeNode node : nodes) {
+                    if (expanded.expanded.contains(node.navigationKey())) { tree.expandPath(node.getTreePath()); }
+                }
+                navigationBeforeSearch = null;
+            }
+            TreePath selected = findVisiblePath(root, state.selected);
+            if (selected != null) { tree.setSelectionPath(selected); }
+            JViewport viewport = (JViewport) SwingUtilities.getAncestorOfClass(JViewport.class, tree);
+            if (viewport != null) {
+                Dimension size = tree.getPreferredSize(), extent = viewport.getExtentSize();
+                viewport.setViewPosition(new Point(Math.min(state.position.x, Math.max(0, size.width - extent.width)),
+                        Math.min(state.position.y, Math.max(0, size.height - extent.height))));
+            }
         }
-        resultCountLabel.setText((filter == null || filter.trim().isEmpty() ? "全部配置" : "搜索结果")
-                + "：" + matches + " 个板块");
-        if (matches == 0) {
-            JLabel empty = new JLabel("没有匹配项，请尝试设备名称、功能或类型关键词。");
-            empty.setBorder(BorderFactory.createEmptyBorder(18, 12, 18, 12));
-            tilePanel.add(empty);
+        finally {
+            filteringNavigation = false;
         }
-        tilePanel.revalidate();
-        tilePanel.repaint();
+        TreePath selected = tree.getSelectionPath();
+        PropertySheetHolder selectedHolder = selected == null ? null : ((PropertySheetHolderTreeNode) selected.getLastPathComponent()).obj;
+        if (selectedHolder != state.selectedHolder) { selectCurrentTreePath(); }
+        resultCountLabel.setText((searching ? "匹配配置：" : "全部配置：") + count
+                + (count == 0 ? "，请尝试名称或功能关键词" : " · 回车定位 / Esc 清空"));
+        refreshBreadcrumb();
+        updateFavorite();
+    }
+
+    private static final class NavigationState {
+        final Set<String> expanded = new LinkedHashSet<>();
+        String selected;
+        PropertySheetHolder selectedHolder;
+        Point position = new Point();
+    }
+
+    private NavigationState captureNavigation() {
+        NavigationState state = new NavigationState();
+        TreePath selected = tree.getSelectionPath();
+        if (selected != null) {
+            PropertySheetHolderTreeNode node = (PropertySheetHolderTreeNode) selected.getLastPathComponent();
+            state.selected = node.navigationKey();
+            state.selectedHolder = node.obj;
+        }
+        Enumeration<TreePath> paths = tree.getExpandedDescendants(new TreePath(treeModel.getRoot()));
+        if (paths != null) {
+            while (paths.hasMoreElements()) {
+                state.expanded.add(((PropertySheetHolderTreeNode) paths.nextElement().getLastPathComponent()).navigationKey());
+            }
+        }
+        JViewport viewport = (JViewport) SwingUtilities.getAncestorOfClass(JViewport.class, tree);
+        if (viewport != null) { state.position = viewport.getViewPosition(); }
+        return state;
+    }
+
+    private TreePath findVisiblePath(PropertySheetHolderTreeNode node, String key) {
+        if (node.navigationKey().equals(key)) { return node.getTreePath(); }
+        for (PropertySheetHolderTreeNode child : node.visibleChildren) {
+            TreePath path = findVisiblePath(child, key);
+            if (path != null) { return path; }
+        }
+        return null;
+    }
+
+    private void refreshBreadcrumb() {
+        TreePath selected = tree.getSelectionPath();
+        breadcrumbLabel.setText(selected == null ? "请选择左侧树中的配置；Ctrl+F 可快速搜索"
+                : "位置：" + ((PropertySheetHolderTreeNode) selected.getLastPathComponent()).getBreadcrumb());
+        breadcrumbLabel.setToolTipText(breadcrumbLabel.getText());
+    }
+
+    private void queueTreeChange(PropertySheetHolderTreeNode node, boolean structural) {
+        synchronized (pendingTreeChanges) {
+            pendingTreeChanges.put(node, structural || Boolean.TRUE.equals(pendingTreeChanges.get(node)));
+            if (treeRefreshQueued) { return; }
+            treeRefreshQueued = true;
+        }
+        SwingUtilities.invokeLater(this::refreshChangedNodes);
+    }
+
+    private void refreshChangedNodes() {
+        Map<PropertySheetHolderTreeNode, Boolean> changes;
+        synchronized (pendingTreeChanges) {
+            changes = new IdentityHashMap<>(pendingTreeChanges);
+            pendingTreeChanges.clear();
+            treeRefreshQueued = false;
+        }
+        if (treeModel == null || !(treeModel.getRoot() instanceof PropertySheetHolderTreeNode)) { return; }
+        PropertySheetHolderTreeNode root = (PropertySheetHolderTreeNode) treeModel.getRoot();
+        changes.entrySet().removeIf(change -> !change.getKey().isAttached(root));
+        if (changes.isEmpty()) { return; }
+        if (changes.containsValue(true)) {
+            NavigationState state = captureNavigation();
+            root.loadChildren();
+            rebuildNavigation(state);
+        }
+        else if (!searchTextField.getText().trim().isEmpty() || navigationScope.getSelectedIndex() != 0) {
+            rebuildNavigation();
+        }
+        else {
+            for (PropertySheetHolderTreeNode node : changes.keySet()) { treeModel.nodeChanged(node); }
+            refreshBreadcrumb();
+            updateFavorite();
+        }
+    }
+
+    private int updateVisibility(PropertySheetHolderTreeNode node, String filter) {
+        int matches = 0;
+        node.visibleChildren.clear();
+        for (PropertySheetHolderTreeNode child : node.children) {
+            int nested = updateVisibility(child, filter);
+            if (nested > 0) { node.visibleChildren.add(child); }
+            matches += nested;
+        }
+        if (directNavigationMatch(node, filter)) { matches++; }
+        return matches;
+    }
+
+    private boolean directNavigationMatch(PropertySheetHolderTreeNode node, String filter) {
+        int scope = navigationScope.getSelectedIndex();
+        return (scope == 0 || (scope == 1 ? favorites : recent).contains(node.navigationKey()))
+                && org.openpnp.gui.support.ConfigurationNavigationSearch.matches(filter, node.getBreadcrumb(), node.obj.getClass());
+    }
+
+    private void updateFavorite() {
+        TreePath path = tree.getSelectionPath();
+        favorite.setEnabled(path != null);
+        favorite.setText(path != null && favorites.contains(
+                ((PropertySheetHolderTreeNode) path.getLastPathComponent()).navigationKey())
+                ? "★ 取消收藏" : "☆ 收藏当前");
     }
 
     private void collectNodes(PropertySheetHolderTreeNode node,
@@ -327,8 +486,15 @@ public class MachineSetupPanel extends JPanel implements WizardContainer {
 
         TreePath path = tree.getSelectionPath();
         if (path != null) {
+            String key = ((PropertySheetHolderTreeNode) path.getLastPathComponent()).navigationKey();
+            recent.remove(key);
+            recent.add(0, key);
+            while (recent.size() > 12) { recent.remove(recent.size() - 1); }
+            prefs.put("navigation.recent", String.join("\n", recent));
+            updateFavorite();
             breadcrumbLabel.setText("位置：" + ((PropertySheetHolderTreeNode)
                     path.getLastPathComponent()).getBreadcrumb());
+            breadcrumbLabel.setToolTipText(breadcrumbLabel.getText());
             List<Object> pathsReverse = Arrays.asList(path.getPath());
             Collections.reverse(pathsReverse);
             for (Object o : pathsReverse) {
@@ -386,48 +552,96 @@ public class MachineSetupPanel extends JPanel implements WizardContainer {
     }
 
     public class PropertySheetHolderTreeNode implements TreeNode {
-        private final PropertySheetHolder obj;
+        private PropertySheetHolder obj;
         private final TreeNode parent;
         private final ArrayList<PropertySheetHolderTreeNode> children = new ArrayList<>();
+        private final ArrayList<PropertySheetHolderTreeNode> visibleChildren = new ArrayList<>();
+        private final PropertyChangeListener listener = event -> queueTreeChange(this, event instanceof IndexedPropertyChangeEvent);
+        private boolean listening;
 
         public PropertySheetHolderTreeNode(PropertySheetHolder obj, TreeNode parent) {
             this.obj = obj;
             this.parent = parent;
             loadChildren();
-            /**
-             * If the object we're creating a node for supports property change then we add
-             * a listener. When we get an indexed changed we refresh our children and
-             * when we get a non-indexed change we refresh ourself.
-             * 
-             * TODO: Note: Since we don't know which child got refreshed, we refresh them
-             * all and this causes the JTree to collapse all the other children. This sucks
-             * but there isn't a clean way to know which child changed without including the
-             * property name somewhere.
-             */
-            BeanUtils.addPropertyChangeListener(obj, (PropertyChangeListener) (e) -> {
-                SwingUtilities.invokeLater(() -> {
-                    if (e instanceof IndexedPropertyChangeEvent) {
-                        for (PropertySheetHolderTreeNode node : children) {
-                            node.loadChildren();
-                            treeModel.nodeStructureChanged(node);
-                        }
-                    }
-                    else {
-                        treeModel.nodeChanged(this);
-                    }
-                    rebuildTiles();
-                });
-            }); 
+            listening = BeanUtils.addPropertyChangeListener(obj, listener);
         }
 
         private void loadChildren() {
-            this.children.clear();
-            PropertySheetHolder[] children = obj.getChildPropertySheetHolders();
-            if (children != null) {
-                for (PropertySheetHolder child : children) {
-                    this.children.add(new PropertySheetHolderTreeNode(child, this));
+            List<PropertySheetHolderTreeNode> old = new ArrayList<>(children);
+            List<PropertySheetHolderTreeNode> next = new ArrayList<>();
+            PropertySheetHolder[] values = obj.getChildPropertySheetHolders();
+            if (values != null) {
+                for (PropertySheetHolder value : values) {
+                    PropertySheetHolderTreeNode reuse = null;
+                    for (PropertySheetHolderTreeNode node : old) {
+                        if (node.obj == value) {
+                            reuse = node;
+                            break;
+                        }
+                    }
+                    if (reuse == null) {
+                        for (PropertySheetHolderTreeNode node : old) {
+                            if (node.identity().equals(identity(value))) {
+                                reuse = node;
+                                break;
+                            }
+                        }
+                    }
+                    if (reuse == null) { reuse = new PropertySheetHolderTreeNode(value, this); }
+                    else {
+                        old.remove(reuse);
+                        if (reuse.obj != value) {
+                            reuse.detachListener();
+                            reuse.obj = value;
+                            reuse.listening = BeanUtils.addPropertyChangeListener(value, reuse.listener);
+                        }
+                        reuse.loadChildren();
+                    }
+                    next.add(reuse);
                 }
             }
+            for (PropertySheetHolderTreeNode node : old) { node.dispose(); }
+            children.clear();
+            children.addAll(next);
+            visibleChildren.clear();
+            visibleChildren.addAll(children);
+        }
+
+        private String identity() { return identity(obj); }
+
+        private String identity(PropertySheetHolder value) {
+            return value.getClass().getName() + ":" + (value instanceof org.openpnp.model.Identifiable
+                    ? ((org.openpnp.model.Identifiable) value).getId() : value.getPropertySheetHolderTitle());
+        }
+
+        private boolean isAttached(PropertySheetHolderTreeNode root) {
+            if (this == root) { return true; }
+            return parent instanceof PropertySheetHolderTreeNode
+                    && ((PropertySheetHolderTreeNode) parent).children.contains(this)
+                    && ((PropertySheetHolderTreeNode) parent).isAttached(root);
+        }
+
+        private void detachListener() {
+            if (!listening) { return; }
+            try {
+                obj.getClass().getMethod("removePropertyChangeListener", PropertyChangeListener.class).invoke(obj, listener);
+            }
+            catch (ReflectiveOperationException ignored) {
+            }
+            listening = false;
+        }
+
+        private void dispose() {
+            detachListener();
+            for (PropertySheetHolderTreeNode node : children) { node.dispose(); }
+        }
+
+        private String navigationKey() {
+            String identity = identity();
+            if (parent instanceof PropertySheetHolderTreeNode) {
+                identity = ((PropertySheetHolderTreeNode) parent).navigationKey() + "/" + identity;
+            }
+            return java.util.UUID.nameUUIDFromBytes(identity.getBytes(java.nio.charset.StandardCharsets.UTF_8)).toString();
         }
 
         public PropertySheetHolder getPropertySheetHolder() {
@@ -467,12 +681,12 @@ public class MachineSetupPanel extends JPanel implements WizardContainer {
 
         @Override
         public TreeNode getChildAt(int childIndex) {
-            return children.get(childIndex);
+            return visibleChildren.get(childIndex);
         }
 
         @Override
         public int getChildCount() {
-            return children.size();
+            return visibleChildren.size();
         }
 
         @Override
@@ -482,22 +696,22 @@ public class MachineSetupPanel extends JPanel implements WizardContainer {
 
         @Override
         public int getIndex(TreeNode node) {
-            return children.indexOf(node);
+            return visibleChildren.indexOf(node);
         }
 
         @Override
         public boolean getAllowsChildren() {
-            return children.size() > 0;
+            return !visibleChildren.isEmpty();
         }
 
         @Override
         public boolean isLeaf() {
-            return children.size() < 1;
+            return visibleChildren.isEmpty();
         }
 
         @Override
         public Enumeration children() {
-            return Collections.enumeration(children);
+            return Collections.enumeration(visibleChildren);
         }
 
         @Override
@@ -517,6 +731,7 @@ public class MachineSetupPanel extends JPanel implements WizardContainer {
                 PropertySheetHolderTreeNode node = (PropertySheetHolderTreeNode) value;
                 PropertySheetHolder psh = node.getPropertySheetHolder();
                 setIcon(psh.getPropertySheetHolderIcon());
+                setToolTipText(node.getBreadcrumb() + " · " + psh.getClass().getSimpleName());
             }
             return this;
         }

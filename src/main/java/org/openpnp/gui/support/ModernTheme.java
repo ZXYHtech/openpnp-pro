@@ -53,6 +53,10 @@ public final class ModernTheme {
         UIManager.put("SplitPane.dividerSize", 7);
         UIManager.put("Component.focusColor", accent);
         UIManager.put("ProgressBar.foreground", accent);
+        UIManager.put("ProgressBar.selectionForeground", contrastForeground(accent));
+        Color progressBackground = UIManager.getColor("ProgressBar.background");
+        UIManager.put("ProgressBar.selectionBackground", contrastForeground(
+                progressBackground == null ? panel : progressBackground));
         UIManager.put("TabbedPane.underlineColor", accent);
         UIManager.put("TabbedPane.selectedBackground", selection);
         UIManager.put("Separator.foreground", divider);
@@ -100,6 +104,19 @@ public final class ModernTheme {
 
     public static boolean isDark() {
         return luminance(surface(false)) < 0.45;
+    }
+
+    /** Choose readable text independently on the filled and unfilled portions of a progress bar. */
+    public static Color contrastForeground(Color background) {
+        if (background == null) { return Color.BLACK; }
+        double light = .2126 * linear(background.getRed()) + .7152 * linear(background.getGreen())
+                + .0722 * linear(background.getBlue());
+        return (light + .05) / .05 >= 1.05 / (light + .05) ? Color.BLACK : Color.WHITE;
+    }
+
+    private static double linear(int channel) {
+        double value = channel / 255.0;
+        return value <= .04045 ? value / 12.92 : Math.pow((value + .055) / 1.055, 2.4);
     }
 
     private static double luminance(Color color) {

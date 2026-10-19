@@ -654,7 +654,13 @@ public abstract class AbstractSettlingCamera extends AbstractCamera {
 
         try {
             // Make sure the camera (or its subject) stands still.
-            waitForCompletion(CompletionType.WaitForStillstand);
+            long motionStarted = System.nanoTime();
+            try {
+                waitForCompletion(CompletionType.WaitForStillstand);
+            }
+            finally {
+                org.openpnp.machine.reference.vision.BottomVisionTiming.motionWait(System.nanoTime() - motionStarted);
+            }
 
             if (settleMethod == null) {
                 // Method undetermined, probably created a new camera (no @Commit handler)

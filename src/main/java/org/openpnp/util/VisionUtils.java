@@ -121,7 +121,7 @@ public class VisionUtils {
     /**
      * Get an angle in the OpenPNP coordinate system from an angle in the camera pixel  
      * coordinate system. 
-     * The angle needs to be sign reversed to reflect the fact that the Z and Y axis are sign reversed.
+     * The direction is scaled by the calibrated X/Y units per pixel, then Y is reversed.
      * OpenPNP uses a coordinate system with Z pointing towards the viewer, Y pointing up. OpenCV
      * however uses one with Z pointing away from the viewer, Y pointing downwards. Right-handed
      * rotation must be sign-reversed.   
@@ -132,7 +132,31 @@ public class VisionUtils {
      * @return
      */
     public static double getPixelAngle(Camera camera, double angle) {
-        return -angle;
+        Location scale = camera == null ? null : camera.getUnitsPerPixelAtZ();
+        if (scale == null && camera != null) { scale = camera.getUnitsPerPixel(); }
+        return scale == null ? -angle : transformCameraAngle(angle, scale.getX(), scale.getY());
+    }
+
+    /** Inverse of getPixelAngle(): a physical angle to an OpenCV image direction. */
+    public static double getCameraAngle(Camera camera, double angle) {
+        Location scale = camera == null ? null : camera.getUnitsPerPixelAtZ();
+        if (scale == null && camera != null) { scale = camera.getUnitsPerPixel(); }
+        return scale == null ? -angle : transformCameraAngle(angle, scale.getY(), scale.getX());
+    }
+
+    private static double transformCameraAngle(double angle, double scaleX, double scaleY) {
+        // Preserve the established result for square pixels or missing calibration.
+        if (!Double.isFinite(angle) || !Double.isFinite(scaleX) || !Double.isFinite(scaleY)
+                || scaleX <= 0 || scaleY <= 0 || scaleX == scaleY) {
+            return -angle;
+        }
+        double normalized = Math.IEEEremainder(angle, 360);
+        double radians = Math.toRadians(normalized);
+        double largest = Math.max(scaleX, scaleY);
+        double corrected = Math.toDegrees(Math.atan2(-Math.sin(radians) * (scaleY / largest),
+                Math.cos(radians) * (scaleX / largest)));
+        // Retain full turns: +450 degrees maps near -450, rather than near -90.
+        return -angle + Math.IEEEremainder(corrected + normalized, 360);
     }
     
     public static List<Location> sortLocationsByDistance(final Location origin,
