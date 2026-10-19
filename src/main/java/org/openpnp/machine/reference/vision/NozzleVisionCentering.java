@@ -17,7 +17,6 @@ import org.openpnp.corexy.precision.ToolPointRuntime;
 import org.openpnp.machine.reference.ReferenceNozzle;
 import org.openpnp.machine.reference.ReferenceNozzleTipCalibration;
 import org.openpnp.model.Configuration;
-import org.openpnp.model.Length;
 import org.openpnp.model.LengthUnit;
 import org.openpnp.model.Location;
 import org.openpnp.spi.Camera;
@@ -25,10 +24,8 @@ import org.openpnp.spi.Nozzle;
 import org.openpnp.util.MovableUtils;
 import org.openpnp.util.OpenCvUtils;
 import org.openpnp.util.VisionUtils;
-import org.openpnp.vision.pipeline.CvPipeline;
-import org.openpnp.vision.pipeline.CvStage.Result;
-import org.opencv.core.KeyPoint;
-import org.opencv.core.RotatedRect;
+import org.opencv.core.Mat;
+import org.opencv.core.Point;
 
 /** Imaging-only center correction. Never changes head offsets or runout compensation. */
 public final class NozzleVisionCentering {
@@ -37,7 +34,7 @@ public final class NozzleVisionCentering {
     private static State state;
 
     static final class State {
-        int version = 1;
+        int version = 2;
         Map<String, Entry> entries = new LinkedHashMap<>();
     }
 
@@ -85,15 +82,22 @@ public final class NozzleVisionCentering {
 
     private static String signature(ReferenceNozzle nozzle, Camera camera) {
         return nozzle.getHeadOffsets() + "|" + camera.getLocation() + "|" + camera.getUnitsPerPixel()
-                + "|" + ToolPointRuntime.nativeSignature(nozzle) + "|"
                 + GSON.toJson(ToolPointRuntime.snapshot().get(nozzle.getId()));
     }
 
     private static synchronized State state() throws Exception {
         Path file = Configuration.get().getConfigurationDirectory().toPath().resolve("pro-nozzle-vision-centering.json");
-        if (!file.equals(loadedFrom)) {
+        if (!file.equals(loadedFrom) || state == null || state.version != 2) {
             State next = Files.exists(file) ? GSON.fromJson(Files.readString(file), State.class) : new State();
-            if (next == null || next.version != 1 || next.entries == null) {
+            if (next != null && next.version == 1) {
+                Path legacy = file.resolveSibling(file.getFileName() + ".v1.bak");
+                if (!Files.exists(legacy)) {
+                    Files.copy(file, legacy);
+                }
+                // Old records did not retain their native camera reference, so cannot be rebased safely.
+                next = new State();
+            }
+            if (next == null || next.version != 2 || next.entries == null) {
                 throw new Exception("吸嘴视觉调优文件格式无效，请恢复备份。");
             }
             for (Entry entry : next.entries.values()) {
@@ -132,9 +136,14 @@ public final class NozzleVisionCentering {
                     || camera != VisionUtils.getBottomVisionCamera()) {
                 return new Location(LengthUnit.Millimeters);
             }
+            if (nozzle.getCalibrationNozzleTip().getCalibration().isCalibrating()) {
+                return new Location(LengthUnit.Millimeters);
+            }
             Entry entry = state().entries.get(key(nozzle, camera));
             if (entry != null && entry.enabled && signature(nozzle, camera).equals(entry.signature)) {
-                return new Location(LengthUnit.Millimeters, entry.x, entry.y, 0, 0);
+                Location nativeOffset = ToolPointRuntime.replacesNative(nozzle) ? new Location(LengthUnit.Millimeters)
+                        : nozzle.getCalibrationNozzleTip().getCalibration().getCalibratedCameraOffset(nozzle, camera);
+                return new Location(LengthUnit.Millimeters, entry.x, entry.y, 0, 0).subtract(nativeOffset);
             }
             return new Location(LengthUnit.Millimeters);
         } catch (Exception failure) {
@@ -147,9 +156,12 @@ public final class NozzleVisionCentering {
         if (entry == null) {
             return "未调优";
         }
-        return !signature(nozzle, camera).equals(entry.signature) ? "配置或原校准已改变，请重新调优"
+        Location nativeOffset = ToolPointRuntime.replacesNative(nozzle) ? new Location(LengthUnit.Millimeters)
+                : nozzle.getCalibrationNozzleTip().getCalibration().getCalibratedCameraOffset(nozzle, camera);
+        Location effective = new Location(LengthUnit.Millimeters, entry.x, entry.y, 0, 0).subtract(nativeOffset);
+        return !signature(nozzle, camera).equals(entry.signature) ? "相机/吸嘴几何或工具补偿已改变，请重新调优"
                 : String.format(java.util.Locale.ROOT, "%s · X=%+.4f Y=%+.4f mm",
-                        entry.enabled ? "已启用" : "已停用", entry.x, entry.y);
+                        entry.enabled ? "已启用" : "已停用", effective.getX(), effective.getY());
     }
 
     public static synchronized void setEnabled(ReferenceNozzle nozzle, Camera camera, boolean enabled) throws Exception {
@@ -223,50 +235,44 @@ public final class NozzleVisionCentering {
         ReferenceNozzleTipCalibration calibration = nozzle.getCalibrationNozzleTip().getCalibration();
         Location target = calibration.getCalibrationLocation(camera, nozzle).derive(null, null, null, angle);
         nozzle.moveTo(target);
-        try (CvPipeline pipeline = new CvPipeline(calibration.getPipeline().toXmlStringPreservingRuntimeStageValues())) {
-            for (org.openpnp.vision.pipeline.CvStage stage : pipeline.getStages()) {
-                if (stage instanceof org.openpnp.vision.pipeline.stages.DetectCircularSymmetry) {
-                    org.openpnp.vision.pipeline.stages.DetectCircularSymmetry symmetry =
-                            (org.openpnp.vision.pipeline.stages.DetectCircularSymmetry) stage;
-                    symmetry.setSuperSampling(Math.max(4, symmetry.getSuperSampling()));
-                    symmetry.setSubSampling(Math.min(4, symmetry.getSubSampling()));
+        progress.accept(new Progress(nozzle.getName() + " · " + Math.round(angle) + "° · 拍摄空吸嘴中心孔", null));
+        camera.actuateLightBeforeCapture();
+        try {
+            BufferedImage frame = camera.settleAndCapture();
+            progress.accept(new Progress(nozzle.getName() + " · 检查中心孔轮廓、边缘覆盖和唯一性", frame));
+            Mat mat = OpenCvUtils.toMat(frame);
+            NozzleBoreDetector.Detection detection;
+            try {
+                Location upp = camera.getUnitsPerPixelAtZ().convertToUnits(LengthUnit.Millimeters);
+                if (upp.getX() <= 0 || upp.getY() <= 0 || Math.abs(upp.getX() / upp.getY() - 1) > .05) {
+                    throw new Exception("中心孔调优需要有效、近似等比例的相机像素标定。");
                 }
-            }
-            pipeline.setProperty("camera", camera);
-            pipeline.setProperty("nozzleTip.diameter", calibration.getCalibrationTipDiameter());
-            pipeline.setProperty("nozzleTip.maxDistance", new Length(.5, LengthUnit.Millimeters));
-            pipeline.setProperty("nozzleTip.center", camera.getLocation());
-            pipeline.setProperty("MaskCircle.center", new org.opencv.core.Point(camera.getWidth() / 2.0, camera.getHeight() / 2.0));
-            progress.accept(new Progress(nozzle.getName() + " · " + Math.round(angle) + "° · 拍摄吸嘴中心", null));
-            pipeline.process();
-            List<?> detections = pipeline.getExpectedResult(VisionUtils.PIPELINE_RESULTS_NAME).getExpectedModel(List.class);
-            if (detections.size() != 1) {
-                throw new Exception("未找到唯一吸嘴中心；请确认吸嘴为空、照明开启，检查吸嘴识别流水线。");
-            }
-            Object detection = detections.get(0);
-            double x, y;
-            if (detection instanceof Result.Circle) {
-                x = ((Result.Circle) detection).x;
-                y = ((Result.Circle) detection).y;
-            } else if (detection instanceof KeyPoint) {
-                x = ((KeyPoint) detection).pt.x;
-                y = ((KeyPoint) detection).pt.y;
-            } else if (detection instanceof RotatedRect) {
-                x = ((RotatedRect) detection).center.x;
-                y = ((RotatedRect) detection).center.y;
-            } else {
-                throw new Exception("吸嘴中心检测结果类型不受支持。");
-            }
+                detection = NozzleBoreDetector.detect(mat, new Point(frame.getWidth() / 2.0, frame.getHeight() / 2.0),
+                        .5 / upp.getX(), calibration.getCalibrationTipDiameter()
+                                .convertToUnits(LengthUnit.Millimeters).getValue() / upp.getX());
+            } finally { mat.release(); }
+            double x = detection.center.x, y = detection.center.y;
             Location value = VisionUtils.getPixelCenterOffsets(camera, x, y).convertToUnits(LengthUnit.Millimeters);
             org.pmw.tinylog.Logger.info("Nozzle center {} angle={} pixel=({}, {}) frame={}x{} offset={}",
                     nozzle.getName(), angle, x, y, camera.getWidth(), camera.getHeight(), value);
-            progress.accept(new Progress(nozzle.getName() + " · 中心偏差 " + String.format(java.util.Locale.ROOT, "%.4f mm", norm(value)),
-                    OpenCvUtils.toBufferedImage(pipeline.getWorkingImage())));
+            java.awt.Graphics2D graphics = frame.createGraphics();
+            try {
+                graphics.setColor(java.awt.Color.GREEN);
+                graphics.setStroke(new java.awt.BasicStroke(2));
+                graphics.draw(new java.awt.geom.Ellipse2D.Double(x - detection.diameter / 2,
+                        y - detection.diameter / 2, detection.diameter, detection.diameter));
+                graphics.draw(new java.awt.geom.Line2D.Double(x - 8, y, x + 8, y));
+                graphics.draw(new java.awt.geom.Line2D.Double(x, y - 8, x, y + 8));
+            } finally { graphics.dispose(); }
+            progress.accept(new Progress(nozzle.getName() + " · 中心孔偏差 " + String.format(java.util.Locale.ROOT,
+                    "%.4f mm · 边缘覆盖 %.0f%%", norm(value), detection.edgeCoverage * 100), frame));
             if (!Double.isFinite(x) || !Double.isFinite(y) || norm(value) > .5) {
                 throw new Exception(String.format(java.util.Locale.ROOT,
                         "吸嘴中心测得 %.4f mm，超过精调范围 0.5 mm；请检查检测圆是否落在吸嘴孔上或先粗调位置。", norm(value)));
             }
             return value;
+        } finally {
+            camera.actuateLightAfterCapture();
         }
     }
 
@@ -320,8 +326,13 @@ public final class NozzleVisionCentering {
             }
             Entry proposed = new Entry();
             proposed.signature = signature;
-            proposed.x = original.getX() + before.getX();
-            proposed.y = original.getY() + before.getY();
+            Location nativeOffset = ToolPointRuntime.replacesNative(nozzle) ? new Location(LengthUnit.Millimeters)
+                    : nozzle.getCalibrationNozzleTip().getCalibration().getCalibratedCameraOffset(nozzle, camera)
+                            .convertToUnits(LengthUnit.Millimeters);
+            // Persist the absolute imaging reference. A normal native recalibration can change
+            // its camera offset; rebase our additive shift instead of invalidating the result.
+            proposed.x = original.getX() + before.getX() + nativeOffset.getX();
+            proposed.y = original.getY() + before.getY() + nativeOffset.getY();
             if (Math.hypot(proposed.x, proposed.y) > 3) {
                 throw new Exception("累计成像修正超过 3 mm，请检查相机和吸嘴安装。");
             }
