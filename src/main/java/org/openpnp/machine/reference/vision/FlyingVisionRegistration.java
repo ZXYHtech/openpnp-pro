@@ -67,7 +67,7 @@ public final class FlyingVisionRegistration {
         return (camera.getId() + "-" + nozzle.getId()).replaceAll("[^a-zA-Z0-9_-]", "_");
     }
 
-    private static String signature(Nozzle nozzle, Camera camera) {
+    static String signature(Nozzle nozzle, Camera camera) {
         ReferenceNozzle n = (ReferenceNozzle)nozzle;
         return n.getNozzleTip().getId() + "|" + n.getHeadOffsets() + "|" + camera.getLocation()
                 + "|" + camera.getUnitsPerPixel() + "|" + n.getCameraToolCalibratedOffset(camera)
@@ -75,26 +75,40 @@ public final class FlyingVisionRegistration {
     }
 
     public static Model load(Nozzle nozzle, Camera camera, Location target) throws Exception {
-        Path file = root().resolve(id(nozzle, camera) + ".json");
-        if (!Files.exists(file)) {
-            throw new Exception("该吸嘴尚未标定同帧飞拍位移；请先在飞拍菜单执行空吸嘴标定。");
+        List<Model> models = new ArrayList<>();
+        String prefix = id(nozzle, camera);
+        try (var files = Files.list(root())) {
+            for (Path file : (Iterable<Path>) files.filter(p -> p.getFileName().toString().equals(prefix + ".json")
+                    || p.getFileName().toString().startsWith(prefix + "-pose-")
+                    && p.getFileName().toString().endsWith(".json"))::iterator) {
+                try { models.add(GSON.fromJson(Files.readString(file), Model.class)); }
+                catch (Exception damagedReference) { /* Other independently valid poses remain usable. */ }
+            }
         }
-        Model model = GSON.fromJson(Files.readString(file), Model.class);
-        Location mm = target.convertToUnits(LengthUnit.Millimeters);
-        if (model == null || !signature(nozzle, camera).equals(model.signature)
-                || Math.abs(mm.getZ() - model.z) > .02
-                || Math.abs(Utils2D.angleNorm(mm.getRotation() - model.angle, 180)) > 1
-                || !Double.isFinite(model.validationError) || model.validationError > .03
-                || !Double.isFinite(model.xx + model.xy + model.yx + model.yy)
-                || Math.abs(model.xx * model.yy - model.xy * model.yx) < 1e-7
-                || model.imageFile == null || !model.imageFile.matches("[a-zA-Z0-9_-]+\\.png")) {
-            throw new Exception("飞拍同帧参考与当前吸嘴校准、角度或高度不符；请重新标定，当前使用普通视觉。");
+        Model model = select(models, signature(nozzle, camera), target);
+        if (model == null) {
+            throw new Exception("当前吸嘴、拍摄高度或角度缺少有效飞拍参考，请在自动评估页准备空吸嘴参考。");
         }
         model.reference = ImageIO.read(root().resolve(model.imageFile).toFile());
         if (model.reference == null) {
             throw new Exception("无法读取飞拍参考图像。");
         }
         return model;
+    }
+
+    static Model select(List<Model> models, String signature, Location target) {
+        Location mm = target.convertToUnits(LengthUnit.Millimeters);
+        return models.stream().filter(model -> model != null && signature.equals(model.signature)
+                && Double.isFinite(mm.getZ() + mm.getRotation() + model.z + model.angle)
+                && Math.abs(mm.getZ() - model.z) <= .02
+                && Math.abs(Utils2D.angleNorm(mm.getRotation() - model.angle, 180)) <= 1
+                && Double.isFinite(model.validationError) && model.validationError <= .03
+                && Double.isFinite(model.xx + model.xy + model.yx + model.yy)
+                && Math.abs(model.xx * model.yy - model.xy * model.yx) >= 1e-7
+                && model.imageFile != null && model.imageFile.matches("[a-zA-Z0-9_-]+\\.png"))
+                .min(Comparator.comparingDouble(model -> Math.abs(mm.getZ() - model.z)
+                        + Math.abs(Utils2D.angleNorm(mm.getRotation() - model.angle, 180))))
+                .orElse(null);
     }
 
     private static Mat gray(BufferedImage image) {
@@ -198,8 +212,7 @@ public final class FlyingVisionRegistration {
         }
         MovableUtils.moveToBottomVisionLocation(nozzle, target, .20);
         nozzle.waitForCompletion(CompletionType.WaitForStillstand);
-        camera.capture();
-        return camera.capture();
+        return camera.lightSettleAndCapture();
     }
 
     public static void calibrate(Nozzle nozzle, Part part, double angle, Consumer<String> progress) throws Exception {
@@ -290,7 +303,8 @@ public final class FlyingVisionRegistration {
             }
             model.imageFile = id(nozzle, camera) + "-" + java.util.UUID.randomUUID() + ".png";
             ImageIO.write(model.reference, "png", root().resolve(model.imageFile).toFile());
-            Path file = root().resolve(id(nozzle, camera) + ".json");
+            Path file = root().resolve(id(nozzle, camera) + "-pose-"
+                    + Math.round(model.z * 1000) + "-" + Math.round(model.angle * 1000) + ".json");
             Path temp = Files.createTempFile(root(), "registration-", ".tmp");
             try {
                 Files.writeString(temp, GSON.toJson(model));

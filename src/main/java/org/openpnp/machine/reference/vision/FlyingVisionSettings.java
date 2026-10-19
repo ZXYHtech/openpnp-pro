@@ -160,10 +160,11 @@ public final class FlyingVisionSettings {
 
     public static boolean shouldUseFor(Part part) {
         return part != null
-                && ExperimentalMotionCenterDialog.isExperimentalModeEnabled()
                 && isEnabled()
                 && isProductionEnabled()
-                && getEnabledPartIds().contains(part.getId());
+                && (FlyingVisionEvaluation.enabled(part)
+                    || ExperimentalMotionCenterDialog.isExperimentalModeEnabled()
+                        && getEnabledPartIds().contains(part.getId()));
     }
 
     private static double clamp(double value, double minimum, double maximum) {

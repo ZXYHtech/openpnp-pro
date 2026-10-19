@@ -804,6 +804,12 @@ public class MainFrame extends JFrame {
 
         mnCommands.add(new JMenuItem(machineControlsPanel.homeAction));
         mnCommands.add(new JMenuItem(coreXYPrecisionAction));
+        mnCommands.add(new JMenuItem(new AbstractAction("飞拍自动评估与启用...") {
+            @Override
+            public void actionPerformed(ActionEvent event) {
+                new FlyingVisionEvaluationDialog(MainFrame.this).setVisible(true);
+            }
+        }));
         mnCommands.add(new JMenuItem(new AbstractAction("N1 / N2 底部视觉中心自动调优...") {
             @Override
             public void actionPerformed(ActionEvent event) {

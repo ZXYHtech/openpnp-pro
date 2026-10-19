@@ -139,7 +139,13 @@ public final class FlyingBottomVisionService {
 
     public static boolean shouldAttempt(Part part) {
         return FlyingVisionSettings.shouldUseFor(part)
-                && SafetyWorkbenchStore.get().isCertified();
+                && SafetyWorkbenchStore.get().isCertified()
+                && (!FlyingVisionEvaluation.managed(part) || FlyingVisionEvaluation.enabled(part));
+    }
+
+    public static boolean shouldAttempt(Part part, BoardLocation board, Placement placement, Nozzle nozzle) {
+        return shouldAttempt(part) && (!FlyingVisionEvaluation.managed(part)
+                || FlyingVisionEvaluation.approved(part, board, placement, nozzle));
     }
 
     public static Result execute(ReferenceBottomVision alignment, Part part,
@@ -229,12 +235,13 @@ public final class FlyingBottomVisionService {
             Logger.debug(unavailableView, "Flying-vision camera view unavailable.");
         }
         double elapsedMs = (System.nanoTime() - operationStarted) / 1_000_000.0;
-        Logger.info("Flying bottom vision part={} mode={} angle={} frames={} valid={} sharpness={} elapsedMs={}",
+        FlyingVisionEvaluation.recordMode(nozzle, "飞拍 · " + part.getId());
+        Logger.info("Flying bottom vision part={} mode={} angle={} frames={} valid={} sharpness={} elapsedMs={} nozzle={}",
                 part.getId(), preRotate ? "pre-rotate" : "post-rotate",
                 String.format(Locale.ROOT, "%.2f", wantedAngle),
                 frames.size(), successful,
                 String.format(Locale.ROOT, "%.2f", bestFrame.getSharpness()),
-                String.format(Locale.ROOT, "%.1f", elapsedMs));
+                String.format(Locale.ROOT, "%.1f", elapsedMs), nozzle.getName());
         return new Result(bestOffsets, frames.size(), successful,
                 bestFrame.getSharpness(), elapsedMs, preRotate, wantedAngle);
     }

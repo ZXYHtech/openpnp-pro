@@ -63,7 +63,8 @@ public class ReferenceBottomVision extends AbstractPartAlignment {
                 || nozzle.getClass() != org.openpnp.machine.reference.ReferenceNozzle.class
                 || !(settings.getPreRotateUsage() == PreRotateUsage.AlwaysOn
                      || settings.getPreRotateUsage() == PreRotateUsage.Default && preRotate)
-                || FlyingBottomVisionService.shouldAttempt(part)
+                || FlyingBottomVisionService.shouldAttempt(part, board, placement, nozzle)
+                || FlyingVisionEvaluation.pending(part, board, placement, nozzle)
                 || !Configuration.get().getScripting().hasNoScript("Vision.PartAlignment.Before")
                 || !Configuration.get().getScripting().hasNoScript("Vision.PartAlignment.After")) {
             return null;
@@ -149,6 +150,7 @@ public class ReferenceBottomVision extends AbstractPartAlignment {
             int width = camera.getWidth(), height = camera.getHeight();
             final double maxLinear = getMaxLinearOffset().convertToUnits(LengthUnit.Millimeters).getValue();
             final double maxAngle = getMaxAngularOffset();
+            final String ordinaryReason = FlyingVisionEvaluation.ordinaryReason(part, board, placement, nozzle);
             CoordinatedVisionTask<PartAlignmentOffset> task = new CoordinatedVisionTask<>(() -> {
                 long analysisStarted = System.nanoTime();
                 try (CvPipeline owned = frozen) {
@@ -192,6 +194,14 @@ public class ReferenceBottomVision extends AbstractPartAlignment {
                             settings.getVisionOffset(), angle, true);
                     offsetsCheck(part, nozzle, normalized);
                     partSizeCheck(part, settings, rect, camera);
+                    FlyingVisionEvaluation.recordMode(nozzle, "普通视觉 · " + part.getId() + " · " + ordinaryReason);
+                    try {
+                        MainFrame main = MainFrame.get();
+                        if (main != null) {
+                            main.getCameraViews().getCameraView(camera).showFilteredImage(frame,
+                                    nozzle.getName() + " · 普通视觉 · " + part.getId() + " · " + ordinaryReason, 1500);
+                        }
+                    } catch (Exception unavailableView) { Logger.debug(unavailableView); }
                     Logger.info("Async bottom vision {}: capture={} ms, processing={} ms, offsets={}",
                             part.getId(), capturedNs / 1e6, (System.nanoTime() - analysisStarted) / 1e6, normalized);
                     return new PartAlignmentOffset(normalized, true);
@@ -277,12 +287,18 @@ public class ReferenceBottomVision extends AbstractPartAlignment {
 
         Camera camera = VisionUtils.getBottomVisionCamera();
         PartAlignmentOffset offsets = null;
-        if (FlyingBottomVisionService.shouldAttempt(part)) {
+        String fallbackReason = null;
+        boolean evaluating = FlyingVisionEvaluation.pending(part, boardLocation, placement, nozzle);
+        if (evaluating) {
+            FlyingVisionEvaluation.evaluate(this, part, boardLocation, placement, nozzle);
+        }
+        if (!evaluating && FlyingBottomVisionService.shouldAttempt(part, boardLocation, placement, nozzle)) {
             try {
                 offsets = FlyingBottomVisionService.execute(
                         this, part, boardLocation, placement, nozzle).getOffsets();
             }
             catch (Exception exception) {
+                fallbackReason = "飞拍回退：" + exception.getMessage();
                 Logger.warn(exception,
                         "Flying bottom vision failed for part {}; falling back={}",
                         part.getId(), FlyingVisionSettings.isFallbackEnabled());
@@ -292,6 +308,9 @@ public class ReferenceBottomVision extends AbstractPartAlignment {
             }
         }
         if (offsets == null) {
+            FlyingVisionEvaluation.recordMode(nozzle, "普通视觉 · " + part.getId() + " · "
+                    + (fallbackReason == null ? FlyingVisionEvaluation.ordinaryReason(part, boardLocation, placement, nozzle)
+                        : fallbackReason));
             if ((bottomVisionSettings.getPreRotateUsage() == PreRotateUsage.Default && preRotate)
                     || (bottomVisionSettings.getPreRotateUsage() == PreRotateUsage.AlwaysOn)) {
                 offsets = findOffsetsPreRotate(part, boardLocation, placement, nozzle, camera,
