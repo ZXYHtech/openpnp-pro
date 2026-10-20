@@ -218,8 +218,9 @@ public final class DynamicSafeMotionPlanner {
     }
 
     public static void retractAfterPick(Nozzle nozzle, Feeder feeder) throws Exception {
-        boolean standardElectric = feeder.getClass() == ReferenceAutoFeeder.class
-                || feeder.getClass() == ReferenceSlotAutoFeeder.class;
+        // Feeder subclasses are still electric feeders. Safety remains enforced by the certified feeder geometry.
+        boolean standardElectric = feeder instanceof ReferenceAutoFeeder
+                || feeder instanceof ReferenceSlotAutoFeeder;
         if (DynamicSafeMotionSettings.isEnabled() && standardElectric
                 && org.openpnp.model.Configuration.get().getScripting().hasNoScript("Nozzle.AfterPick")) {
             Location expected = pickLocation(nozzle, feeder);
@@ -253,7 +254,7 @@ public final class DynamicSafeMotionPlanner {
         Plan plan;
         try {
             String issue = enablementIssue(live, tool.getHead().getMachine());
-            if (!issue.isEmpty() || !hardwareIssue(tool, tool.getHead().getMachine()).isEmpty()) {
+            if (!issue.isEmpty() || !hardwareIssue(tool, tool.getHead().getMachine(), tool.getLocation()).isEmpty()) {
                 return false;
             }
             SafetyWorkbenchModel frozen = prepare(live).frozen;
@@ -270,6 +271,12 @@ public final class DynamicSafeMotionPlanner {
             long deadline = started + 40_000_000L;
             List<DynamicTool> tools = DynamicSafetyCollisionEngine.snapshot(frozen, tool.getHead().getMachine(), tool);
             double exitZ = clearHeight(start, safeZ, start, frozen, tools, deadline, false);
+            if (frozen.isFastTravelFloorEnabled() && Double.isFinite(exitZ)
+                    && frozen.getFastTravelFloorZ() <= safeZ && start.getZ() < frozen.getFastTravelFloorZ()) {
+                // Raise only as far as the operator-certified rapid-travel plane, not all the way to Safe Z.
+                // The entire vertical sweep is still validated with the feeder contact and sibling nozzle.
+                exitZ = Math.max(exitZ, frozen.getFastTravelFloorZ());
+            }
             if (!Double.isFinite(exitZ) || exitZ >= safeZ - EPSILON || System.nanoTime() > deadline) {
                 return declineRetreat(tool, "局部间隙不足或规划超时，保留完整安全 Z", started);
             }
@@ -425,7 +432,7 @@ public final class DynamicSafeMotionPlanner {
             return rejected("探针、特殊工具或无效坐标保持原路径");
         }
         Machine machine = tool.getHead().getMachine();
-        String hardwareIssue = hardwareIssue(tool, machine);
+        String hardwareIssue = hardwareIssue(tool, machine, destination);
         if (!hardwareIssue.isEmpty()) {
             return rejected(hardwareIssue);
         }
@@ -436,6 +443,19 @@ public final class DynamicSafeMotionPlanner {
         }
         List<DynamicTool> tools = DynamicSafetyCollisionEngine.snapshot(model, machine, tool);
         double originalSeconds = estimateStock(tool, target, speed);
+        if (contact != null && model.getObjects().stream().noneMatch(object -> object != null
+                && object.enabled && object.obstacle && object.type == SafetyWorkbenchModel.ObjectType.FEEDER
+                && contact.sourceKey.equals(object.sourceKey))) {
+            return rejected("取料飞达尚未建立关联的已认证 3D 外形，保持原安全 Z");
+        }
+        // Optional fast-travel plane: above this calibrated *nozzle-reference* Z, enter pickup
+        // or imaging with coordinated XY/Z. Below it, exit/enter vertically at the endpoint.
+        // Never waive the full swept collision, sibling, feeder or soft-limit checks.
+        Plan floorPlan = planTravelFloor(tool, start, target, speed, model, tools,
+                originalSeconds, deadline, imaging, contact);
+        if (floorPlan != null) {
+            return floorPlan;
+        }
         if (imaging) {
             // Imaging has no contact/release step. Do not insert an artificial
             // final vertical approach or require both cam nozzles in global Safe-Z.
@@ -517,18 +537,98 @@ public final class DynamicSafeMotionPlanner {
         return new Plan(Collections.emptyList(), reason, originalSeconds, originalSeconds);
     }
 
-    private static String hardwareIssue(HeadMountable tool, Machine machine) throws Exception {
+    /** A deliberately opt-in rapid plane; cannot overrule certified 3D obstacles or axis limits. */
+    private static Plan planTravelFloor(HeadMountable tool, Location start, Location target, double speed,
+            SafetyWorkbenchModel model, List<DynamicTool> tools, double stockSeconds,
+            long deadline, boolean imaging, CoordinatedMotionValidator.FeederContact contact) throws Exception {
+        if (!model.isFastTravelFloorEnabled() || System.nanoTime() > deadline) {
+            return null;
+        }
+        double floor = model.getFastTravelFloorZ();
+        if (!Double.isFinite(floor) || floor <= model.getMinZ() || floor >= model.getMaxZ()) {
+            return null;
+        }
+        List<Location> candidate = new ArrayList<>();
+        // On leaving a recessed feeder, lift in place before any lateral travel below the floor.
+        if (start.getZ() < floor - EPSILON) {
+            candidate.add(start.derive(null, null, floor, null));
+        }
+        // A placement/pick needs its last vertical 1 mm (or more); a non-contact camera does not.
+        double approachZ = imaging ? Math.max(floor, target.getZ())
+                : Math.max(floor, target.getZ() + 1.0);
+        candidate.add(target.derive(null, null, approachZ, null));
+        if (Math.abs(target.getZ() - approachZ) > EPSILON) {
+            candidate.add(target);
+        }
+        candidate = compact(tool, start, candidate);
+        if (candidate.isEmpty()) {
+            return null;
+        }
+        Location previous = start;
+        boolean hasLateralMotion = false;
+        for (Location next : candidate) {
+            if (Math.hypot(next.getX() - previous.getX(), next.getY() - previous.getY()) > EPSILON) {
+                hasLateralMotion = true;
+                if (Math.min(previous.getZ(), next.getZ()) < floor - EPSILON) {
+                    return null; // Never travel sideways below the certified reference-Z floor.
+                }
+            }
+            previous = next;
+        }
+        if (!hasLateralMotion) {
+            return null;
+        }
+        List<Waypoint> points = new ArrayList<>();
+        points.add(point(start));
+        for (Location waypoint : candidate) {
+            points.add(point(waypoint));
+        }
+        ValidationResult sweep = CoordinatedMotionValidator.validate(model, points, tools, point(start), deadline, contact);
+        if (!sweep.isSafe() || System.nanoTime() > deadline) {
+            return null; // Existing conservative geometry planner has the final say.
+        }
+        double seconds = estimate(tool, start, candidate, speed);
+        if (!Double.isFinite(seconds) || seconds + 0.001 >= stockSeconds) {
+            return null;
+        }
+        return new Plan(candidate, imaging
+                ? "经认证 Z 快速通道：进视觉前联动 XY/Z，无取放末段"
+                : "经认证 Z 快速通道：XY/Z 协调进料位，保留取放垂直段",
+                stockSeconds, seconds);
+    }
+
+    private static String hardwareIssue(HeadMountable tool, Machine machine, Location destination) throws Exception {
         if (tool.getAxisX() == null || tool.getAxisY() == null || tool.getAxisZ() == null) {
             return "需要完整的 XYZ 轴映射";
         }
         if (!supportedZ(tool.getAxisZ())) {
             return "此 Z 轴变换尚不能验证，保持原路径";
         }
-        List<Driver> drivers = tool.getMappedAxes(machine).getAxesDrivers(machine);
+        // Only axes that physically move in this planned XYZ path determine the motion driver.
+        // A separate feeder/actuator driver is irrelevant; an unchanged rotation axis may also
+        // live on its own controller without rejecting a safe XYZ-only movement.
+        AxesLocation mapped = tool.getMappedAxes(machine);
+        List<Driver> drivers = new ArrayList<>();
+        for (Axis.Type type : Arrays.asList(Axis.Type.X, Axis.Type.Y, Axis.Type.Z)) {
+            for (Driver candidate : mapped.byType(type).getAxesDrivers(machine)) {
+                if (!drivers.contains(candidate)) {
+                    drivers.add(candidate);
+                }
+            }
+        }
         if (drivers.size() != 1 || (!(drivers.get(0) instanceof GcodeDriver) && !(drivers.get(0) instanceof NullDriver))) {
-            return "XYZ/旋转须由同一协调运动控制器驱动";
+            return "吸嘴 XYZ 控制轴须由同一协调运动控制器驱动：" + drivers;
         }
         Driver driver = drivers.get(0);
+        boolean rotationMoves = destination != null && tool.getLocation() != null
+                && Math.abs(destination.getRotation() - tool.getLocation().getRotation()) > EPSILON;
+        if (rotationMoves) {
+            for (Driver rotationDriver : mapped.byType(Axis.Type.Rotation).getAxesDrivers(machine)) {
+                if (rotationDriver != driver) {
+                    return "本次需要旋转，但旋转轴不在 XYZ 控制器上；保持原安全 Z";
+                }
+            }
+        }
         if (driver instanceof GcodeDriver) {
             String command = ((GcodeDriver) driver).getCommand(tool, CommandType.MOVE_TO_COMMAND);
             boolean coordinatedLine = false;
@@ -539,7 +639,11 @@ public final class DynamicSafeMotionPlanner {
                         continue;
                     }
                     boolean allAxes = true;
-                    for (ControllerAxis axis : tool.getMappedAxes(machine).getControllerAxes()) {
+                    for (ControllerAxis axis : mapped.getControllerAxes()) {
+                        // Do not require a stationary rotation axis to appear in the XYZ G1.
+                        if (axis.getType() == Axis.Type.Rotation && !rotationMoves) {
+                            continue;
+                        }
                         String variable = driver.isUsingLetterVariables() ? axis.getLetter() : axis.getType().toString();
                         allAxes &= line.contains("{" + variable + ":") || line.contains("{" + variable + "}");
                     }
