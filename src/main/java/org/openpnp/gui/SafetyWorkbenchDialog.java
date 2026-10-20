@@ -732,6 +732,48 @@ public class SafetyWorkbenchDialog extends JDialog {
             }
         });
         coordinatedMotion.add(motionDiagnostics);
+        // Operator-specific rapid-Z plane, disabled by default. This is NOT a collision bypass:
+        // any change invalidates model certification and all proposed paths are still swept.
+        JCheckBox rapidPlaneEnabled = new JCheckBox("允许 Z 快速进场 ≥");
+        rapidPlaneEnabled.setSelected(model.isFastTravelFloorEnabled());
+        JSpinner rapidPlaneZ = new JSpinner(new SpinnerNumberModel(
+                model.getFastTravelFloorZ(), -500.0, 500.0, 0.5));
+        rapidPlaneZ.setPreferredSize(new Dimension(74, 27));
+        JButton rapidApply = new JButton("应用并重新认证");
+        rapidApply.setName("fast-z-floor-apply");
+        rapidApply.setToolTipText("当前吸嘴参考 Z（毫米），不是吸嘴尖/元件最低点；所有工具仍进行 3D 碰撞扫掠。");
+        rapidApply.addActionListener(event -> {
+            if (Configuration.get().getMachine().isBusy()) {
+                result.setText("运行任务期间不能改变快速 Z 通道，请先暂停并等待机器空闲。");
+                return;
+            }
+            boolean enable = rapidPlaneEnabled.isSelected();
+            double floorZ = ((Number) rapidPlaneZ.getValue()).doubleValue();
+            if (enable && JOptionPane.showConfirmDialog(this,
+                    "请确认这个数值是已标定的吸嘴参考 Z，并已实际测量 N1、N2、携带元件、飞达和相机外壳的间隙。\\n"
+                    + "它只用于优先尝试安全联动路线，不会跳过 3D 扫掠、软限位、换嘴和末段垂直取放。\\n"
+                    + "修改后须重新检查、认证并保存 3D 模型。是否继续？",
+                    "快速进场 Z 净空确认", JOptionPane.OK_CANCEL_OPTION,
+                    JOptionPane.WARNING_MESSAGE) != JOptionPane.OK_OPTION) {
+                return;
+            }
+            try {
+                model.setFastTravelFloor(enable, floorZ);
+                updateCertification();
+                coordinatedMotion.refresh();
+                result.setText(enable
+                        ? "已申请在吸嘴参考 Z ≥ " + floorZ + " mm 进行快速 XY/Z 进场。请核对全部实体尺寸，重新“检查并认证”，然后保存模型；认证前自动保持原路径。"
+                        : "已关闭快速 Z 进场通道。请重新认证并保存模型。");
+            } catch (IllegalArgumentException invalid) {
+                result.setText("快速 Z 阈值无效：" + invalid.getMessage());
+            }
+        });
+        JPanel rapidRow = new JPanel(new WrapLayout(FlowLayout.LEFT, 4, 1));
+        rapidRow.add(rapidPlaneEnabled);
+        rapidRow.add(rapidPlaneZ);
+        rapidRow.add(new JLabel("mm（参考 Z）"));
+        rapidRow.add(rapidApply);
+        coordinatedMotion.add(rapidRow);
         header.add(coordinatedMotion);
         return header;
     }
