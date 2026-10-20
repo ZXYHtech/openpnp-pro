@@ -78,8 +78,8 @@ public final class DynamicSafeMotionPanel extends JPanel {
                 return;
             }
             if (JOptionPane.showConfirmDialog(this,
-                    "这会关闭 OpenPnP 每段 moveTo 后的强制停稳，Marlin/Smoothieware 将按规划队列执行。\\n"
-                    + "取放、相机曝光及真空检测的必要完成等待仍保留。\\n"
+                    "这会关闭 OpenPnP 每段 moveTo 后的强制停稳，Marlin/Smoothieware 将按规划队列执行。\n"
+                    + "取放、相机曝光及真空检测的必要完成等待仍保留。\n"
                     + "先备份配置，在空吸嘴和空场景下验证，急停必须有效。是否启用并保存？",
                     "连续运动规划确认", JOptionPane.OK_CANCEL_OPTION,
                     JOptionPane.WARNING_MESSAGE) != JOptionPane.OK_OPTION) {
