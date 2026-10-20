@@ -192,6 +192,9 @@ public class SafetyWorkbenchModel {
     private Double importedSafeZLow;
     private Double importedSafeZHigh;
     private boolean visionHeightCompensationEnabled;
+    /** Optional, operator-certified nozzle-reference-Z floor for XY travel. Never bypasses swept collision checks. */
+    private boolean fastTravelFloorEnabled;
+    private double fastTravelFloorZ = -5.0;
 
     private double toolRadiusX = 15;
     private double toolRadiusY = 15;
@@ -416,6 +419,26 @@ public class SafetyWorkbenchModel {
         touch();
     }
 
+    /** Disabled for existing machine profiles until the actual -5 mm clearance is measured and certified. */
+    public boolean isFastTravelFloorEnabled() {
+        return fastTravelFloorEnabled;
+    }
+
+    public double getFastTravelFloorZ() {
+        return fastTravelFloorZ;
+    }
+
+    public void setFastTravelFloor(boolean enabled, double floorZ) {
+        if (!Double.isFinite(floorZ) || floorZ <= minZ || floorZ >= maxZ) {
+            throw new IllegalArgumentException("快速进场 Z 必须在已配置的工作台 Z 范围内。");
+        }
+        if (fastTravelFloorEnabled != enabled || fastTravelFloorZ != floorZ) {
+            fastTravelFloorEnabled = enabled;
+            fastTravelFloorZ = floorZ;
+            touch(); // Never reuse an earlier geometry certification after changing this threshold.
+        }
+    }
+
     public boolean hasImportedSafeZ() {
         return importedSafeZLow != null && importedSafeZHigh != null
                 && Double.isFinite(importedSafeZLow) && Double.isFinite(importedSafeZHigh);
@@ -540,6 +563,8 @@ public class SafetyWorkbenchModel {
         importedSafeZLow = source.importedSafeZLow;
         importedSafeZHigh = source.importedSafeZHigh;
         visionHeightCompensationEnabled = source.visionHeightCompensationEnabled;
+        fastTravelFloorEnabled = source.fastTravelFloorEnabled;
+        fastTravelFloorZ = source.fastTravelFloorZ;
         toolRadiusX = source.toolRadiusX;
         toolRadiusY = source.toolRadiusY;
         toolMinZOffset = source.toolMinZOffset;

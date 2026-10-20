@@ -1644,8 +1644,17 @@ public class ReferencePnpJobProcessor extends AbstractPnpJobProcessor {
             for (int i = 0; i < 1 + feeder.getPickRetryCount(); i++) {
                 try {
                     pick(nozzle, feeder, jobPlacement, part);
+                    long postPickStarted = System.nanoTime();
                     postPick(feeder, nozzle);
+                    long vacuumCheckStarted = System.nanoTime();
                     checkPartOn(nozzle);
+                    if (org.openpnp.machine.reference.safety.DynamicSafeMotionSettings.isEnabled()
+                            && (System.nanoTime() - postPickStarted) > 25_000_000L) {
+                        Logger.info("XY/Z N1/feeder handoff {} ({}): feeder.postPick={} ms, part-on check={} ms",
+                                nozzle.getName(), feeder.getName(),
+                                (vacuumCheckStarted - postPickStarted) / 1e6,
+                                (System.nanoTime() - vacuumCheckStarted) / 1e6);
+                    }
                     return;
                 }
                 catch (Exception e) {
@@ -1665,14 +1674,23 @@ public class ReferencePnpJobProcessor extends AbstractPnpJobProcessor {
                 Location pickLocation = feeder.getPickLocation();
                 nozzle.prepareForPickAndPlaceArticulation(pickLocation, placementLocation);
 
-                // Move to pick location.
+                // Separate actual motion, vacuum and exit time. A feeder's own controller does
+                // not belong to the nozzle XYZ motion driver; a postPick/part-on barrier may
+                // account for an apparent N1 pause even when the planner accepted a fast path.
+                long approachStarted = System.nanoTime();
                 nozzle.moveToPickLocation(feeder);
-
-                // Pick
+                long vacuumStarted = System.nanoTime();
                 nozzle.pick(part,feeder);
-
-                // Retract
+                long retreatStarted = System.nanoTime();
                 org.openpnp.machine.reference.safety.DynamicSafeMotionPlanner.retractAfterPick(nozzle, feeder);
+                long pickComplete = System.nanoTime();
+                if (org.openpnp.machine.reference.safety.DynamicSafeMotionSettings.isEnabled()
+                        && (pickComplete - approachStarted) > 80_000_000L) {
+                    Logger.info("XY/Z pick {} ({}): approach={} ms, pickup/vacuum={} ms, retract={} ms",
+                            nozzle.getName(), feeder.getName(), (vacuumStarted - approachStarted) / 1e6,
+                            (retreatStarted - vacuumStarted) / 1e6,
+                            (pickComplete - retreatStarted) / 1e6);
+                }
             }
             catch (Exception e) {
                 throw new JobProcessorException(nozzle, e);

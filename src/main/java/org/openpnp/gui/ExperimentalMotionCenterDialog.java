@@ -107,7 +107,7 @@ public class ExperimentalMotionCenterDialog extends JDialog {
     private final JCheckBox emptyNozzle = new JCheckBox("确认吸嘴无料，运动范围内没有障碍物");
     private DynamicSafeMotionPanel dynamicSafeMotion;
     private final JButton convertButton = new JButton();
-    private final JButton motionTestButton = new JButton("运行分级速度对比");
+    private final JButton motionTestButton = new JButton("XY 队列测速（不测 Z 联动）");
     private final JButton exportButton = new JButton("导出测速结果");
     private final JButton previousButton = new JButton("上一步");
     private final JButton nextButton = new JButton("下一步");
@@ -535,7 +535,8 @@ public class ExperimentalMotionCenterDialog extends JDialog {
         int routeCount = speeds.size() + 1;
         double totalDistance = routeCount * 8 * span * cycles;
         int answer = JOptionPane.showConfirmDialog(this,
-                "工具将先移动到 Safe Z，再以当前位置为中心进行 ±" + span
+                "本测试只对比 XY 运动队列，不测取料/底部视觉 XYZ 联动。\\n"
+                        + "工具将先移动到 Safe Z，再以当前位置为中心进行 ±" + span
                         + " mm 的X/Y空载往返。\n速度档位：" + describeSpeeds(speeds)
                         + "\n每档轮数：" + cycles + "，总计划距离："
                         + String.format(Locale.ROOT, "%.0f", totalDistance) + " mm"
