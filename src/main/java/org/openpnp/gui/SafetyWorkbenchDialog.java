@@ -750,8 +750,8 @@ public class SafetyWorkbenchDialog extends JDialog {
             boolean enable = rapidPlaneEnabled.isSelected();
             double floorZ = ((Number) rapidPlaneZ.getValue()).doubleValue();
             if (enable && JOptionPane.showConfirmDialog(this,
-                    "请确认这个数值是已标定的吸嘴参考 Z，并已实际测量 N1、N2、携带元件、飞达和相机外壳的间隙。\\n"
-                    + "它只用于优先尝试安全联动路线，不会跳过 3D 扫掠、软限位、换嘴和末段垂直取放。\\n"
+                    "请确认这个数值是已标定的吸嘴参考 Z，并已实际测量 N1、N2、携带元件、飞达和相机外壳的间隙。\n"
+                    + "它只用于优先尝试安全联动路线，不会跳过 3D 扫掠、软限位、换嘴和末段垂直取放。\n"
                     + "修改后须重新检查、认证并保存 3D 模型。是否继续？",
                     "快速进场 Z 净空确认", JOptionPane.OK_CANCEL_OPTION,
                     JOptionPane.WARNING_MESSAGE) != JOptionPane.OK_OPTION) {
