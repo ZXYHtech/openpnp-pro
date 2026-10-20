@@ -539,8 +539,8 @@ public final class DynamicSafeMotionPlanner {
         if (!model.isFastTravelFloorEnabled() || System.nanoTime() > deadline) {
             return null;
         }
-        // If a feeder body has not been measured, do not apply the NEW rapid-plane
-        // shortcut there. Preserve the older planner's behavior as the fallback.
+        // If the feeder body was not measured, do not apply the NEW rapid shortcut there.
+        // Preserve the older planner's unchanged fallback behavior.
         if (contact != null && model.getObjects().stream().noneMatch(object -> object != null
                 && object.enabled && object.obstacle && object.type == SafetyWorkbenchModel.ObjectType.FEEDER
                 && contact.sourceKey.equals(object.sourceKey))) {
@@ -550,53 +550,109 @@ public final class DynamicSafeMotionPlanner {
         if (!Double.isFinite(floor) || floor <= model.getMinZ() || floor >= model.getMaxZ()) {
             return null;
         }
-        List<Location> candidate = new ArrayList<>();
-        // On leaving a recessed feeder, lift in place before any lateral travel below the floor.
-        if (start.getZ() < floor - EPSILON) {
-            candidate.add(start.derive(null, null, floor, null));
+        List<List<Location>> proposals = new ArrayList<>();
+        Location departure = start.getZ() < floor - EPSILON
+                ? start.derive(null, null, floor, null) : null;
+        double xyDistance = Math.hypot(target.getX() - start.getX(), target.getY() - start.getY());
+        boolean verifiedCamera = imaging && target.getZ() < floor && hasCameraAperture(model, target);
+        if (verifiedCamera && xyDistance >= 1.0) {
+            // Only the final few mm within a measured camera aperture may descend below the
+            // rapid-travel floor while XY is still moving. Check the ENTIRE swept tool envelope.
+            double runIn = Math.min(5.0, xyDistance / 4.0);
+            double fraction = runIn / xyDistance;
+            Location entrance = target.derive(
+                    target.getX() - (target.getX() - start.getX()) * fraction,
+                    target.getY() - (target.getY() - start.getY()) * fraction,
+                    floor, null);
+            List<Location> cam = new ArrayList<>();
+            if (departure != null) {
+                cam.add(departure);
+            }
+            cam.add(entrance);
+            cam.add(target);
+            proposals.add(cam);
         }
-        // A placement/pick needs its last vertical 1 mm (or more); a non-contact camera does not.
+        // Default: safe XY/Z approach down to the reference floor; when picking or placing,
+        // keep the final vertical contact stroke. No lateral travel through feeder pockets.
+        List<Location> normal = new ArrayList<>();
+        if (departure != null) {
+            normal.add(departure);
+        }
         double approachZ = imaging ? Math.max(floor, target.getZ())
                 : Math.max(floor, target.getZ() + 1.0);
-        candidate.add(target.derive(null, null, approachZ, null));
+        normal.add(target.derive(null, null, approachZ, null));
         if (Math.abs(target.getZ() - approachZ) > EPSILON) {
-            candidate.add(target);
+            normal.add(target);
         }
-        candidate = compact(tool, start, candidate);
-        if (candidate.isEmpty()) {
-            return null;
+        proposals.add(normal);
+        for (List<Location> proposal : proposals) {
+            if (System.nanoTime() > deadline) {
+                break;
+            }
+            List<Location> candidate = compact(tool, start, proposal);
+            if (candidate.isEmpty()) {
+                continue;
+            }
+            Location previous = start;
+            boolean hasLateralMotion = false;
+            boolean safe = true;
+            for (Location next : candidate) {
+                double lateral = Math.hypot(next.getX() - previous.getX(), next.getY() - previous.getY());
+                if (lateral > EPSILON) {
+                    hasLateralMotion = true;
+                    if (Math.min(previous.getZ(), next.getZ()) < floor - EPSILON) {
+                        // Exception only for the last non-contact camera entry, through a
+                        // specifically modelled aperture and limited to a 5 mm local descent.
+                        boolean localCamera = verifiedCamera && proposal != normal && next == target
+                                && previous.getZ() >= floor - EPSILON && lateral <= 5.0 + EPSILON;
+                        if (!localCamera) {
+                            safe = false;
+                            break;
+                        }
+                    }
+                }
+                previous = next;
+            }
+            if (!safe || !hasLateralMotion) {
+                continue;
+            }
+            List<Waypoint> points = new ArrayList<>();
+            points.add(point(start));
+            for (Location waypoint : candidate) {
+                points.add(point(waypoint));
+            }
+            ValidationResult sweep = CoordinatedMotionValidator.validate(
+                    model, points, tools, point(start), deadline, contact);
+            if (!sweep.isSafe() || System.nanoTime() > deadline) {
+                continue;
+            }
+            double seconds = estimate(tool, start, candidate, speed);
+            if (Double.isFinite(seconds) && seconds + 0.001 < stockSeconds) {
+                String reason = imaging
+                        ? (proposal != normal
+                                ? "已认证相机开口：低位最后 5 mm 联动 XY/Z"
+                                : "已认证参考 Z：进入视觉前联动 XY/Z")
+                        : "已认证参考 Z：XY/Z 协调取放进场，最后垂直取放";
+                return new Plan(candidate, reason, stockSeconds, seconds);
+            }
         }
-        Location previous = start;
-        boolean hasLateralMotion = false;
-        for (Location next : candidate) {
-            if (Math.hypot(next.getX() - previous.getX(), next.getY() - previous.getY()) > EPSILON) {
-                hasLateralMotion = true;
-                if (Math.min(previous.getZ(), next.getZ()) < floor - EPSILON) {
-                    return null; // Never travel sideways below the certified reference-Z floor.
+        return null;
+    }
+
+    private static boolean hasCameraAperture(SafetyWorkbenchModel model, Location target) {
+        for (SafetyWorkbenchModel.SafetyObject object : model.getObjects()) {
+            if (object != null && object.enabled && object.obstacle
+                    && object.type == SafetyWorkbenchModel.ObjectType.BOTTOM_CAMERA
+                    && object.apertureWidth > 0 && object.apertureDepth > 0) {
+                double xmin = object.x + (object.width - object.apertureWidth) / 2.0;
+                double ymin = object.y + (object.depth - object.apertureDepth) / 2.0;
+                if (target.getX() > xmin && target.getX() < xmin + object.apertureWidth
+                        && target.getY() > ymin && target.getY() < ymin + object.apertureDepth) {
+                    return true;
                 }
             }
-            previous = next;
         }
-        if (!hasLateralMotion) {
-            return null;
-        }
-        List<Waypoint> points = new ArrayList<>();
-        points.add(point(start));
-        for (Location waypoint : candidate) {
-            points.add(point(waypoint));
-        }
-        ValidationResult sweep = CoordinatedMotionValidator.validate(model, points, tools, point(start), deadline, contact);
-        if (!sweep.isSafe() || System.nanoTime() > deadline) {
-            return null; // Existing conservative geometry planner has the final say.
-        }
-        double seconds = estimate(tool, start, candidate, speed);
-        if (!Double.isFinite(seconds) || seconds + 0.001 >= stockSeconds) {
-            return null;
-        }
-        return new Plan(candidate, imaging
-                ? "经认证 Z 快速通道：进视觉前联动 XY/Z，无取放末段"
-                : "经认证 Z 快速通道：XY/Z 协调进料位，保留取放垂直段",
-                stockSeconds, seconds);
+        return false;
     }
 
     private static String hardwareIssue(HeadMountable tool, Machine machine, Location destination) throws Exception {
