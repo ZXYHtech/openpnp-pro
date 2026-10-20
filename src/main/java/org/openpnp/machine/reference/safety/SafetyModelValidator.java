@@ -33,6 +33,12 @@ public final class SafetyModelValidator {
         if (model.getSampleStep() <= 0 || model.getSampleStep() > 5) {
             issues.add("轨迹采样间距应大于 0 且不超过 5 mm。");
         }
+        if (model.isFastTravelFloorEnabled()
+                && (!Double.isFinite(model.getFastTravelFloorZ())
+                    || model.getFastTravelFloorZ() <= model.getMinZ()
+                    || model.getFastTravelFloorZ() >= model.getMaxZ())) {
+            issues.add("快速进场 Z 必须位于工作台有效 Z 行程内，且不得代替实际障碍包络。");
+        }
         if (model.getToolProfiles().isEmpty()) {
             issues.add("尚未建立任何贴装头/吸嘴安全包络。");
         }
