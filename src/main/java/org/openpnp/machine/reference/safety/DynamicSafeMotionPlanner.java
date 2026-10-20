@@ -443,11 +443,6 @@ public final class DynamicSafeMotionPlanner {
         }
         List<DynamicTool> tools = DynamicSafetyCollisionEngine.snapshot(model, machine, tool);
         double originalSeconds = estimateStock(tool, target, speed);
-        if (contact != null && model.getObjects().stream().noneMatch(object -> object != null
-                && object.enabled && object.obstacle && object.type == SafetyWorkbenchModel.ObjectType.FEEDER
-                && contact.sourceKey.equals(object.sourceKey))) {
-            return rejected("取料飞达尚未建立关联的已认证 3D 外形，保持原安全 Z");
-        }
         // Optional fast-travel plane: above this calibrated *nozzle-reference* Z, enter pickup
         // or imaging with coordinated XY/Z. Below it, exit/enter vertically at the endpoint.
         // Never waive the full swept collision, sibling, feeder or soft-limit checks.
@@ -542,6 +537,13 @@ public final class DynamicSafeMotionPlanner {
             SafetyWorkbenchModel model, List<DynamicTool> tools, double stockSeconds,
             long deadline, boolean imaging, CoordinatedMotionValidator.FeederContact contact) throws Exception {
         if (!model.isFastTravelFloorEnabled() || System.nanoTime() > deadline) {
+            return null;
+        }
+        // If a feeder body has not been measured, do not apply the NEW rapid-plane
+        // shortcut there. Preserve the older planner's behavior as the fallback.
+        if (contact != null && model.getObjects().stream().noneMatch(object -> object != null
+                && object.enabled && object.obstacle && object.type == SafetyWorkbenchModel.ObjectType.FEEDER
+                && contact.sourceKey.equals(object.sourceKey))) {
             return null;
         }
         double floor = model.getFastTravelFloorZ();
