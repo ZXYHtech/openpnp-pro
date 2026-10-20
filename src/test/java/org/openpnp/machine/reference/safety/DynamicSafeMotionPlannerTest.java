@@ -371,6 +371,34 @@ class DynamicSafeMotionPlannerTest {
     }
 
     @Test
+    void cameraApertureAllowsOnlyCertifiedLocalXyzDescentBelowRapidPlane() throws Exception {
+        model.setFastTravelFloor(true, -5);
+        SafetyObject camera = model.createObject(ObjectType.BOTTOM_CAMERA);
+        camera.x = 270;
+        camera.y = 80;
+        camera.z = -40;
+        camera.width = 60;
+        camera.depth = 40;
+        camera.height = 25;
+        camera.clearance = 1;
+        camera.apertureWidth = 45;
+        camera.apertureDepth = 35;
+        model.addObject(camera);
+        model.certify("Physical bottom-camera entrance and aperture measured");
+        Location image = new Location(LengthUnit.Millimeters, 300, 100, -9, 0);
+        Plan plan = DynamicSafeMotionPlanner.previewBottomVision(nozzle, image, 1);
+        assertTrue(plan.isOptimized(), plan.getReason());
+        assertTrue(plan.getReason().contains("相机开口"), plan.getReason());
+        assertTrue(plan.getLocations().size() >= 2, "The short, local camera entry must be distinct");
+        Location beforeTarget = plan.getLocations().get(plan.getLocations().size() - 2);
+        assertTrue(beforeTarget.getLinearDistanceTo(image) > 0);
+        assertTrue(Math.hypot(beforeTarget.getX() - image.getX(), beforeTarget.getY() - image.getY()) <= 5.001);
+        assertEquals(-5, beforeTarget.getZ(), .001);
+        assertEquals(-9, plan.getLocations().get(plan.getLocations().size() - 1).getZ(), .001);
+        assertTrue(commands.isEmpty());
+    }
+
+    @Test
     void rapidTravelPlaneCannotOverrideUncertifiedGeometryOrTallObstacle() throws Exception {
         model.setFastTravelFloor(true, -5.0);
         assertFalse(DynamicSafeMotionPlanner.preview(nozzle, target(), 1).isOptimized());
