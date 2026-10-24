@@ -10,6 +10,18 @@ import org.junit.jupiter.api.Test;
 
 class SafetyWorkbenchViewTransformTest {
     @Test
+    void topBottomAndExactSideViewsAreReachableWithoutSingularGroundEditing() {
+        assertEquals(-Math.PI / 2, SafetyWorkbenchViewTransform.clampPitch(-4), .000001);
+        assertEquals(Math.PI / 2, SafetyWorkbenchViewTransform.clampPitch(4), .000001);
+        assertEquals(0, SafetyWorkbenchViewTransform.clampPitch(0), .000001);
+        assertTrue(SafetyWorkbenchViewTransform.canMapGround(Math.PI / 2));
+        assertTrue(SafetyWorkbenchViewTransform.canMapGround(-Math.PI / 2));
+        org.junit.jupiter.api.Assertions.assertFalse(SafetyWorkbenchViewTransform.canMapGround(0));
+        assertEquals(10, SafetyWorkbenchViewTransform.vertical(10, 8, Math.PI / 2), .000001);
+        assertEquals(-10, SafetyWorkbenchViewTransform.vertical(10, 8, -Math.PI / 2), .000001);
+        assertEquals(-8, SafetyWorkbenchViewTransform.vertical(10, 8, 0), .000001);
+    }
+    @Test
     void machineFrontViewMirrorsPhysicalXDirection() {
         double yaw = Math.toRadians(-35);
         double normal = SafetyWorkbenchViewTransform.horizontal(10, 0, yaw, false);

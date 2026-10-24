@@ -161,57 +161,6 @@ public final class FlyingVisionMotion {
     }
 
     public static List<PlannedPlacement> orderForFlying(List<PlannedPlacement> planned) {
-        if (planned.size() != 2 || planned.get(0).nozzle.getHead() != planned.get(1).nozzle.getHead()) {
-            return planned;
-        }
-        try {
-            Camera camera = VisionUtils.getBottomVisionCamera();
-            ReferenceBottomVision vision = ReferenceBottomVision.getDefault();
-            if (camera.getHead() != null || !SafetyWorkbenchStore.get().isCertified()) {
-                return planned;
-            }
-            Location[] headTargets = new Location[2];
-            for (int index = 0; index < 2; index++) {
-                PlannedPlacement item = planned.get(index);
-                var job = item.jobPlacement;
-                var placement = job.getPlacement();
-                if (item.nozzle.getPart() != placement.getPart()
-                        || !FlyingBottomVisionService.shouldAttempt(placement.getPart(),
-                                job.getBoardLocation(), placement, item.nozzle)) {
-                    return planned;
-                }
-                Location target = vision.getLocation(placement.getPart(), job.getBoardLocation(), placement, item.nozzle);
-                headTargets[index] = item.nozzle.toHeadLocation(target).convertToUnits(LengthUnit.Millimeters);
-            }
-            if (reverseOrder(headTargets[0].getX(), headTargets[0].getY(), headTargets[1].getX(),
-                    headTargets[1].getY(), FlyingVisionSettings.getApproachDistanceMm(),
-                    FlyingVisionSettings.getExitDistanceMm(), direction())) {
-                Location start = planned.get(0).nozzle.toHeadLocation(planned.get(0).nozzle.getLocation())
-                        .convertToUnits(LengthUnit.Millimeters);
-                Location[] ends = new Location[2];
-                for (int i = 0; i < 2; i++) {
-                    PlannedPlacement item = planned.get(i);
-                    Location board = Utils2D.calculateBoardPlacementLocation(item.jobPlacement.getBoardLocation(),
-                            item.jobPlacement.getPlacement().getLocation());
-                    ends[i] = item.nozzle.toHeadLocation(board).convertToUnits(LengthUnit.Millimeters);
-                }
-                double approach = FlyingVisionSettings.getApproachDistanceMm();
-                double exit = FlyingVisionSettings.getExitDistanceMm();
-                double originalCost = routeDistance(start, headTargets[0], headTargets[1], ends, approach, exit, direction());
-                double reversedCost = routeDistance(start, headTargets[1], headTargets[0], ends, approach, exit, direction());
-                if (reversedCost > originalCost + .01) {
-                    return planned;
-                }
-                List<PlannedPlacement> ordered = new ArrayList<>();
-                ordered.add(planned.get(1));
-                ordered.add(planned.get(0));
-                Logger.info("Flying camera order {} -> {} keeps both passes in direction {} without increasing XY travel.",
-                        ordered.get(0).nozzle.getName(), ordered.get(1).nozzle.getName(), direction());
-                return ordered;
-            }
-        } catch (Exception unavailable) {
-            Logger.debug(unavailable, "Keep ordinary alignment order; flying camera corridor is unavailable.");
-        }
-        return planned;
+        return BottomVisionRouteOrder.order(planned);
     }
 }

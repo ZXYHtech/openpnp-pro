@@ -388,12 +388,16 @@ public class ReferenceNozzle extends AbstractNozzle implements HeadMountable {
 
     @Override
     public void moveToPlacementLocation(Location placementLocation, Part part) throws Exception {
+        Location surface = placementLocation;
         // The default ReferenceNozzle implementation just moves to the placementLocation + partHeight at safe Z.
         if (part != null) {
             placementLocation = placementLocation
                     .add(new Location(part.getHeight().getUnits(), 0, 0, part.getHeight().getValue(), 0));
         }
-        MovableUtils.moveToLocationAtSafeZ(this, placementLocation);
+        if (!org.openpnp.machine.reference.safety.DynamicSafeMotionPlanner.tryMoveToPlace(
+                this, surface, placementLocation, getHead().getMachine().getSpeed())) {
+            MovableUtils.moveToLocationAtSafeZ(this, placementLocation);
+        }
     }
 
     @Override

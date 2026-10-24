@@ -75,4 +75,15 @@ public final class DynamicSafeMotionSettings {
             throw new IllegalStateException("无法保存 XY/Z 联动开关", failure);
         }
     }
+
+    public static boolean isStrictEnabled() {
+        File directory = Configuration.get().getConfigurationDirectory();
+        return directory != null && preferences().getBoolean(key(directory) + ".strict", false);
+    }
+
+    public static void setStrictEnabled(boolean enabled) {
+        preferences().putBoolean(key(Configuration.get().getConfigurationDirectory()) + ".strict", enabled);
+        try { preferences().flush(); }
+        catch (Exception failure) { throw new IllegalStateException("无法保存不回退模式", failure); }
+    }
 }

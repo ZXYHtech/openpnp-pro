@@ -44,6 +44,105 @@ import org.openpnp.spi.MotionPlanner;
 import org.openpnp.util.MovableUtils;
 
 class DynamicSafeMotionPlannerTest {
+    @Test void boardToFeederUsesLowClearanceInsteadOfUpFlatDownSafeZ() throws Exception {
+        z.setLengthCoordinate(new Length(-8, LengthUnit.Millimeters));
+        model.findToolProfile(head.getId(), nozzle.getId()).zIsNozzleTip = true;
+        SafetyObject bank = model.createObject(ObjectType.FEEDER);
+        bank.x = 0;
+        bank.y = -20;
+        bank.z = -25;
+        bank.width = 400;
+        bank.depth = 60;
+        bank.height = 18;
+        bank.clearance = 2;
+        bank.sourceKey = "feeder-bank:front";
+        model.addObject(bank);
+        model.certify("Measured feeder bank");
+        DynamicSafeMotionSettings.setEnabled(true);
+        DynamicSafeMotionSettings.setStrictEnabled(true);
+        org.openpnp.spi.Feeder feeder = mock(org.openpnp.spi.Feeder.class);
+        Location pick = new Location(LengthUnit.Millimeters, 300, 5, -13, 0);
+        when(feeder.getId()).thenReturn("test");
+        when(feeder.getPickLocation()).thenReturn(pick);
+        assertTrue(DynamicSafeMotionPlanner.tryMoveToPick(nozzle, pick, 1, feeder));
+        assertEquals(2, commands.size(), "One diagonal arrival followed by vertical pickup; no intermediate junction");
+        assertTrue(commands.stream().allMatch(c -> c.getLengthCoordinate(z).getValue() < 0),
+                "Do not detour to full Safe-Z and reverse cam Z above a clear feeder corridor");
+        assertEquals(-13, nozzle.getLocation().getZ(), .001);
+    }
+    @Test void transientPlanningStallReplansBeforeIssuingAnyMotion() throws Exception {
+        DynamicSafeMotionSettings.setEnabled(true);
+        DynamicSafeMotionSettings.setStrictEnabled(true);
+        AtomicInteger checks = new AtomicInteger();
+        when(planner.isValidLocation(any(), any())).thenAnswer(invocation -> {
+            if (checks.incrementAndGet() == 1) {
+                assertTrue(commands.isEmpty());
+                Thread.sleep(300);
+            }
+            return true;
+        });
+        assertTrue(DynamicSafeMotionPlanner.tryMoveToLocationAtSafeZ(nozzle, target(), 1));
+        assertTrue(checks.get() >= 4, "Both waypoints must be revalidated after the first plan expires");
+        assertFalse(commands.isEmpty());
+    }
+    @Test void failedHomingCalibrationRestoresProductionCoordinationScope() throws Exception {
+        var calibration = new org.openpnp.machine.reference.ReferenceNozzleTipCalibration();
+        calibration.setEnabled(true);
+        DynamicSafeMotionSettings.setEnabled(true);
+        DynamicSafeMotionSettings.setStrictEnabled(true);
+        machine.setHomed(false);
+        Exception failure = assertThrows(Exception.class, () -> calibration.calibrate(null, true, false));
+        assertTrue(failure.getMessage().contains("mismatch"), "Homing calibration reaches native validation");
+        Exception production = assertThrows(Exception.class,
+                () -> DynamicSafeMotionPlanner.tryMoveToLocationAtSafeZ(nozzle, target(), 1));
+        assertTrue(production.getMessage().contains("回零"), "Production checks must resume after calibration failure");
+        assertTrue(commands.isEmpty());
+    }
+    @Test void explicitPlacementContactAllowsApproachAndExitWithoutLegacySafeZ() throws Exception {
+        nozzle.setNozzleTip(new org.openpnp.machine.reference.ReferenceNozzleTip());
+        Configuration.get().getScripting().on("Job.Placement.Complete", java.util.Collections.emptyMap());
+        SafetyObject board = model.createObject(ObjectType.BOARD);
+        board.x = 290;
+        board.y = 90;
+        board.z = -5;
+        board.width = board.depth = 20;
+        board.height = 7;
+        board.clearance = 0;
+        model.addObject(board);
+        model.certify("Board includes component envelope");
+        DynamicSafeMotionSettings.setEnabled(true);
+        DynamicSafeMotionSettings.setStrictEnabled(true);
+        Location tip = target();
+        Location surface = tip.derive(null, null, -1.0, null);
+        assertTrue(DynamicSafeMotionPlanner.tryMoveToPlace(nozzle, surface, tip, 1));
+        int beforeExit = commands.size();
+        DynamicSafeMotionPlanner.retractAfterPlace(nozzle, surface, tip);
+        assertTrue(commands.size() > beforeExit);
+        assertTrue(nozzle.getLocation().getZ() < 20, "Keep remaining Z for the next XY segment");
+        assertTrue(options.stream().allMatch(o -> o.contains(MotionOption.CoordinatedMotion)));
+    }
+    @Test
+    void strictFastModeCannotTravelAboveChangerAndTipChangeStillUsesStock() throws Exception {
+        Location destination = target();
+        SafetyObject zone = model.createObject(ObjectType.NOZZLE_CHANGER);
+        zone.x = destination.getX() - 5;
+        zone.y = destination.getY() - 5;
+        zone.z = -70;
+        zone.width = zone.depth = 10;
+        zone.height = 10;
+        zone.obstacle = true;
+        zone.enabled = true;
+        model.addObject(zone);
+        model.setFastTravelFloor(true, -5);
+        model.certify("Measured changer zone");
+        DynamicSafeMotionSettings.setEnabled(true);
+        assertThrows(Exception.class, () -> DynamicSafeMotionPlanner.tryMoveToLocationAtSafeZ(nozzle, destination, 1));
+        assertTrue(commands.isEmpty());
+        try (var scope = DynamicSafeMotionPlanner.suspendForNozzleTipChange()) {
+            assertFalse(DynamicSafeMotionPlanner.tryMoveToLocationAtSafeZ(nozzle, destination, 1));
+        }
+        assertTrue(commands.isEmpty());
+    }
     @Test
     void camSnapshotInterpolatesSharedMotorAndBothNozzleOffsetsWithoutMotion() throws Exception {
         org.openpnp.machine.reference.axis.ReferenceCamCounterClockwiseAxis ccw =
@@ -263,6 +362,7 @@ class DynamicSafeMotionPlannerTest {
         model.certify("Software-only fixture");
         SafetyWorkbenchStore.save(model);
         DynamicSafeMotionSettings.setEnabled(false);
+        DynamicSafeMotionSettings.setStrictEnabled(false);
     }
 
     ReferenceControllerAxis axis(Axis.Type type, double position) throws Exception {
@@ -340,6 +440,95 @@ class DynamicSafeMotionPlannerTest {
         assertTrue(commands.isEmpty());
         System.out.printf("LOW CORRIDOR SOFTWARE ESTIMATE: original=%.6fs, optimized=%.6fs%n",
                 plan.getOriginalSeconds(), plan.getCoordinatedSeconds());
+    }
+
+    @Test
+    void calibratedMinusFivePlaneOverlapsXyZThenApproachesPickVertically() throws Exception {
+        // Simulates a shallow feeder pick at -7: all XY motion must stay at Z >= -5.
+        model.setFastTravelFloor(true, -5.0);
+        assertFalse(model.isCertified(), "Changing a rapid plane must invalidate old geometry approval");
+        model.certify("Operator measured the -5 mm reference-Z clearance");
+        Location pick = new Location(LengthUnit.Millimeters, 300, 100, -7, 0);
+        Plan plan = DynamicSafeMotionPlanner.preview(nozzle, pick, 1);
+        assertTrue(plan.isOptimized(), plan.getReason());
+        assertEquals(-7, plan.getLocations().get(plan.getLocations().size() - 1).getZ(), 1e-8);
+        Location before = nozzle.getLocation();
+        boolean overlapped = false;
+        for (Location next : plan.getLocations()) {
+            if (Math.hypot(next.getX() - before.getX(), next.getY() - before.getY()) > .001) {
+                assertTrue(Math.min(before.getZ(), next.getZ()) >= -5.001,
+                        "XY movement below the certified -5 mm Z floor is prohibited");
+                overlapped |= Math.abs(next.getZ() - before.getZ()) > .001;
+            }
+            before = next;
+        }
+        assertTrue(overlapped, "Entry must contain a real simultaneous XY and Z segment");
+        Location approach = plan.getLocations().get(plan.getLocations().size() - 2);
+        assertEquals(-5, approach.getZ(), .001);
+        assertEquals(pick.getX(), approach.getX(), .001);
+        assertEquals(pick.getY(), approach.getY(), .001);
+        assertTrue(commands.isEmpty(), "Preview must never issue a physical G-code move");
+    }
+
+    @Test
+    void cameraApertureAllowsOnlyCertifiedLocalXyzDescentBelowRapidPlane() throws Exception {
+        model.setFastTravelFloor(true, -5);
+        SafetyObject camera = model.createObject(ObjectType.BOTTOM_CAMERA);
+        camera.x = 270;
+        camera.y = 80;
+        camera.z = -40;
+        camera.width = 60;
+        camera.depth = 40;
+        camera.height = 25;
+        camera.clearance = 1;
+        camera.apertureWidth = 45;
+        camera.apertureDepth = 35;
+        model.addObject(camera);
+        model.certify("Physical bottom-camera entrance and aperture measured");
+        Location image = new Location(LengthUnit.Millimeters, 300, 100, -9, 0);
+        Plan plan = DynamicSafeMotionPlanner.previewBottomVision(nozzle, image, 1);
+        assertTrue(plan.isOptimized(), plan.getReason());
+        assertTrue(plan.getReason().contains("相机开口"), plan.getReason());
+        assertTrue(plan.getLocations().size() >= 2, "The short, local camera entry must be distinct");
+        Location beforeTarget = plan.getLocations().get(plan.getLocations().size() - 2);
+        assertTrue(beforeTarget.getLinearDistanceTo(image) > 0);
+        assertTrue(Math.hypot(beforeTarget.getX() - image.getX(), beforeTarget.getY() - image.getY()) <= 5.001);
+        assertEquals(-5, beforeTarget.getZ(), .001);
+        assertEquals(-9, plan.getLocations().get(plan.getLocations().size() - 1).getZ(), .001);
+        assertTrue(commands.isEmpty());
+    }
+
+    @Test
+    void rapidTravelPlaneCannotOverrideUncertifiedGeometryOrTallObstacle() throws Exception {
+        model.setFastTravelFloor(true, -5.0);
+        assertFalse(DynamicSafeMotionPlanner.preview(nozzle, target(), 1).isOptimized());
+        SafetyObject obstacle = model.createObject(ObjectType.KEEP_OUT);
+        obstacle.x = 150;
+        obstacle.y = 70;
+        obstacle.z = -30;
+        obstacle.width = 40;
+        obstacle.depth = 70;
+        obstacle.height = 100;
+        model.addObject(obstacle);
+        model.certify("Obstacle measured");
+        DynamicSafeMotionSettings.setEnabled(true);
+        assertThrows(Exception.class, () -> DynamicSafeMotionPlanner.tryMoveToLocationAtSafeZ(nozzle, target(), 1));
+        assertTrue(commands.isEmpty(), "No optimistic fast-Z move or fallback through a keep-out");
+    }
+
+    @Test
+    void unrelatedFeederDriverAndStationaryRemoteRotationDoNotBlockXyz() throws Exception {
+        NullDriver feederController = new NullDriver();
+        machine.addDriver(feederController); // An actuator-only feeder controller is not a motion axis.
+        assertTrue(DynamicSafeMotionPlanner.preview(nozzle, target(), 1).isOptimized());
+        ReferenceControllerAxis rotation = axis(Axis.Type.Rotation, 0);
+        rotation.setDriver(feederController);
+        nozzle.setAxisRotation(rotation);
+        Plan xyzOnly = DynamicSafeMotionPlanner.preview(nozzle, target(), 1);
+        assertTrue(xyzOnly.isOptimized(), xyzOnly.getReason());
+        Plan rotating = DynamicSafeMotionPlanner.preview(nozzle, target().derive(null, null, null, 90.0), 1);
+        assertFalse(rotating.isOptimized());
+        assertTrue(rotating.getReason().contains("旋转轴"), rotating.getReason());
     }
 
     @Test

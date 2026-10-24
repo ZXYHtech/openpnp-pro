@@ -989,6 +989,9 @@ public class FeedersPanel extends JPanel implements WizardContainer {
         Helpers.selectObjectTableRow(table, feeder);
     }
     public void selectFeederForPart(Part part) {
+        if (part == null) {
+            return;
+        }
         if (getSelection() == null
                 || !part.isInterchangeableWith(getSelection().getPart())) {
             Feeder feeder = findFeeder(part, true);

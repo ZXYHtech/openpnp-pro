@@ -34,6 +34,24 @@ import org.openpnp.spi.Axis;
 import org.openpnp.spi.HeadMountable;
 
 class CoreXYRuntimeIntegrationTest {
+    @Test
+    void continuousPassKeepsPrecisionOffsetWithoutAnExtraCorrectionMove() throws Exception {
+        activate(.03, -.02);
+        Motion nominal = new Motion(camera, location(100, 100), location(110, 100), .5,
+                Motion.MotionOption.UncoordinatedMotion);
+        try (var scope = new org.openpnp.model.ContinuousVisionProfile(
+                java.util.Collections.singletonList(nominal), 12, path -> { })) {
+            plan(100, 100, 110, 100);
+            assertEquals(1, motions().size());
+            assertEquals(110.03, motions().getFirst().getLocation1().getCoordinate(x), 1e-9);
+            assertEquals(99.98, motions().getFirst().getLocation1().getCoordinate(y), 1e-9);
+            assertEquals(.03, PrecisionRuntime.activeOffset(planner).getCoordinate(x), 1e-9);
+        }
+        assertFalse(org.openpnp.model.ContinuousVisionCompensation.isActive());
+        plan(110, 100, 120, 100);
+        assertEquals(120.03, motions().getLast().getLocation1().getCoordinate(x), 1e-9);
+    }
+
     @TempDir
     Path temporary;
     ReferenceMachine machine;

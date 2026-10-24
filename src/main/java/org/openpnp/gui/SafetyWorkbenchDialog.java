@@ -231,6 +231,7 @@ public class SafetyWorkbenchDialog extends JDialog {
         super(frame, "OpenPnP Pro · 3D 安全工作台（实验）", false);
         this.frame = frame;
         this.model = SafetyWorkbenchStore.get();
+        canvas.rapidPreviewZ = model.getFastTravelFloorZ();
         synchronizeToolProfiles();
         loadWorkbenchControls();
         this.history = new SafetyWorkbenchHistory(model);
@@ -604,6 +605,16 @@ public class SafetyWorkbenchDialog extends JDialog {
         isometric.addActionListener(event -> canvas.setIsometricView());
         JButton top = new JButton("俯视");
         top.addActionListener(event -> canvas.setTopView());
+        JButton bottom = new JButton("底视");
+        bottom.addActionListener(event -> canvas.setView(0, -90));
+        JButton front = new JButton("正视");
+        front.addActionListener(event -> canvas.setView(0, 0));
+        JButton back = new JButton("后视");
+        back.addActionListener(event -> canvas.setView(180, 0));
+        JButton left = new JButton("左视");
+        left.addActionListener(event -> canvas.setView(90, 0));
+        JButton right = new JButton("右视");
+        right.addActionListener(event -> canvas.setView(-90, 0));
         machineFrontView.setToolTipText(
                 "默认镜像屏幕横向投影，使机头左右移动与从机器正面观察的方向一致。");
         machineFrontView.addActionListener(
@@ -615,6 +626,11 @@ public class SafetyWorkbenchDialog extends JDialog {
         controls.add(reset);
         controls.add(isometric);
         controls.add(top);
+        controls.add(bottom);
+        controls.add(front);
+        controls.add(back);
+        controls.add(left);
+        controls.add(right);
         controls.add(machineFrontView);
         controls.add(showReferenceLabels);
         controls.add(new JLabel("空白处左拖 / 中键拖：平移；右拖：旋转；滚轮：缩放"));
@@ -732,6 +748,62 @@ public class SafetyWorkbenchDialog extends JDialog {
             }
         });
         coordinatedMotion.add(motionDiagnostics);
+        // Operator-specific rapid-Z plane, disabled by default. This is NOT a collision bypass:
+        // any change invalidates model certification and all proposed paths are still swept.
+        JCheckBox rapidPlaneEnabled = new JCheckBox("允许 Z 快速进场 ≥");
+        rapidPlaneEnabled.setSelected(model.isFastTravelFloorEnabled());
+        JSpinner rapidPlaneZ = new JSpinner(new SpinnerNumberModel(
+                model.getFastTravelFloorZ(), -500.0, 500.0, 0.5));
+        rapidPlaneZ.addChangeListener(event -> {
+            canvas.rapidPreviewZ = ((Number) rapidPlaneZ.getValue()).doubleValue();
+            canvas.repaint();
+        });
+        rapidPlaneZ.setPreferredSize(new Dimension(74, 27));
+        JButton rapidApply = new JButton("应用并重新认证");
+        rapidApply.setName("fast-z-floor-apply");
+        rapidApply.setToolTipText("当前吸嘴参考 Z（毫米），不是吸嘴尖/元件最低点；所有工具仍进行 3D 碰撞扫掠。");
+        rapidApply.addActionListener(event -> {
+            if (Configuration.get().getMachine().isBusy()) {
+                result.setText("运行任务期间不能改变快速 Z 通道，请先暂停并等待机器空闲。");
+                return;
+            }
+            boolean enable = rapidPlaneEnabled.isSelected();
+            double floorZ = ((Number) rapidPlaneZ.getValue()).doubleValue();
+            if (enable) {
+                java.util.List<String> issues = org.openpnp.machine.reference.safety.FastTravelClearance.check(
+                        model, Configuration.get().getMachine(), floorZ);
+                if (!issues.isEmpty()) {
+                    rapidPlaneEnabled.setSelected(false);
+                    canvas.repaint();
+                    result.setText("快速高度检查未通过，不能开启：\n" + String.join("\n", issues));
+                    return;
+                }
+            }
+            if (enable && JOptionPane.showConfirmDialog(this,
+                    "请确认这个数值是已标定的吸嘴参考 Z，并已实际测量 N1、N2、携带元件、飞达和相机外壳的间隙。\n"
+                    + "它只用于优先尝试安全联动路线，不会跳过 3D 扫掠、软限位、换嘴和末段垂直取放。\n"
+                    + "修改后须重新检查、认证并保存 3D 模型。是否继续？",
+                    "快速进场 Z 净空确认", JOptionPane.OK_CANCEL_OPTION,
+                    JOptionPane.WARNING_MESSAGE) != JOptionPane.OK_OPTION) {
+                return;
+            }
+            try {
+                model.setFastTravelFloor(enable, floorZ);
+                updateCertification();
+                coordinatedMotion.refresh();
+                result.setText(enable
+                        ? "已申请在吸嘴参考 Z ≥ " + floorZ + " mm 进行快速 XY/Z 进场。请核对全部实体尺寸，重新“检查并认证”，然后保存模型；认证前自动保持原路径。"
+                        : "已关闭快速 Z 进场通道。请重新认证并保存模型。");
+            } catch (IllegalArgumentException invalid) {
+                result.setText("快速 Z 阈值无效：" + invalid.getMessage());
+            }
+        });
+        JPanel rapidRow = new JPanel(new WrapLayout(FlowLayout.LEFT, 4, 1));
+        rapidRow.add(rapidPlaneEnabled);
+        rapidRow.add(rapidPlaneZ);
+        rapidRow.add(new JLabel("mm（参考 Z）"));
+        rapidRow.add(rapidApply);
+        coordinatedMotion.add(rapidRow);
         header.add(coordinatedMotion);
         return header;
     }
@@ -833,6 +905,10 @@ public class SafetyWorkbenchDialog extends JDialog {
             if (!event.getValueIsAdjusting()) {
                 canvas.setSelected(objectList.getSelectedValue());
                 showObject(objectList.getSelectedValue());
+                if (objectList.getSelectedValue() != null) {
+                    result.setText(org.openpnp.machine.reference.safety.FastTravelClearance.reason(
+                            objectList.getSelectedValue(), canvas.rapidPreviewZ));
+                }
             }
         });
         JPanel placed = new JPanel(new BorderLayout(4, 4));
@@ -2463,7 +2539,11 @@ public class SafetyWorkbenchDialog extends JDialog {
         JTextField toolMinZ = valueField(model.getToolMinZOffset());
         JTextField toolMaxZ = valueField(model.getToolMaxZOffset());
         JTextField sample = valueField(model.getSampleStep());
+        JCheckBox travelBounds = new JCheckBox("XY 是行程范围（允许外壳悬出）", model.isXyBoundsAreTravelLimits());
+        travelBounds.setToolTipText("真实框架请建立障碍物。此选项不关闭实体碰撞检查或控制器软限位。");
         JPanel fields = new JPanel(new GridLayout(0, 2, 6, 6));
+        fields.add(travelBounds);
+        fields.add(new JLabel("实体障碍仍按完整包络检查"));
         addField(fields, "工作台最小 X", minX);
         addField(fields, "工作台最大 X", maxX);
         addField(fields, "工作台最小 Y", minY);
@@ -2503,6 +2583,7 @@ public class SafetyWorkbenchDialog extends JDialog {
             model.setToolMinZOffset(parsedToolMinZ);
             model.setToolMaxZOffset(parsedToolMaxZ);
             model.setSampleStep(parsedSample);
+            model.setXyBoundsAreTravelLimits(travelBounds.isSelected());
             updateCertification();
             canvas.repaint();
         }
@@ -2514,6 +2595,10 @@ public class SafetyWorkbenchDialog extends JDialog {
 
     private void certifyModel() {
         List<String> issues = SafetyModelValidator.validate(model);
+        if (model.isFastTravelFloorEnabled()) {
+            issues = org.openpnp.machine.reference.safety.FastTravelClearance.check(
+                    model, Configuration.get().getMachine(), model.getFastTravelFloorZ());
+        }
         if (!issues.isEmpty()) {
             JOptionPane.showMessageDialog(this, "模型不能认证：\n• "
                     + String.join("\n• ", issues), "检查未通过",
@@ -2711,6 +2796,7 @@ public class SafetyWorkbenchDialog extends JDialog {
         @Override
         public boolean canImport(TransferSupport support) {
             return !liveMode.isSelected()
+                    && SafetyWorkbenchViewTransform.canMapGround(canvas.pitch)
                     && support.isDataFlavorSupported(DataFlavor.stringFlavor);
         }
 
@@ -2964,7 +3050,7 @@ public class SafetyWorkbenchDialog extends JDialog {
         }
     }
 
-    private static class ObjectRenderer extends DefaultListCellRenderer {
+    private class ObjectRenderer extends DefaultListCellRenderer {
         @Override
         public Component getListCellRendererComponent(JList<?> list, Object value, int index,
                 boolean selected, boolean focused) {
@@ -2975,9 +3061,12 @@ public class SafetyWorkbenchDialog extends JDialog {
                 label.setIcon(new ObjectTypeIcon(object.type));
                 label.setIconTextGap(6);
                 label.setText((object.locked ? "[锁定] " : "") + object.name);
-                label.setToolTipText(object.type.getDisplayName() + " · "
-                        + format(object.width) + " × " + format(object.depth) + " × "
-                        + format(object.height) + " mm");
+                String reason = org.openpnp.machine.reference.safety.FastTravelClearance.reason(object, canvas.rapidPreviewZ);
+                label.setToolTipText(reason);
+                if (org.openpnp.machine.reference.safety.FastTravelClearance.blocksGlobalPlane(object, canvas.rapidPreviewZ)) {
+                    label.setText(label.getText() + " [净空不足]");
+                    label.setForeground(new Color(255, 65, 65));
+                }
             }
             return label;
         }
@@ -3069,8 +3158,7 @@ public class SafetyWorkbenchDialog extends JDialog {
                             && vertexPopupCandidate == null) {
                         followSelectedTool.setSelected(false);
                         yaw = startYaw + dx * 0.008;
-                        pitch = Math.max(Math.toRadians(15),
-                                Math.min(Math.toRadians(89), startPitch - dy * 0.006));
+                        pitch = SafetyWorkbenchViewTransform.clampPitch(startPitch - dy * 0.006);
                     }
                     else if (!liveMode.isSelected() && selectedVertex != null
                             && dragStartVertexLocation != null && !selectedVertex.object.locked
@@ -3081,6 +3169,7 @@ public class SafetyWorkbenchDialog extends JDialog {
                                     dragStartVertexLocation.getZ() - dy / scale(), null);
                         }
                         else {
+                            if (!SafetyWorkbenchViewTransform.canMapGround(pitch)) { return; }
                             double[] initial = groundAt(mouseStart.x, mouseStart.y);
                             double[] current = groundAt(event.getX(), event.getY());
                             target = dragStartVertexLocation.add(new Location(
@@ -3101,6 +3190,7 @@ public class SafetyWorkbenchDialog extends JDialog {
                             selected.z = dragStartZ - dy / scale();
                         }
                         else {
+                            if (!SafetyWorkbenchViewTransform.canMapGround(pitch)) { return; }
                             double[] initial = groundAt(mouseStart.x, mouseStart.y);
                             double[] current = groundAt(event.getX(), event.getY());
                             selected.x = dragStartX + current[0] - initial[0];
@@ -3162,9 +3252,16 @@ public class SafetyWorkbenchDialog extends JDialog {
         }
 
         void setTopView() {
-            yaw = 0;
-            pitch = Math.toRadians(89);
+            setView(0, 90);
+        }
+
+        void setView(double yawDegrees, double pitchDegrees) {
+            yaw = Math.toRadians(yawDegrees);
+            pitch = SafetyWorkbenchViewTransform.clampPitch(Math.toRadians(pitchDegrees));
             followSelectedTool.setSelected(false);
+            if (!SafetyWorkbenchViewTransform.canMapGround(pitch)) {
+                result.setText("正侧视可查看高度和间隙；Shift + 拖动可调整 Z。移动 XY 或拖入物体请切换俯视、底视或等轴视图。");
+            }
             repaint();
         }
 
@@ -3247,6 +3344,8 @@ public class SafetyWorkbenchDialog extends JDialog {
                     drawObject(g, object);
                 }
             }
+            drawRapidPlane(g);
+            drawChangerZones(g);
             drawVertices(g);
             drawSelectedDimensions(g);
             drawLiveTrail(g);
@@ -3405,6 +3504,39 @@ public class SafetyWorkbenchDialog extends JDialog {
             }
         }
 
+        private double rapidPreviewZ;
+
+        private void drawChangerZones(Graphics2D g) {
+            g.setStroke(new BasicStroke(2f));
+            for (SafetyObject object : model.getObjects()) {
+                if (!object.enabled || !org.openpnp.machine.reference.safety.FastTravelClearance.restrictedZone(object)) {
+                    continue;
+                }
+                double margin = object.clearance;
+                Point a = project(object.x - margin, object.y - margin, rapidPreviewZ);
+                Point b = project(object.x + object.width + margin, object.y - margin, rapidPreviewZ);
+                Point c = project(object.x + object.width + margin, object.y + object.depth + margin, rapidPreviewZ);
+                Point d = project(object.x - margin, object.y + object.depth + margin, rapidPreviewZ);
+                g.setColor(new Color(185, 115, 240));
+                g.drawPolygon(polygon(a, b, c, d));
+                g.drawString("换嘴专用区：经过时检查", a.x, a.y - 4);
+            }
+        }
+
+        private void drawRapidPlane(Graphics2D g) {
+            Point a = project(model.getMinX(), model.getMinY(), rapidPreviewZ);
+            Point b = project(model.getMaxX(), model.getMinY(), rapidPreviewZ);
+            Point c = project(model.getMaxX(), model.getMaxY(), rapidPreviewZ);
+            Point d = project(model.getMinX(), model.getMaxY(), rapidPreviewZ);
+            g.setColor(new Color(255, 170, 55, 48));
+            g.fillPolygon(polygon(a, b, c, d));
+            g.setStroke(new BasicStroke(2f));
+            drawSafeZPlane(g, rapidPreviewZ, new Color(255, 145, 35));
+            Point label = project(model.getMinX(), model.getMinY(), rapidPreviewZ);
+            g.drawString(String.format(Locale.ROOT, "安全参考平面 Z = %.2f mm（吸嘴参考坐标）", rapidPreviewZ),
+                    label.x + 5, label.y - 5);
+        }
+
         private void drawSafeZZone(Graphics2D g) {
             if (!model.hasImportedSafeZ()) {
                 return;
@@ -3526,6 +3658,9 @@ public class SafetyWorkbenchDialog extends JDialog {
                 return;
             }
             drawBox(g, object);
+            if (pitch < 0) {
+                return; // Top-side decoration must not show through the solid bottom face.
+            }
             switch (object.type) {
                 case FEEDER:
                     drawFeederDetails(g, object);
@@ -3560,7 +3695,8 @@ public class SafetyWorkbenchDialog extends JDialog {
             double bodyX = object.x - object.width / 2.0;
             double bodyY = object.y - object.depth / 2.0;
             double bodyZ = object.z - object.height;
-            Color base = new Color(object.colorRgb);
+            Color base = org.openpnp.machine.reference.safety.FastTravelClearance.blocksGlobalPlane(object, rapidPreviewZ)
+                    ? new Color(255, 35, 35) : new Color(object.colorRgb);
             drawCuboid(g, bodyX, bodyY, bodyZ, object.width, object.depth,
                     object.height, base, object == selected
                             ? new Color(242, 190, 83) : shade(base, 1.35));
@@ -3596,7 +3732,8 @@ public class SafetyWorkbenchDialog extends JDialog {
             Font originalFont = g.getFont();
             Point point = project(object.x, object.y, object.z);
             Point top = project(object.x, object.y, object.z + Math.max(4, object.height));
-            Color base = new Color(object.colorRgb);
+            Color base = org.openpnp.machine.reference.safety.FastTravelClearance.blocksGlobalPlane(object, rapidPreviewZ)
+                    ? new Color(255, 35, 35) : new Color(object.colorRgb);
             int radius = (int) Math.max(6, Math.min(13, object.width * scale() * 0.35));
             g.setColor(shade(base, 0.75));
             g.setStroke(new BasicStroke(3f, BasicStroke.CAP_ROUND,
@@ -3624,6 +3761,9 @@ public class SafetyWorkbenchDialog extends JDialog {
         }
 
         private void drawFeederDetails(Graphics2D g, SafetyObject object) {
+            if (pitch < 0 || object.sourceKey.startsWith("feeder-bank:")) {
+                return; // A bank is a union of feeder bodies, not a giant single reel.
+            }
             double top = object.z + object.height + 0.3;
             double pickFraction = object.rearFacing ? 0.90 : 0.10;
             double reelFraction = object.rearFacing ? 0.16 : 0.84;
@@ -3778,21 +3918,10 @@ public class SafetyWorkbenchDialog extends JDialog {
             g.fillOval(tip.x - 3, tip.y - 2, 6, 4);
         }
         private void drawBox(Graphics2D g, SafetyObject object) {
-            Point p000 = project(object.x, object.y, object.z);
-            Point p100 = project(object.x + object.width, object.y, object.z);
-            Point p010 = project(object.x, object.y + object.depth, object.z);
-            Point p110 = project(object.x + object.width, object.y + object.depth, object.z);
-            Point p001 = project(object.x, object.y, object.z + object.height);
-            Point p101 = project(object.x + object.width, object.y, object.z + object.height);
-            Point p011 = project(object.x, object.y + object.depth, object.z + object.height);
-            Point p111 = project(object.x + object.width, object.y + object.depth,
-                    object.z + object.height);
-            Color base = new Color(object.colorRgb);
-            fillFace(g, shade(base, 0.62), p000, p100, p101, p001);
-            fillFace(g, shade(base, 0.78), p100, p110, p111, p101);
-            fillFace(g, shade(base, 1.08), p001, p101, p111, p011);
-            drawEdges(g, object == selected ? new Color(240, 190, 91) : shade(base, 1.35),
-                    p000, p100, p110, p010, p001, p101, p111, p011);
+            Color base = org.openpnp.machine.reference.safety.FastTravelClearance.blocksGlobalPlane(object, rapidPreviewZ)
+                    ? new Color(255, 35, 35) : new Color(object.colorRgb);
+            drawCuboid(g, object.x, object.y, object.z, object.width, object.depth,
+                    object.height, base, object == selected ? new Color(240, 190, 91) : shade(base, 1.35));
             if (SafetyWorkbenchGeometry.hasCentralOpening(object)) {
                 double ax = object.x + (object.width - object.apertureWidth) / 2.0;
                 double ay = object.y + (object.depth - object.apertureDepth) / 2.0;
@@ -3824,7 +3953,8 @@ public class SafetyWorkbenchDialog extends JDialog {
                 bottom.addPoint(b.x, b.y);
                 top.addPoint(t.x, t.y);
             }
-            Color base = new Color(object.colorRgb);
+            Color base = org.openpnp.machine.reference.safety.FastTravelClearance.blocksGlobalPlane(object, rapidPreviewZ)
+                    ? new Color(255, 35, 35) : new Color(object.colorRgb);
             g.setColor(shade(base, 0.68));
             g.fillPolygon(bottom);
             g.setColor(shade(base, 1.08));
@@ -3845,7 +3975,8 @@ public class SafetyWorkbenchDialog extends JDialog {
                 bottom.addPoint(b.x, b.y);
                 top.addPoint(t.x, t.y);
             }
-            Color base = new Color(object.colorRgb);
+            Color base = org.openpnp.machine.reference.safety.FastTravelClearance.blocksGlobalPlane(object, rapidPreviewZ)
+                    ? new Color(255, 35, 35) : new Color(object.colorRgb);
             g.setColor(shade(base, 0.68));
             g.fillPolygon(bottom);
             g.setColor(shade(base, 1.08));
@@ -3952,9 +4083,21 @@ public class SafetyWorkbenchDialog extends JDialog {
             Point p101 = project(x + width, y, z + height);
             Point p011 = project(x, y + depth, z + height);
             Point p111 = project(x + width, y + depth, z + height);
-            fillFace(g, shade(base, 0.62), p000, p100, p101, p001);
-            fillFace(g, shade(base, 0.78), p100, p110, p111, p101);
-            fillFace(g, shade(base, 1.08), p001, p101, p111, p011);
+            if (Math.sin(yaw) >= 0) {
+                fillFace(g, shade(base, 0.78), p100, p110, p111, p101);
+            } else {
+                fillFace(g, shade(base, 0.78), p000, p010, p011, p001);
+            }
+            if (Math.cos(yaw) >= 0) {
+                fillFace(g, shade(base, 0.62), p010, p110, p111, p011);
+            } else {
+                fillFace(g, shade(base, 0.62), p000, p100, p101, p001);
+            }
+            if (pitch >= 0) {
+                fillFace(g, shade(base, 1.08), p001, p101, p111, p011);
+            } else {
+                fillFace(g, shade(base, 0.85), p000, p100, p110, p010);
+            }
             drawEdges(g, outline, p000, p100, p110, p010,
                     p001, p101, p111, p011);
         }
@@ -3977,7 +4120,7 @@ public class SafetyWorkbenchDialog extends JDialog {
 
         private void drawOverlay(Graphics2D g) {
             g.setColor(new Color(0, 0, 0, 145));
-            g.fillRoundRect(12, 12, 390, 74, 10, 10);
+            g.fillRoundRect(12, 12, Math.min(getWidth() - 24, 780), 118, 10, 10);
             g.setColor(new Color(226, 229, 231));
             g.drawString(liveMode.isSelected()
                     ? "实时运行：显示全部贴装头、动态 N1 吸嘴、携带元件与运动轨迹"
@@ -3992,6 +4135,21 @@ public class SafetyWorkbenchDialog extends JDialog {
             g.drawString("实时吸嘴 " + liveTools.size() + " · 轨迹缓存 "
                     + liveTrail.size() + " 点 · "
                     + String.format(Locale.ROOT, "%.0f FPS", smoothedFps), 24, 74);
+            g.setColor(new Color(255, 189, 100));
+            g.drawString(String.format(Locale.ROOT,
+                    "半透明平面 Z=%.2f mm；标红按“顶面 + 安全间隙”检查，并非只比较顶面。", rapidPreviewZ), 24, 94);
+            SafetyObject example = selected != null && selected.obstacle ? selected : null;
+            if (example == null) {
+                for (SafetyObject object : model.getObjects()) {
+                    if (org.openpnp.machine.reference.safety.FastTravelClearance.blocksGlobalPlane(object, rapidPreviewZ)) {
+                        example = object;
+                        break;
+                    }
+                }
+            }
+            if (example != null) {
+                g.drawString(org.openpnp.machine.reference.safety.FastTravelClearance.reason(example, rapidPreviewZ), 24, 114);
+            }
         }
 
         private Vertex hitVertex(Point mouse) {
@@ -4099,11 +4257,14 @@ public class SafetyWorkbenchDialog extends JDialog {
             double sx = getWidth() / 2.0 + panX + rx * scale();
             double relativeZ = worldZ - visualOriginZ;
             double sy = getHeight() / 2.0 + panY
-                    + (ry * Math.sin(pitch) - relativeZ * Math.cos(pitch)) * scale();
+                    + SafetyWorkbenchViewTransform.vertical(ry, relativeZ, pitch) * scale();
             return new Point((int) Math.round(sx), (int) Math.round(sy));
         }
 
         double[] groundAt(double screenX, double screenY) {
+            if (!SafetyWorkbenchViewTransform.canMapGround(pitch)) {
+                throw new IllegalStateException("正侧视无法唯一确定 XY，请切换俯视、底视或等轴视图。");
+            }
             double rx = (screenX - getWidth() / 2.0 - panX) / scale();
             double ry = (screenY - getHeight() / 2.0 - panY)
                     / (scale() * Math.sin(pitch));

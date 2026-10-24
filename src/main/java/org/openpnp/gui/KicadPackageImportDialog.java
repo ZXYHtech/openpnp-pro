@@ -232,6 +232,7 @@ public class KicadPackageImportDialog extends JDialog {
                     table.setRowSelectionInterval(row, row);
                 }
                 if (row >= 0) {
+                    org.openpnp.gui.support.TableSelectionSupport.augment(table, popup);
                     popup.show(table, event.getX(), event.getY());
                 }
             }

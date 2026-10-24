@@ -662,6 +662,14 @@ public class ReferenceNozzleTipCalibration extends AbstractModelObject {
     }
 
     public void calibrate(ReferenceNozzle nozzle, boolean homing, boolean calibrateCamera) throws Exception {
+        // Calibration belongs to the native homing/tool maintenance sequence.
+        // Its camera approach must not depend on the production XYZ model or homed flag.
+        try (var scope = org.openpnp.machine.reference.safety.DynamicSafeMotionPlanner.suspendForNozzleTipChange()) {
+            calibrateNative(nozzle, homing, calibrateCamera);
+        }
+    }
+
+    private void calibrateNative(ReferenceNozzle nozzle, boolean homing, boolean calibrateCamera) throws Exception {
         if ( !isEnabled() ) {
             return;
         }

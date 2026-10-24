@@ -369,6 +369,7 @@ public class MainFrame extends JFrame {
     }
 
     public MainFrame(Configuration configuration) {
+        org.openpnp.gui.support.TableSelectionSupport.install();
         StartupSplash.update(34, "Initializing core services...");
         mainFrame = this;
         this.configuration = configuration;

@@ -38,7 +38,8 @@ public class SoundSignaler extends AbstractSignaler {
                 audioInputStream = AudioSystem.getAudioInputStream(overrideFile);
             } 
             else {
-                audioInputStream = AudioSystem.getAudioInputStream(classLoader.getResourceAsStream(filename));
+                audioInputStream = AudioSystem.getAudioInputStream(new java.io.BufferedInputStream(
+                        classLoader.getResourceAsStream(filename)));
             }
 
             Clip clip = AudioSystem.getClip();

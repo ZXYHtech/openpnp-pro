@@ -30,6 +30,46 @@ import org.openpnp.spi.Machine;
 import org.openpnp.spi.Nozzle;
 
 class SafetyWorkbenchImportServiceTest {
+    @Test void measuredElectricRowsAndCameraSurviveRepeatedImport() throws Exception {
+        SafetyWorkbenchModel model = new SafetyWorkbenchModel();
+        model.setMaxY(454);
+        model.setMeasuredImportGeometry(40, 370, -7, -13);
+        Feeder front = feeder(org.openpnp.machine.reference.feeder.ReferenceAutoFeeder.class,
+                "F", "front", true, location(50, 30, 0));
+        Feeder rear = feeder(org.openpnp.machine.reference.feeder.ReferenceAutoFeeder.class,
+                "R", "rear", true, location(50, 380, 0));
+        Camera camera = mock(Camera.class);
+        when(camera.getId()).thenReturn("C");
+        when(camera.getName()).thenReturn("Bottom");
+        when(camera.getLooking()).thenReturn(Camera.Looking.Up);
+        when(camera.getLocation()).thenReturn(location(100, 150, 5));
+        Machine machine = mock(Machine.class);
+        when(machine.getFeeders()).thenReturn(Arrays.asList(front, rear));
+        when(machine.getCameras()).thenReturn(Collections.singletonList(camera));
+        for (int i = 0; i < 2; i++) {
+            SafetyWorkbenchImportService.importConfiguration(model, machine, null,
+                    EnumSet.of(Category.FEEDER_PICK_POINTS, Category.BOTTOM_CAMERAS));
+            if (i == 0) {
+                for (var object : model.getObjects()) {
+                    if (object.type == SafetyWorkbenchModel.ObjectType.FEEDER) { object.depth = 60; }
+                    else { object.apertureWidth = 10; }
+                }
+            }
+        }
+        assertEquals(3, model.getObjects().size());
+        for (var object : model.getObjects()) {
+            if (object.type == SafetyWorkbenchModel.ObjectType.FEEDER) {
+                assertEquals(-7, object.z + object.height, 1e-8);
+                assertEquals(2, object.clearance, 1e-8);
+                assertEquals(60, object.depth, 1e-8);
+                assertEquals(object.rearFacing ? 370 : 40,
+                        object.rearFacing ? object.y : object.y + object.depth, 1e-8);
+            } else {
+                assertEquals(-13, object.z + object.height, 1e-8);
+                assertEquals(10, object.apertureWidth, 1e-8);
+            }
+        }
+    }
     @Test
     void importsSoftLimitsAndSelectedNozzleSafeZ() {
         SafetyWorkbenchModel model = new SafetyWorkbenchModel();

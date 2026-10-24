@@ -243,7 +243,13 @@ public final class PrecisionRuntime {
         validatePhysical(planner, hm, current.add(s.offset), "运动起点");
         validate(planner, hm, target.add(s.offset), x, y, "主运动终点");
         validate(planner, hm, target.add(proposed), x, y, "补偿终点");
-        Plan plan = new Plan(current.add(s.offset), target.add(s.offset), s.offset, proposed, a, b, true);
+        boolean continuous = org.openpnp.model.ContinuousVisionCompensation.isActive();
+        Plan plan = new Plan(current.add(s.offset), target.add(continuous ? proposed : s.offset),
+                s.offset, proposed, a, b, true);
+        if (continuous) {
+            org.openpnp.model.ContinuousVisionCompensation.record(hm, current, target,
+                    plan.current, plan.target, speed);
+        }
         plan.xySpeed = xySpeed;
         plan.xyAcceleration = acceleration;
         plan.xyMoved = xyMoved;
@@ -259,9 +265,10 @@ public final class PrecisionRuntime {
             }
             return stockEnd;
             }
-        AxesLocation end = stockEnd.subtract(plan.previousOffset).add(plan.proposedOffset);
+        boolean continuous = org.openpnp.model.ContinuousVisionCompensation.isActive();
+        AxesLocation end = continuous ? stockEnd : stockEnd.subtract(plan.previousOffset).add(plan.proposedOffset);
         validate(planner, hm, end, planner.getMachine().getAxis(xId), planner.getMachine().getAxis(yId), "最终路径终点");
-        if (!plan.previousOffset.matches(plan.proposedOffset) || !plan.proposedOffset.matches(plan.previousOffset)) {
+        if (!continuous && (!plan.previousOffset.matches(plan.proposedOffset) || !plan.proposedOffset.matches(plan.previousOffset))) {
             CoreXYRuntime.appendPrecisionMotion(planner, hm, Math.min(speed, speedFactor), stockEnd,
                     end, Motion.optionFlags(options));
         }

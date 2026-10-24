@@ -371,6 +371,31 @@ public final class DynamicSafetyCollisionEngine {
         return CoordinatedMotionValidator.validate(model, selectedPath, tools, anchor);
     }
 
+    /** Validate monotone profile intervals using each nozzle's real controller-axis transform. */
+    public static ValidationResult validateRawTransit(SafetyWorkbenchModel model, Machine machine,
+            HeadMountable selected, List<AxesLocation> samples) throws Exception {
+        List<DynamicTool> tools = snapshot(model, machine, selected);
+        if (samples.size() < 2 || samples.size() > 20000)
+            { throw new Exception("连续飞拍轨迹采样数量无效"); }
+        List<Waypoint> previous = null;
+        ValidationResult result = null;
+        for (AxesLocation raw : samples) {
+            List<Waypoint> current = new ArrayList<>();
+            for (DynamicTool tool : tools) {
+                Nozzle nozzle = machine.getHead(tool.headId).getNozzle(tool.toolId);
+                Location pose = nozzle.toHeadMountableLocation(nozzle.toTransformed(raw, LocationOption.Quiet),
+                        LocationOption.Quiet).convertToUnits(LengthUnit.Millimeters);
+                current.add(new Waypoint(pose.getX(), pose.getY(), pose.getZ()));
+            }
+            if (previous != null) {
+                result = CoordinatedMotionValidator.validateToolInterval(model, tools, previous, current);
+                if (!result.isSafe()) { return result; }
+            }
+            previous = current;
+        }
+        return result;
+    }
+
     private static double[] partSize(Part part) {
         if (part == null || part.getPackage() == null
                 || part.getPackage().getFootprint() == null) {

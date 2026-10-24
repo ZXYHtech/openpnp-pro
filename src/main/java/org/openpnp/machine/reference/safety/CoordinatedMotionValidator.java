@@ -31,12 +31,21 @@ final class CoordinatedMotionValidator {
     static final class FeederContact {
         final String sourceKey;
         final Waypoint pick;
+        final boolean board;
         FeederContact(String sourceKey, Waypoint pick) {
+            this(sourceKey, pick, false);
+        }
+        FeederContact(String sourceKey, Waypoint pick, boolean board) {
             this.sourceKey = sourceKey;
             this.pick = pick;
+            this.board = board;
         }
         boolean permits(SafetyObject object, Waypoint point) {
-            return object.type == ObjectType.FEEDER && sourceKey.equals(object.sourceKey)
+            return (board ? object.type == ObjectType.BOARD && sourceKey.equals(object.id)
+                    : object.type == ObjectType.FEEDER && (sourceKey.equals(object.sourceKey)
+                            || sourceKey.startsWith("feeder:") && object.sourceKey.startsWith("feeder-bank:")
+                            && pick.x >= object.x && pick.x <= object.x + object.width
+                            && pick.y >= object.y && pick.y <= object.y + object.depth))
                     && Math.abs(point.x - pick.x) < .05 && Math.abs(point.y - pick.y) < .05
                     && Math.abs(point.z - pick.z) < .05;
         }
@@ -102,9 +111,30 @@ final class CoordinatedMotionValidator {
                 segmentStarts.add(tool.conservativeSegmentZ && tool.segmentZ == null ? tool.at(anchor, first) : null);
                 segmentEnds.add(tool.conservativeSegmentZ && tool.segmentZ == null ? tool.at(anchor, last) : null);
             }
+            if (System.nanoTime() > deadline) {
+                return new ValidationResult(Collections.singletonList("联动规划超时，尚未下发运动"), samples);
+            }
+            // A clear bounding volume proves the whole segment safe. This is
+            // stricter than all fine intervals, so only a PASS can short-circuit.
+            // Ambiguous volumes still receive the original 0.5 mm sweep below.
+            if (distance > 2 && tools.stream().allMatch(t -> t.mappedZ == null || t.segmentZ != null)) {
+                List<Waypoint> before = new ArrayList<>();
+                List<Waypoint> after = new ArrayList<>();
+                for (int i = 0; i < tools.size(); i++) {
+                    DynamicTool tool = tools.get(i);
+                    Waypoint a = tool.at(anchor, first);
+                    Waypoint b = tool.at(anchor, last);
+                    before.add(segmentZ.get(i) == null ? a : new Waypoint(a.x, a.y, segmentZ.get(i).applyAsDouble(0)));
+                    after.add(segmentZ.get(i) == null ? b : new Waypoint(b.x, b.y, segmentZ.get(i).applyAsDouble(1)));
+                }
+                if (validateToolInterval(model, tools, before, after).isSafe()) {
+                    samples.add(last);
+                    continue;
+                }
+            }
             for (int index = 1; index < fractions.size(); index++) {
                 if ((index & 31) == 1 && System.nanoTime() > deadline) {
-                    return new ValidationResult(Collections.singletonList("规划超过 40 ms 预算，保持原安全 Z"), samples);
+                    return new ValidationResult(Collections.singletonList("联动规划超时，尚未下发运动"), samples);
                 }
                 Waypoint a = Waypoint.interpolate(first, last, fractions.get(index - 1));
                 Waypoint b = Waypoint.interpolate(first, last, fractions.get(index));
@@ -194,6 +224,36 @@ final class CoordinatedMotionValidator {
                 && (target.z >= object.z + object.height - EPSILON || contact != null && contact.permits(object, target));
     }
 
+    /** Each interval covers all XYZ combinations, not only a straight line between samples. */
+    static ValidationResult validateToolInterval(SafetyWorkbenchModel model, List<DynamicTool> tools,
+            List<Waypoint> before, List<Waypoint> after) {
+        Set<String> issues = new LinkedHashSet<>();
+        List<Envelope> envelopes = new ArrayList<>();
+        if (tools.isEmpty() || tools.size() != before.size() || tools.size() != after.size())
+            { return new ValidationResult(Collections.singletonList("缺少完整工具轨迹"), before); }
+        for (int i = 0; i < tools.size(); i++) {
+            Waypoint a = before.get(i), b = after.get(i);
+            if (!Double.isFinite(a.x + a.y + a.z + b.x + b.y + b.z))
+                { return new ValidationResult(Collections.singletonList("工具轨迹坐标无效"), before); }
+            Envelope envelope = new Envelope(tools.get(i), a, b);
+            envelopes.add(envelope);
+            if (!envelope.tool.isMoving()) { continue; }
+            if (!envelope.inBounds(model)) { issues.add(envelope.tool.name + "超出安全范围"); }
+            for (SafetyObject object : model.getObjects())
+                { if (object != null && object.enabled && object.obstacle && envelope.intersects(object))
+                    { issues.add(envelope.tool.name + "的连续飞拍包络进入" + object.name); } }
+        }
+        for (int i = 0; i < envelopes.size(); i++) { for (int j = i + 1; j < envelopes.size(); j++) {
+            Envelope a = envelopes.get(i), b = envelopes.get(j);
+            if (a.tool.headId.equals(b.tool.headId)) {
+                if (a.partIntersects(b) || b.partIntersects(a)) { issues.add("同头器件包络重叠"); }
+            } else if ((a.tool.isMoving() || b.tool.isMoving()) && a.intersects(b)) {
+                issues.add("贴装头间包络重叠");
+            }
+        } }
+        return new ValidationResult(new ArrayList<>(issues), after);
+    }
+
     private static boolean sameXy(Waypoint a, Waypoint b) {
         return Math.abs(a.x - b.x) < EPSILON && Math.abs(a.y - b.y) < EPSILON;
     }
@@ -243,6 +303,17 @@ final class CoordinatedMotionValidator {
         }
 
         boolean inBounds(SafetyWorkbenchModel model) {
+            if (model.isXyBoundsAreTravelLimits()) {
+                // Axis travel limits are not physical walls. Sibling offsets and
+                // the housing may overhang the travel rectangle. Real obstacles
+                // still use the entire envelope, and native raw-axis soft limits
+                // are checked before issuing each planned motion.
+                return (!tool.selectedTool || (Math.min(a.x, b.x) >= model.getMinX()
+                        && Math.max(a.x, b.x) <= model.getMaxX()
+                        && Math.min(a.y, b.y) >= model.getMinY()
+                        && Math.max(a.y, b.y) <= model.getMaxY()))
+                        && minZ >= model.getMinZ() && maxZ <= model.getMaxZ();
+            }
             return minX >= model.getMinX() && maxX <= model.getMaxX() && minY >= model.getMinY() && maxY <= model.getMaxY() && minZ >= model.getMinZ() && maxZ <= model.getMaxZ();
         }
 

@@ -141,7 +141,53 @@ public final class SafetyWorkbenchImportService {
         if (categories.contains(Category.BOTTOM_CAMERAS)) {
             importBottomCameras(model, machine, summary);
         }
+        if (model.getObjects().stream().anyMatch(o -> o.sourceKey.startsWith("feeder-bank:"))) {
+            aggregateMeasuredFeederBanks(model);
+        }
         return summary;
+    }
+
+    /** Union measured feeder bodies without reducing any occupied volume. */
+    public static void aggregateMeasuredFeederBanks(SafetyWorkbenchModel model) {
+        if (model.getMeasuredFeederTopZ() == null || model.getMeasuredFrontFeederMaxY() == null
+                || model.getMeasuredRearFeederMinY() == null) {
+            throw new IllegalStateException("需先测量前后排飞达边界和最高点");
+        }
+        for (boolean rear : new boolean[] { false, true }) {
+            List<SafetyObject> members = new ArrayList<>();
+            for (SafetyObject object : model.getObjects()) {
+                if (object.type == ObjectType.FEEDER && object.enabled && object.obstacle
+                        && (object.sourceKey.startsWith("feeder:") || object.sourceKey.startsWith("feeder-bank:"))
+                        && object.rearFacing == rear
+                        && Math.abs(object.z + object.height - model.getMeasuredFeederTopZ()) < .001
+                        && (rear ? object.y >= model.getMeasuredRearFeederMinY() - .001
+                                : object.y + object.depth <= model.getMeasuredFrontFeederMaxY() + .001)) {
+                    members.add(object);
+                }
+            }
+            if (members.isEmpty()) { continue; }
+            SafetyObject bank = members.get(0).copy();
+            bank.x = members.get(0).x;
+            bank.y = members.get(0).y;
+            bank.locked = true;
+            double maxX = bank.x + bank.width, maxY = bank.y + bank.depth, maxZ = bank.z + bank.height;
+            for (SafetyObject member : members) {
+                maxX = Math.max(maxX, member.x + member.width);
+                maxY = Math.max(maxY, member.y + member.depth);
+                maxZ = Math.max(maxZ, member.z + member.height);
+                bank.x = Math.min(bank.x, member.x);
+                bank.y = Math.min(bank.y, member.y);
+                bank.z = Math.min(bank.z, member.z);
+                bank.clearance = Math.max(bank.clearance, member.clearance);
+            }
+            bank.width = maxX - bank.x;
+            bank.depth = maxY - bank.y;
+            bank.height = maxZ - bank.z;
+            bank.name = rear ? "后排电动飞达整体包络" : "前排电动飞达整体包络";
+            bank.sourceKey = rear ? "feeder-bank:rear" : "feeder-bank:front";
+            model.getObjects().removeAll(members);
+            model.addObject(bank);
+        }
     }
 
     public static EnumSet<Category> allCategories() {
@@ -251,6 +297,9 @@ public final class SafetyWorkbenchImportService {
             }
         }
         int importedAxes = 0;
+        if (x.isComplete() && y.isComplete()) {
+            model.setXyBoundsAreTravelLimits(true);
+        }
         if (x.isComplete()) {
             model.setMinX(x.minimum);
             model.setMaxX(x.maximum);
@@ -395,7 +444,7 @@ public final class SafetyWorkbenchImportService {
         SafetyObject object = findOrCreate(model,
                 "nozzle-tip:" + nozzleTip.getId() + ":changer:body", "", summary);
         object.type = ObjectType.NOZZLE_CHANGER;
-        object.name = nozzleTip.getName() + " · 自动换嘴坞";
+        object.name = nozzleTip.getName() + " · 换嘴专用区";
         object.shape = SafetyWorkbenchModel.Shape.BOX;
         object.width = approachAlongX ? 42 : 30;
         object.depth = approachAlongX ? 30 : 42;
@@ -409,7 +458,7 @@ public final class SafetyWorkbenchImportService {
         object.obstacle = true;
         object.locked = true;
         object.enabled = true;
-        object.colorRgb = 0x52585C;
+        object.colorRgb = 0xA669CE;
         model.touch();
     }
 
@@ -495,20 +544,35 @@ public final class SafetyWorkbenchImportService {
     private static void upsertFeeder(SafetyWorkbenchModel model, Feeder feeder,
             Location location, Summary summary) {
         Location millimeters = location.convertToUnits(LengthUnit.Millimeters);
+        boolean measuredExisting = model.getMeasuredFeederTopZ() != null && model.getObjects().stream()
+                .anyMatch(existing -> ("feeder:" + feeder.getId() + ":body").equals(existing.sourceKey));
         SafetyObject object = findOrCreate(model, "feeder:" + feeder.getId() + ":body",
                 "feeder:" + feeder.getId() + ":pick", summary);
         object.type = ObjectType.FEEDER;
         object.name = feeder.getName() + (feeder.isEnabled() ? "" : "（未启用）");
         object.shape = SafetyWorkbenchModel.Shape.BOX;
-        object.width = 24;
-        object.depth = 120;
-        object.height = 18;
+        if (!measuredExisting) {
+            object.width = 24;
+            object.depth = 120;
+            object.height = 18;
+        }
         object.x = millimeters.getX() - object.width / 2.0;
         object.rearFacing = isRearFeeder(model, millimeters);
         object.y = millimeters.getY() - object.depth
                 * (object.rearFacing ? 0.90 : 0.10);
         object.z = finiteZ(millimeters, model) - object.height;
-        object.clearance = 3;
+        if ((feeder instanceof org.openpnp.machine.reference.feeder.ReferenceAutoFeeder
+                || feeder instanceof org.openpnp.machine.reference.feeder.ReferenceSlotAutoFeeder)
+                && model.getMeasuredFrontFeederMaxY() != null
+                && model.getMeasuredRearFeederMinY() != null
+                && model.getMeasuredFeederTopZ() != null) {
+            object.y = object.rearFacing ? model.getMeasuredRearFeederMinY()
+                    : model.getMeasuredFrontFeederMaxY() - object.depth;
+            object.z = model.getMeasuredFeederTopZ() - object.height;
+        }
+        object.clearance = model.getMeasuredFeederTopZ() != null
+                && (feeder instanceof org.openpnp.machine.reference.feeder.ReferenceAutoFeeder
+                    || feeder instanceof org.openpnp.machine.reference.feeder.ReferenceSlotAutoFeeder) ? 2 : 3;
         object.obstacle = true;
         object.locked = true;
         object.enabled = true;
@@ -525,19 +589,28 @@ public final class SafetyWorkbenchImportService {
     private static void upsertBottomCamera(SafetyWorkbenchModel model, Camera camera,
             Location location, Summary summary) {
         Location millimeters = location.convertToUnits(LengthUnit.Millimeters);
+        boolean measuredExisting = model.getMeasuredBottomCameraTopZ() != null && model.getObjects().stream()
+                .anyMatch(existing -> ("camera:" + camera.getId() + ":body").equals(existing.sourceKey));
         SafetyObject object = findOrCreate(model, "camera:" + camera.getId() + ":body",
                 "", summary);
         object.type = ObjectType.BOTTOM_CAMERA;
         object.name = camera.getName();
         object.shape = SafetyWorkbenchModel.Shape.BOX;
-        object.width = 70;
-        object.depth = 70;
-        object.height = 25;
+        if (!measuredExisting) {
+            object.width = 70;
+            object.depth = 70;
+            object.height = 25;
+        }
         object.x = millimeters.getX() - object.width / 2.0;
         object.y = millimeters.getY() - object.depth / 2.0;
         object.z = finiteZ(millimeters, model) - object.height;
-        object.apertureWidth = 28;
-        object.apertureDepth = 28;
+        if (!measuredExisting) {
+            object.apertureWidth = 28;
+            object.apertureDepth = 28;
+        }
+        if (model.getMeasuredBottomCameraTopZ() != null) {
+            object.z = model.getMeasuredBottomCameraTopZ() - object.height;
+        }
         object.clearance = 3;
         object.obstacle = true;
         object.locked = true;

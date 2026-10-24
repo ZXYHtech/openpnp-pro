@@ -377,6 +377,9 @@ public class ReferenceAdvancedMotionPlanner extends AbstractMotionPlanner {
     @Override
     protected void optimizeExecutionPlan(List<Motion> executionPlan,
             CompletionType completionType) throws Exception {
+        if (org.openpnp.model.ContinuousVisionProfile.optimizeIfRequested(executionPlan)) {
+            return;
+        }
         PlannerPath path = new PlannerPath(executionPlan);
         path.solve();
     }

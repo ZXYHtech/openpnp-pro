@@ -6,11 +6,15 @@ package org.openpnp.gui.support;
 import java.awt.Color;
 import java.awt.FlowLayout;
 import java.util.function.Consumer;
+import javax.swing.JButton;
 import javax.swing.JLabel;
+import javax.swing.JOptionPane;
 import javax.swing.JPanel;
 import javax.swing.JToggleButton;
 import org.openpnp.machine.reference.safety.DynamicSafeMotionPlanner;
 import org.openpnp.machine.reference.safety.DynamicSafeMotionSettings;
+import org.openpnp.machine.reference.driver.ReferenceAdvancedMotionPlanner;
+import org.openpnp.model.Configuration;
 import org.openpnp.machine.reference.safety.SafetyWorkbenchModel;
 import org.openpnp.machine.reference.safety.SafetyWorkbenchStore;
 import org.openpnp.spi.Machine;
@@ -24,6 +28,7 @@ public final class DynamicSafeMotionPanel extends JPanel {
     private final JToggleButton toggle = new JToggleButton();
 
     private final JLabel status = new JLabel();
+    private final JButton continuousMotion = new JButton("开启运动连续排队");
 
     private final SafetyWorkbenchModel model;
 
@@ -49,10 +54,24 @@ public final class DynamicSafeMotionPanel extends JPanel {
                         refresh();
                         return;
                     }
+                    if (model.isFastTravelFloorEnabled()) {
+                        java.util.List<String> failures = org.openpnp.machine.reference.safety.FastTravelClearance.check(
+                                model, machine, model.getFastTravelFloorZ());
+                        if (!failures.isEmpty()) {
+                            feedback.accept("快速联动不能启用：\n" + String.join("\n", failures));
+                            refresh();
+                            return;
+                        }
+                    }
                     SafetyWorkbenchStore.save(model);
+                    DynamicSafeMotionSettings.setStrictEnabled(true);
                 }
                 DynamicSafeMotionSettings.setEnabled(toggle.isSelected());
+                if (toggle.isSelected()) {
+                    feedback.accept("快速联动已启用：不静默回退，异常暂停；普通路径禁止进入换嘴专用区，换嘴保持原路径。");
+                } else {
                 feedback.accept(toggle.isSelected() ? "XY/Z 联动已启用并保存。下一段拾取、贴装或底部视觉定位移动会自动评估；只有整段安全且预计更快时才使用。" + "单帧预旋转底部视觉自动并行识别，结果通过前不会下降贴装；失败或超时暂停。" : "XY/Z 联动已关闭并保存，恢复原安全 Z 路径。");
+                }
             } catch (Exception failure) {
                 feedback.accept("开关保存失败：" + failure.getMessage());
             }
@@ -60,11 +79,47 @@ public final class DynamicSafeMotionPanel extends JPanel {
         });
         add(toggle);
         add(status);
+        continuousMotion.setName("enable-continuous-xyz-motion");
+        continuousMotion.setToolTipText("关闭逐条 moveTo 后自动 WaitForStillstand 的行为；必要的吸放、拍照及传感器同步不删除。");
+        continuousMotion.addActionListener(event -> {
+            if (!(machine.getMotionPlanner() instanceof ReferenceAdvancedMotionPlanner) || machine.isBusy()) {
+                feedback.accept("当前不支持切换连续队列，或机器正在执行任务。");
+                return;
+            }
+            ReferenceAdvancedMotionPlanner planner = (ReferenceAdvancedMotionPlanner) machine.getMotionPlanner();
+            if (planner.isAllowContinuousMotion()) {
+                refresh();
+                return;
+            }
+            if (JOptionPane.showConfirmDialog(this,
+                    "这会关闭 OpenPnP 每段 moveTo 后的强制停稳，Marlin/Smoothieware 将按规划队列执行。\n"
+                    + "取放、相机曝光及真空检测的必要完成等待仍保留。\n"
+                    + "先备份配置，在空吸嘴和空场景下验证，急停必须有效。是否启用并保存？",
+                    "连续运动规划确认", JOptionPane.OK_CANCEL_OPTION,
+                    JOptionPane.WARNING_MESSAGE) != JOptionPane.OK_OPTION) {
+                return;
+            }
+            planner.setAllowContinuousMotion(true);
+            try {
+                Configuration.get().save();
+                feedback.accept("已启用并保存 Allow Continuous Motion，请用空吸嘴验证真实 XYZ 运动。");
+            } catch (Exception failure) {
+                planner.setAllowContinuousMotion(false);
+                feedback.accept("保存连续运动设置失败，已还原：" + failure.getMessage());
+            }
+            refresh();
+        });
+        add(continuousMotion);
         refresh();
     }
 
     public void refresh() {
         boolean enabled = DynamicSafeMotionSettings.isEnabled();
+        boolean plannerCanContinue = machine.getMotionPlanner() instanceof ReferenceAdvancedMotionPlanner;
+        boolean continuous = plannerCanContinue
+                && ((ReferenceAdvancedMotionPlanner) machine.getMotionPlanner()).isAllowContinuousMotion();
+        continuousMotion.setVisible(plannerCanContinue && !continuous);
+        continuousMotion.setEnabled(!machine.isBusy());
         toggle.setSelected(enabled);
         toggle.setText(enabled ? "关闭 XY/Z 联动" : "一键启用 XY/Z 联动");
         if (checkedRevision != model.getRevision() || checkedCertified != model.isCertified()) {
@@ -78,14 +133,19 @@ public final class DynamicSafeMotionPanel extends JPanel {
             status.setForeground(new Color(145, 151, 156));
         } else {
             if (!issue.isEmpty()) {
-                status.setText("已暂停 · " + issue + " · 当前保持原安全 Z");
+                status.setText("已暂停 · " + issue + (DynamicSafeMotionSettings.isStrictEnabled() || model.isFastTravelFloorEnabled() ? " · 不回退" : " · 当前保持原安全 Z"));
                 status.setForeground(new Color(196, 126, 45));
             } else {
                 if (!machine.isEnabled() || !machine.isHomed()) {
                     status.setText("已启用 · 待连接并回零");
                     status.setForeground(new Color(196, 126, 45));
+                } else if (plannerCanContinue && !continuous) {
+                    status.setText("已启用但未连续执行：规划器每条 moveTo 后都会等待停稳（N1 停一拍的疑点）");
+                    status.setForeground(new Color(196, 126, 45));
                 } else {
-                    status.setText("已启用 · " + DynamicSafeMotionPlanner.getRuntimeSummary());
+                    status.setText((DynamicSafeMotionSettings.isStrictEnabled() || model.isFastTravelFloorEnabled())
+                            ? "已启用 · 快速联动 / 异常暂停 · 换嘴专用区避让"
+                            : "已启用 · " + DynamicSafeMotionPlanner.getRuntimeSummary());
                     status.setForeground(new Color(42, 160, 103));
                 }
             }

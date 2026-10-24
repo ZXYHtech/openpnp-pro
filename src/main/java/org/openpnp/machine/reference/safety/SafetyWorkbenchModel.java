@@ -192,6 +192,31 @@ public class SafetyWorkbenchModel {
     private Double importedSafeZLow;
     private Double importedSafeZHigh;
     private boolean visionHeightCompensationEnabled;
+    /** Optional, operator-certified nozzle-reference-Z floor for XY travel. Never bypasses swept collision checks. */
+    private boolean fastTravelFloorEnabled;
+    private boolean xyBoundsAreTravelLimits;
+    private double fastTravelFloorZ = -5.0;
+    // Optional machine-specific measurements; null retains generic import behavior.
+    private Double measuredFrontFeederMaxY;
+    private Double measuredRearFeederMinY;
+    private Double measuredFeederTopZ;
+    private Double measuredBottomCameraTopZ;
+
+    public void setMeasuredImportGeometry(double front, double rear, double feederTop, double cameraTop) {
+        if (!Double.isFinite(front + rear + feederTop + cameraTop) || front >= rear) {
+            throw new IllegalArgumentException("Invalid measured import geometry");
+        }
+        measuredFrontFeederMaxY = front;
+        measuredRearFeederMinY = rear;
+        measuredFeederTopZ = feederTop;
+        measuredBottomCameraTopZ = cameraTop;
+        touch();
+    }
+
+    public Double getMeasuredFrontFeederMaxY() { return measuredFrontFeederMaxY; }
+    public Double getMeasuredRearFeederMinY() { return measuredRearFeederMinY; }
+    public Double getMeasuredFeederTopZ() { return measuredFeederTopZ; }
+    public Double getMeasuredBottomCameraTopZ() { return measuredBottomCameraTopZ; }
 
     private double toolRadiusX = 15;
     private double toolRadiusY = 15;
@@ -416,6 +441,35 @@ public class SafetyWorkbenchModel {
         touch();
     }
 
+    /** Disabled for existing machine profiles until the actual -5 mm clearance is measured and certified. */
+    public boolean isFastTravelFloorEnabled() {
+        return fastTravelFloorEnabled;
+    }
+
+    public boolean isXyBoundsAreTravelLimits() { return xyBoundsAreTravelLimits; }
+
+    public void setXyBoundsAreTravelLimits(boolean enabled) {
+        if (xyBoundsAreTravelLimits != enabled) {
+            xyBoundsAreTravelLimits = enabled;
+            touch();
+        }
+    }
+
+    public double getFastTravelFloorZ() {
+        return fastTravelFloorZ;
+    }
+
+    public void setFastTravelFloor(boolean enabled, double floorZ) {
+        if (!Double.isFinite(floorZ) || floorZ <= minZ || floorZ >= maxZ) {
+            throw new IllegalArgumentException("快速进场 Z 必须在已配置的工作台 Z 范围内。");
+        }
+        if (fastTravelFloorEnabled != enabled || fastTravelFloorZ != floorZ) {
+            fastTravelFloorEnabled = enabled;
+            fastTravelFloorZ = floorZ;
+            touch(); // Never reuse an earlier geometry certification after changing this threshold.
+        }
+    }
+
     public boolean hasImportedSafeZ() {
         return importedSafeZLow != null && importedSafeZHigh != null
                 && Double.isFinite(importedSafeZLow) && Double.isFinite(importedSafeZHigh);
@@ -540,6 +594,13 @@ public class SafetyWorkbenchModel {
         importedSafeZLow = source.importedSafeZLow;
         importedSafeZHigh = source.importedSafeZHigh;
         visionHeightCompensationEnabled = source.visionHeightCompensationEnabled;
+        fastTravelFloorEnabled = source.fastTravelFloorEnabled;
+        xyBoundsAreTravelLimits = source.xyBoundsAreTravelLimits;
+        fastTravelFloorZ = source.fastTravelFloorZ;
+        measuredFrontFeederMaxY = source.measuredFrontFeederMaxY;
+        measuredRearFeederMinY = source.measuredRearFeederMinY;
+        measuredFeederTopZ = source.measuredFeederTopZ;
+        measuredBottomCameraTopZ = source.measuredBottomCameraTopZ;
         toolRadiusX = source.toolRadiusX;
         toolRadiusY = source.toolRadiusY;
         toolMinZOffset = source.toolMinZOffset;

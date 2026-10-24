@@ -14,6 +14,115 @@ import org.openpnp.machine.reference.safety.SafetyWorkbenchModel.Point2;
 import org.openpnp.machine.reference.safety.SafetyWorkbenchModel.Shape;
 
 class CoordinatedMotionValidatorTest {
+    @Test void feederBankAllowsOnlyKnownVerticalPickupAndKeepsFullUnion() {
+        SafetyWorkbenchModel model = model();
+        model.setMeasuredImportGeometry(40, 370, -7, -13);
+        SafetyObject a = box(model, ObjectType.FEEDER, 0, -20, -25, 24, 60, 18);
+        SafetyObject b = box(model, ObjectType.FEEDER, 16, -20, -25, 24, 60, 18);
+        a.sourceKey = "feeder:a:body";
+        b.sourceKey = "feeder:b:body";
+        SafetyWorkbenchImportService.aggregateMeasuredFeederBanks(model);
+        assertEquals(1, model.getObjects().size());
+        SafetyObject bank = model.getObjects().get(0);
+        assertEquals(40, bank.width);
+        assertEquals(60, bank.depth);
+        assertEquals(-7, bank.z + bank.height);
+        Waypoint pick = new Waypoint(16, 5, -13);
+        DynamicTool tool = new DynamicTool("H1", "N1", "N1", pick,
+                1, 1, 25, 30, .5, 0, 0, true, true, true, false);
+        var tools = Collections.singletonList(tool);
+        var contact = new CoordinatedMotionValidator.FeederContact("feeder:a:body", pick);
+        assertTrue(CoordinatedMotionValidator.validate(model,
+                Arrays.asList(pick, new Waypoint(16, 5, 0)), tools, pick, Long.MAX_VALUE, contact).isSafe());
+        assertFalse(CoordinatedMotionValidator.validate(model,
+                Arrays.asList(pick, new Waypoint(20, 5, 0)), tools, pick, Long.MAX_VALUE, contact).isSafe());
+        assertFalse(CoordinatedMotionValidator.validate(model,
+                Arrays.asList(pick, new Waypoint(16, 5, 0)), tools, pick).isSafe());
+        tool.selectedTool = false;
+        assertFalse(CoordinatedMotionValidator.validate(model,
+                Arrays.asList(pick, new Waypoint(16, 5, 0)), tools, pick, Long.MAX_VALUE, contact).isSafe());
+    }
+    @Test void axisTravelRectangleAllowsHousingOverhangButNotObstacleOrTipOverrun() {
+        SafetyWorkbenchModel model = model();
+        model.setMinY(0);
+        Waypoint from = new Waypoint(50, 5, 20);
+        DynamicTool tool = new DynamicTool("H1", "N1", "N1", from,
+                18, 18, 0, 10, 3, 0, 0, true, true, true, false);
+        var path = Arrays.asList(from, new Waypoint(60, 5, 20));
+        var tools = Collections.singletonList(tool);
+        assertFalse(CoordinatedMotionValidator.validate(model, path, tools, from).isSafe());
+        model.setXyBoundsAreTravelLimits(true);
+        assertTrue(CoordinatedMotionValidator.validate(model, path, tools, from).isSafe());
+        assertFalse(CoordinatedMotionValidator.validate(model,
+                Arrays.asList(from, new Waypoint(60, -1, 20)), tools, from).isSafe());
+        box(model, ObjectType.KEEP_OUT, 55, -10, 22, 2, 2, 3);
+        assertFalse(CoordinatedMotionValidator.validate(model, path, tools, from).isSafe(),
+                "The overhanging housing still collides with real frame objects");
+    }
+    @Test void sharedCamFindsClearMiddleHeightWhenFullSafeZCollides() {
+        SafetyWorkbenchModel model = model();
+        Waypoint from = new Waypoint(0, 0, 0);
+        DynamicTool selected = tool(from);
+        DynamicTool sibling = tool(new Waypoint(20, 0, 20));
+        sibling.selectedTool = false;
+        sibling.mappedZ = z -> 20 - z;
+        box(model, ObjectType.KEEP_OUT, -1, -1, -2, 2, 2, 5);
+        box(model, ObjectType.KEEP_OUT, 19, -1, -2, 2, 2, 12);
+        var tools = Arrays.asList(selected, sibling);
+        org.openpnp.model.Location start = new org.openpnp.model.Location(
+                org.openpnp.model.LengthUnit.Millimeters, 0, 0, 0, 0);
+        assertFalse(CoordinatedMotionValidator.validate(model,
+                Collections.singletonList(new Waypoint(0, 0, 20)), tools, from).isSafe());
+        double height = DynamicSafeMotionPlanner.clearHeight(start, 20, start, model, tools, Long.MAX_VALUE, false);
+        assertTrue(Double.isFinite(height), "A shared cam can have a safe middle interval");
+        assertTrue(CoordinatedMotionValidator.validate(model,
+                Collections.singletonList(new Waypoint(0, 0, height)), tools, from).isSafe());
+    }
+
+    @Test void knownPlacementContactOnlyPermitsSelectedVerticalExit() {
+        SafetyWorkbenchModel model = model();
+        SafetyObject board = box(model, ObjectType.BOARD, -10, -10, -5, 20, 20, 7);
+        Waypoint from = new Waypoint(0, 0, 0);
+        DynamicTool selected = new DynamicTool("H1", "N1", "N1", from,
+                1, 1, 5, 8, .5, 0, 0, true, true, true, false);
+        var tools = Collections.singletonList(selected);
+        var contact = new CoordinatedMotionValidator.FeederContact(board.id, from, true);
+        assertFalse(CoordinatedMotionValidator.validate(model,
+                Arrays.asList(from, new Waypoint(0, 0, 5)), tools, from).isSafe());
+        assertTrue(CoordinatedMotionValidator.validate(model,
+                Arrays.asList(from, new Waypoint(0, 0, 5)), tools, from, Long.MAX_VALUE, contact).isSafe());
+        assertFalse(CoordinatedMotionValidator.validate(model,
+                Arrays.asList(from, new Waypoint(5, 0, 5)), tools, from, Long.MAX_VALUE, contact).isSafe());
+        selected.selectedTool = false;
+        assertFalse(CoordinatedMotionValidator.validate(model,
+                Arrays.asList(from, new Waypoint(0, 0, 5)), tools, from, Long.MAX_VALUE, contact).isSafe());
+    }
+    @Test void changerZoneOnlyBlocksPathsWhoseToolEnvelopeCrossesIt() {
+        SafetyWorkbenchModel model = model();
+        box(model, ObjectType.NOZZLE_CHANGER, 70, 45, 0, 10, 10, 30);
+        Waypoint from = new Waypoint(50, 50, 20);
+        DynamicTool tool = new DynamicTool("H1", "N1", "N1", from,
+                1, 1, 0, 1, .5, 0, 0, true, true, true, false);
+        assertTrue(CoordinatedMotionValidator.validate(model,
+                Arrays.asList(from, new Waypoint(60, 50, 20)), Collections.singletonList(tool), from).isSafe());
+        assertFalse(CoordinatedMotionValidator.validate(model,
+                Arrays.asList(from, new Waypoint(90, 50, 20)), Collections.singletonList(tool), from).isSafe());
+    }
+    @Test
+    void profiledIntervalsCheckTheirWholeVolumeIncludingOffDiagonalObstacles() {
+        SafetyWorkbenchModel model = model();
+        Waypoint from = new Waypoint(50, 50, 20), to = new Waypoint(60, 60, 30);
+        DynamicTool tool = new DynamicTool("H1", "N1", "N1", from,
+                1, 1, 0, 1, .5, 0, 0, true, true, true, false);
+        var tools = Collections.singletonList(tool);
+        assertTrue(CoordinatedMotionValidator.validateToolInterval(model, tools,
+                Collections.singletonList(from), Collections.singletonList(to)).isSafe());
+        box(model, ObjectType.KEEP_OUT, 58, 49, 20, 2, 2, 2);
+        assertTrue(CoordinatedMotionValidator.validate(model, Arrays.asList(from, to), tools, from).isSafe());
+        assertFalse(CoordinatedMotionValidator.validateToolInterval(model, tools,
+                Collections.singletonList(from), Collections.singletonList(to)).isSafe());
+    }
+
     @Test
     void calibratedTipCanFlyThroughCameraOpeningWithSiblingFullyRetracted() {
         SafetyWorkbenchModel model = model();
@@ -104,7 +213,7 @@ class CoordinatedMotionValidatorTest {
         ValidationResult result = CoordinatedMotionValidator.validate(model(),
                 Arrays.asList(start, new Waypoint(300, 0, 10)), Collections.singletonList(tool(start)), start, 0);
         assertFalse(result.isSafe());
-        assertTrue(result.getIssues().get(0).contains("预算"));
+        assertTrue(result.getIssues().get(0).contains("规划超时"));
     }
 
     SafetyWorkbenchModel model() {

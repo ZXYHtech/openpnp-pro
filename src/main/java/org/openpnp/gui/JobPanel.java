@@ -1144,8 +1144,13 @@ public class JobPanel extends JPanel {
             JobProcessorException processorException = null;
             if (t instanceof JobProcessorException) {
                 processorException = (JobProcessorException)t;
-                selectJobProcessorExceptionSource(processorException.getSecondarySource(),false);
-                selectJobProcessorExceptionSource(processorException.getSource(),true);
+                try {
+                    selectJobProcessorExceptionSource(processorException.getSecondarySource(),false);
+                    selectJobProcessorExceptionSource(processorException.getSource(),true);
+                } catch (Exception selectionFailure) {
+                    // Selecting related rows is optional; never suppress the original error dialog.
+                    Logger.warn(selectionFailure, "Unable to select job error source");
+                }
             }
             
             // update the state before showing the error to allow exceptions with continuations to change it
