@@ -332,7 +332,7 @@ public final class DynamicSafeMotionPlanner {
         throw new Exception("飞达取料点上方直达预定位未通过双嘴扫掠检查，未下发绕行");
     }
 
-    /** After successful feed: descend at exactly the prepared XY/C; never re-enter a travel route. */
+    /** After feed: recheck a stale pose once, then descend or apply one bounded, swept local correction. */
     public static void descendAtPrepositionedFeeder(Nozzle nozzle, Feeder feeder) throws Exception {
         Machine machine = nozzle.getHead().getMachine();
         SafetyWorkbenchModel live = SafetyWorkbenchStore.get();
@@ -342,62 +342,101 @@ public final class DynamicSafeMotionPlanner {
         }
         long revision = live.getRevision();
         SafetyWorkbenchModel model = prepare(live).frozen;
-        Location start = nozzle.getLocation().convertToUnits(LengthUnit.Millimeters);
-        Location pick = pickLocation(nozzle, feeder);
-        // The rotation planner may retain 360/720 degrees for a commanded zero.
-        // Compare the nearest equivalent turn and keep that turn during descent;
-        // still use native axis resolution for any actual XY or angular change.
-        pick = pick.derive(null, null, null, pick.getRotation()
-                + 360 * Math.rint((start.getRotation() - pick.getRotation()) / 360));
-        AxesLocation actual = raw(nozzle, start.derive(null, null, pick.getZ(), null));
-        AxesLocation expected = raw(nozzle, pick);
-        boolean samePose = actual.matches(expected);
-        if (!samePose) {
-            samePose = true;
-            for (ControllerAxis axis : expected.getControllerAxes()) {
-                if (axis.coordinatesMatch(actual.getLengthCoordinate(axis), expected.getLengthCoordinate(axis))) { continue; }
-                double tolerance = 0;
-                if ((axis.getType() == Axis.Type.X || axis.getType() == Axis.Type.Y)
-                        && axis.getDriver() instanceof GcodeDriver) {
-                    GcodeDriver driver = (GcodeDriver) axis.getDriver();
-                    String variable = driver.isUsingLetterVariables() ? axis.getLetter() : axis.getType().toString();
-                    String command = driver.getCommand(nozzle, CommandType.MOVE_TO_COMMAND);
-                    if (command != null && variable != null) {
-                        var matcher = java.util.regex.Pattern.compile("\\{" + java.util.regex.Pattern.quote(variable)
-                                + "F?:[^}]*?%[^}]*?\\.(\\d+)f[^}]*\\}", java.util.regex.Pattern.CASE_INSENSITIVE).matcher(command);
-                        if (matcher.find()) {
-                            double quantum = Math.pow(10, -Integer.parseInt(matcher.group(1)));
-                            tolerance = Math.min(.01, new Length(quantum, driver.getUnits())
-                                    .convertToUnits(LengthUnit.Millimeters).getValue());
+        for (int attempt = 0; attempt < 2; attempt++) {
+            Location start = nozzle.getLocation().convertToUnits(LengthUnit.Millimeters);
+            if (!machine.getMotionPlanner().isValidLocation(nozzle, raw(nozzle, start))) {
+                throw new Exception("飞达预定位当前位置超出原生软限位，禁止自动恢复");
+            }
+            Location pick = pickLocation(nozzle, feeder);
+            // The rotation planner may retain 360/720 degrees for a commanded zero.
+            // Compare the nearest equivalent turn and keep that turn during descent;
+            // still use native axis resolution for any actual XY or angular change.
+            pick = pick.derive(null, null, null, pick.getRotation()
+                    + 360 * Math.rint((start.getRotation() - pick.getRotation()) / 360));
+            AxesLocation actual = raw(nozzle, start.derive(null, null, pick.getZ(), null));
+            AxesLocation expected = raw(nozzle, pick);
+            boolean samePose = actual.matches(expected);
+            if (!samePose) {
+                samePose = true;
+                for (ControllerAxis axis : expected.getControllerAxes()) {
+                    if (axis.coordinatesMatch(actual.getLengthCoordinate(axis), expected.getLengthCoordinate(axis))) { continue; }
+                    double tolerance = 0;
+                    if ((axis.getType() == Axis.Type.X || axis.getType() == Axis.Type.Y)
+                            && axis.getDriver() instanceof GcodeDriver) {
+                        GcodeDriver driver = (GcodeDriver) axis.getDriver();
+                        String variable = driver.isUsingLetterVariables() ? axis.getLetter() : axis.getType().toString();
+                        String command = driver.getCommand(nozzle, CommandType.MOVE_TO_COMMAND);
+                        if (command != null && variable != null) {
+                            var matcher = java.util.regex.Pattern.compile("\\{" + java.util.regex.Pattern.quote(variable)
+                                    + "F?:[^}]*?%[^}]*?\\.(\\d+)f[^}]*\\}", java.util.regex.Pattern.CASE_INSENSITIVE).matcher(command);
+                            if (matcher.find()) {
+                                double quantum = Math.pow(10, -Integer.parseInt(matcher.group(1)));
+                                tolerance = Math.min(.01, new Length(quantum, driver.getUnits())
+                                        .convertToUnits(LengthUnit.Millimeters).getValue());
+                            }
                         }
                     }
-                }
-                if (Math.abs(actual.getCoordinate(axis) - expected.getCoordinate(axis)) > tolerance + 1e-9) {
-                    samePose = false;
-                    break;
+                    if (Math.abs(actual.getCoordinate(axis) - expected.getCoordinate(axis)) > tolerance + 1e-9) {
+                        samePose = false;
+                        break;
+                    }
                 }
             }
+
+            double xyError = Math.hypot(start.getX() - pick.getX(), start.getY() - pick.getY());
+            boolean recoverable = !samePose && xyError < .05 && nozzle.getPart() == null
+                    && actual.byType(Axis.Type.Rotation).matches(expected.byType(Axis.Type.Rotation))
+                    && machine.isTask(Thread.currentThread());
+            if (!samePose && attempt == 0 && nozzle.getPart() == null && machine.isTask(Thread.currentThread())) {
+                // Feed completion may precede the queued head approach. Only on
+                // mismatch, finish that existing motion and re-read its pose.
+                machine.getMotionPlanner().waitForCompletion(null,
+                        org.openpnp.spi.MotionPlanner.CompletionType.WaitForStillstand);
+                if (SafetyWorkbenchStore.get() != live || live.getRevision() != revision || !live.isCertified()
+                        || !machine.isEnabled() || !machine.isHomed()) {
+                    throw new Exception("飞达预定位复核期间机器状态或安全模型改变");
+                }
+                Logger.info("Feeder preposition recheck {}: XY={} mm; approach completed before rereading",
+                        nozzle.getName(), xyError);
+                continue;
+            }
+            if (!samePose && !recoverable) {
+                throw new Exception(String.format(java.util.Locale.ROOT,
+                        "飞达预定位后 XY 或角度改变（XY %.4f mm，角度 %.4f°），已暂停；超出自动恢复范围",
+                        xyError, start.getRotation() - pick.getRotation()));
+            }
+            List<Location> steps;
+            if (recoverable) {
+                // One local correction at the CURRENT safe waiting Z, followed
+                // by vertical descent. No repeated feed, global detour or loop.
+                steps = Arrays.asList(pick.derive(null, null, start.getZ(), null), pick);
+            } else {
+                pick = start.derive(null, null, pick.getZ(), null);
+                steps = Collections.singletonList(pick);
+            }
+            List<Waypoint> points = new ArrayList<>();
+            points.add(point(start));
+            for (Location step : steps) { points.add(point(step)); }
+            var contact = new CoordinatedMotionValidator.FeederContact("feeder:" + feeder.getId() + ":body", point(pick));
+            ValidationResult check = CoordinatedMotionValidator.validate(model, points,
+                    DynamicSafetyCollisionEngine.snapshot(model, machine, nozzle), point(start),
+                    System.nanoTime() + 500_000_000L, contact);
+            if (!check.isSafe()) {
+                throw new Exception("飞达预定位自动恢复/下降检查未通过：" + String.join("；", check.getIssues()));
+            }
+            estimate(nozzle, start, steps, machine.getSpeed());
+            if (SafetyWorkbenchStore.get() != live || live.getRevision() != revision || !live.isCertified()
+                    || !machine.isEnabled() || !machine.isHomed()) {
+                throw new Exception("飞达预定位后机器状态或安全模型改变");
+            }
+            if (recoverable) {
+                Logger.info("Feeder preposition auto-correct {}: XY={} mm at Z={} mm; full swept path checked, feed not repeated",
+                        nozzle.getName(), xyError, start.getZ());
+            }
+            for (Location step : steps) { nozzle.moveTo(step, machine.getSpeed(), MotionOption.CoordinatedMotion); }
+            return;
         }
-        if (!samePose) {
-            throw new Exception(String.format(java.util.Locale.ROOT,
-                    "飞达预定位后 XY 或角度改变（XY %.4f mm，角度 %.4f°），已暂停；未下发额外横移",
-                    Math.hypot(start.getX() - pick.getX(), start.getY() - pick.getY()),
-                    start.getRotation() - pick.getRotation()));
-        }
-        // Retain the actual waiting XY/C: never add a rounding correction move
-        // or restart Safe-Z. Geometry and contact are checked at this exact pose.
-        pick = start.derive(null, null, pick.getZ(), null);
-        var contact = new CoordinatedMotionValidator.FeederContact("feeder:" + feeder.getId() + ":body", point(pick));
-        ValidationResult check = CoordinatedMotionValidator.validate(model,
-                Arrays.asList(point(start), point(pick)),
-                DynamicSafetyCollisionEngine.snapshot(model, machine, nozzle), point(start),
-                System.nanoTime() + 500_000_000L, contact);
-        if (!check.isSafe()) { throw new Exception(String.join("；", check.getIssues())); }
-        estimate(nozzle, start, Collections.singletonList(pick), machine.getSpeed());
-        if (SafetyWorkbenchStore.get() != live || live.getRevision() != revision || !live.isCertified()) {
-            throw new Exception("飞达预定位后安全模型改变");
-        }
-        nozzle.moveTo(pick, machine.getSpeed(), MotionOption.CoordinatedMotion);
+        throw new Exception("飞达预定位复核未完成，已暂停");
     }
 
     public static void retractAfterPick(Nozzle nozzle, Feeder feeder) throws Exception {

@@ -109,12 +109,45 @@ class DynamicSafeMotionPlannerTest {
         feederWaitTrial(false, 360, -.006278, 2);
     }
 
-    @Test void outputRoundingDoesNotExcuseLargerXyChanges() throws Exception {
+    @Test void largerThanOutputQuantumIsCorrectedBeforeDescent() throws Exception {
         feederWaitTrial(false, 0, -.02, 2);
     }
 
-    @Test void fineOutputPrecisionStillRejectsTheSameXyChange() throws Exception {
+    @Test void fineOutputPrecisionRequiresAnActualCorrectionForSmallXyChange() throws Exception {
         feederWaitTrial(false, 0, -.006278, 4);
+    }
+
+    @Test void screenshotTwelveMicronMismatchRecoversOnceWithoutRepeatingFeed() throws Exception {
+        feederWaitTrial(false, 360, -.0125, 2);
+    }
+
+    @Test void staleArrivalPoseIsRereadWithoutAnUnnecessaryCorrection() throws Exception {
+        feederWaitTrial(false, 0, -.0125, 2, true, false);
+    }
+
+    @Test void oldPositionReportDoesNotLookLikeARealLargeShiftWhileApproachIsStillPending() throws Exception {
+        feederWaitTrial(false, 0, -.1, 2, true, false);
+    }
+
+    @Test void largerUnexplainedXyChangeStillStopsBeforeRecoveryMotion() throws Exception {
+        feederWaitTrial(false, 0, -.1, 2);
+    }
+
+    @Test void localRecoveryStillRejectsAnObstacleAtWaitingHeight() throws Exception {
+        feederWaitTrial(false, 0, -.0125, 2, false, true);
+    }
+
+    @Test void automaticRecoveryCannotStartOutsideNativeSoftLimits() throws Exception {
+        org.openpnp.spi.Feeder feeder = mock(org.openpnp.spi.Feeder.class);
+        when(feeder.getPickLocation()).thenReturn(nozzle.getLocation().derive(null, null, 0.0, null));
+        when(planner.isValidLocation(any(), any())).thenReturn(false);
+        machine.submit(() -> {
+            Exception failure = assertThrows(Exception.class, () ->
+                    DynamicSafeMotionPlanner.descendAtPrepositionedFeeder(nozzle, feeder));
+            assertTrue(failure.getMessage().contains("软限位"));
+            assertTrue(commands.isEmpty());
+            return null;
+        }).get(10, java.util.concurrent.TimeUnit.SECONDS);
     }
 
     private void feederWaitTrial(boolean failFeed, double reportedRotationShift) throws Exception {
@@ -122,6 +155,11 @@ class DynamicSafeMotionPlannerTest {
     }
 
     private void feederWaitTrial(boolean failFeed, double reportedRotationShift, double reportedXShift, int digits) throws Exception {
+        feederWaitTrial(failFeed, reportedRotationShift, reportedXShift, digits, false, false);
+    }
+
+    private void feederWaitTrial(boolean failFeed, double reportedRotationShift, double reportedXShift,
+            int digits, boolean transientReadback, boolean blockedCorrection) throws Exception {
         DynamicSafeMotionSettings.setEnabled(true);
         DynamicSafeMotionSettings.setStrictEnabled(true);
         nozzle.setNozzleTip(new org.openpnp.machine.reference.ReferenceNozzleTip());
@@ -146,8 +184,10 @@ class DynamicSafeMotionPlannerTest {
         var actuator = new org.openpnp.machine.reference.ReferenceActuator();
         actuator.setName("feed-test");
         actuator.setValueType(org.openpnp.spi.Actuator.ActuatorValueType.Double);
+        AtomicInteger feedCalls = new AtomicInteger();
         GcodeDriver feederDriver = new GcodeDriver() {
             @Override public void actuate(org.openpnp.spi.Actuator actual, double value) throws Exception {
+                feedCalls.incrementAndGet();
                 assertTrue(org.openpnp.machine.reference.feeder.FeederPreposition.isActive(actual));
                 assertEquals(1, DynamicSafeMotionPlannerTest.this.commands.size(),
                         "One direct approach, no intermediate XY waiting point or extra Z tail");
@@ -189,19 +229,43 @@ class DynamicSafeMotionPlannerTest {
                 }
                 double rotation = nozzle.getLocation().getRotation();
                 double waitingX = x.getCoordinate(), waitingY = y.getCoordinate();
-                if (reportedRotationShift % 360 != 0 || Math.abs(reportedXShift) > Math.pow(10, -digits)) {
+                if (transientReadback) {
+                    doAnswer(invocation -> {
+                        x.setCoordinate(x.getCoordinate() - reportedXShift);
+                        return null;
+                    }).when(planner).waitForCompletion(null, MotionPlanner.CompletionType.WaitForStillstand);
+                }
+                if (blockedCorrection) {
+                    SafetyObject obstacle = model.createObject(ObjectType.KEEP_OUT);
+                    obstacle.x = nozzle.getLocation().getX();
+                    obstacle.y = nozzle.getLocation().getY();
+                    obstacle.z = nozzle.getLocation().getZ();
+                    obstacle.width = obstacle.depth = obstacle.height = .001;
+                    model.addObject(obstacle);
+                    model.certify("Recovery must respect a measured obstacle");
+                }
+                if (reportedRotationShift % 360 != 0 || Math.abs(reportedXShift) >= .05 && !transientReadback || blockedCorrection) {
                     Exception failure = assertThrows(Exception.class, () ->
                             DynamicSafeMotionPlanner.descendAtPrepositionedFeeder(nozzle, feeder));
-                    assertTrue(failure.getMessage().contains("XY 或角度改变"));
-                    assertEquals(1, commands.size(), "Actual pose changes must not release pickup");
+                    assertTrue(failure.getMessage().contains(blockedCorrection ? "检查未通过" : "XY 或角度改变"));
+                    assertEquals(1, commands.size(), "Unsafe recovery must not issue any motion");
+                    assertEquals(1, feedCalls.get(), "Recovery must never repeat feeder advance");
                     return null;
                 }
                 DynamicSafeMotionPlanner.descendAtPrepositionedFeeder(nozzle, feeder);
-                assertEquals(2, commands.size(), "Exactly one vertical pickup after feed completes");
+                boolean corrected = Math.abs(reportedXShift) > Math.pow(10, -digits) && !transientReadback;
+                assertEquals(corrected ? 3 : 2, commands.size(), "At most one correction followed by vertical pickup");
                 assertEquals(-13, nozzle.getLocation().getZ(), .001);
                 assertEquals(rotation, nozzle.getLocation().getRotation(), .001);
-                assertEquals(waitingX, commands.get(1).getCoordinate(x), 1e-9);
-                assertEquals(waitingY, commands.get(1).getCoordinate(y), 1e-9);
+                int last = commands.size() - 1;
+                assertEquals(corrected || transientReadback ? waitingX - reportedXShift : waitingX,
+                        commands.get(last).getCoordinate(x), 1e-9);
+                assertEquals(waitingY, commands.get(last).getCoordinate(y), 1e-9);
+                if (corrected) {
+                    assertEquals(commands.get(0).getCoordinate(z), commands.get(1).getCoordinate(z), .001,
+                            "Correct horizontally at the existing waiting height, never inside the feeder");
+                }
+                assertEquals(1, feedCalls.get(), "Recovery must never repeat feeder advance");
             }
             assertFalse(org.openpnp.machine.reference.feeder.FeederPreposition.isActive(actuator));
             return null;
