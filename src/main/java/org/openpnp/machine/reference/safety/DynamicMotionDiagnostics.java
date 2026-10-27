@@ -65,7 +65,7 @@ public final class DynamicMotionDiagnostics {
         reasons.entrySet().stream().sorted(Map.Entry.<String, Integer>comparingByValue().reversed())
                 .forEach(entry -> result.append(entry.getValue()).append(" 次：").append(entry.getKey()).append('\n'));
         return result.append("\n纯 Z、原地旋转和特殊工具不参与联动，也不计为失败。"
-                + "实时规划预算 40 ms，超时保留原安全 Z；首次模型准备可能超出预算。"
+                + "实时规划预算 250 ms，尚未下发运动且模型未改变时可重算一次（500 ms）；仍超时则按启用策略暂停。"
                 + "预计节省必须超过本次规划开销和 5 ms 余量。"
                 + "计时为软件规划与轴模型估算，不是实测贴片提速。CSV 保留最近 1000 段评估。\n"
                 + "模型修改须重新认证；物料须填写封装本体宽/长，以及高度或有效的吸嘴尖高度上界；精度补偿附加路径维持原安全 Z。")

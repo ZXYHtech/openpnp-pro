@@ -4,7 +4,7 @@
 
 	<groupId>org.openpnp</groupId>
 	<artifactId>openpnp-gui</artifactId>
-	<version>2.6P3-beta66-xyz</version>
+	<version>2.6P3-beta67</version>
 	<packaging>jar</packaging>
 	<name>openpnp-gui</name>
 	<url>http://openpnp.org</url>

@@ -616,6 +616,7 @@ public class MainFrame extends JFrame {
         //////////////////////////////////////////////////////////////////////
         JMenu mnCommands = new JMenu(Translations.getString("Menu.Machine")); //$NON-NLS-1$
         mnCommands.setMnemonic(KeyEvent.VK_M);
+        mnCommands.add(new JMenuItem(safetyWorkbenchAction));
         menuBar.add(mnCommands);
         mnCommands.addSeparator();
 
@@ -662,7 +663,6 @@ public class MainFrame extends JFrame {
         experimentalFeaturesMenu.add(new JMenuItem(motionPerformanceCenterAction));
         experimentalFeaturesMenu.add(new JMenuItem(flyingVisionCenterAction));
         experimentalFeaturesMenu.add(new JMenuItem(cameraDiagnosticsAction));
-        experimentalFeaturesMenu.add(new JMenuItem(safetyWorkbenchAction));
         experimentalFeaturesMenu.add(new JMenuItem(stencilFixtureAction));
         experimentalFeaturesMenu.setVisible(
                 ExperimentalMotionCenterDialog.isExperimentalModeEnabled());
@@ -1220,6 +1220,7 @@ public class MainFrame extends JFrame {
         toolbar.addSeparator(new Dimension(14, 1));
         toolbar.add(createCommandButton(machineControlsPanel.startStopMachineAction, true));
         toolbar.add(createCommandButton(machineControlsPanel.homeAction, true));
+        toolbar.add(createCommandButton(jobPanel.fiducialCheckAction, true));
         toolbar.add(createCommandButton(topPickAction, true));
         toolbar.addSeparator(new Dimension(14, 1));
         toolbar.add(createCommandButton(jobPanel.startPauseResumeJobAction, true));
@@ -1965,7 +1966,7 @@ public class MainFrame extends JFrame {
                     new org.openpnp.corexy.ui.CoreXYWizard(MainFrame.this, configuration).setVisible(true));
         }
     };
-    private Action safetyWorkbenchAction = new AbstractAction("3D 安全工作台...") {
+    private Action safetyWorkbenchAction = new AbstractAction("TORNADOSMT提速与安全工作台...") {
         {
             putValue(SHORT_DESCRIPTION,
                     "拖拽建立机器数字孪生，采点标定并在真机前检查 XYZ 联动轨迹");

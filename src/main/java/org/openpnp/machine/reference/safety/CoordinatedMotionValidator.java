@@ -106,7 +106,11 @@ final class CoordinatedMotionValidator {
             List<Waypoint> segmentStarts = new ArrayList<>();
             List<Waypoint> segmentEnds = new ArrayList<>();
             List<java.util.function.DoubleUnaryOperator> segmentZ = new ArrayList<>();
+            boolean blockProofAvailable = true;
             for (DynamicTool tool : tools) {
+                if ((tool.conservativeSegmentZ || tool.mappedZ != null) && tool.segmentZ == null) {
+                    blockProofAvailable = false;
+                }
                 segmentZ.add(tool.segmentZ == null ? null : tool.segmentZ.apply(first.z, last.z));
                 segmentStarts.add(tool.conservativeSegmentZ && tool.segmentZ == null ? tool.at(anchor, first) : null);
                 segmentEnds.add(tool.conservativeSegmentZ && tool.segmentZ == null ? tool.at(anchor, last) : null);
@@ -136,6 +140,34 @@ final class CoordinatedMotionValidator {
                 if ((index & 31) == 1 && System.nanoTime() > deadline) {
                     return new ValidationResult(Collections.singletonList("联动规划超时，尚未下发运动"), samples);
                 }
+                // Prove clear runs in conservative blocks before doing 0.5 mm
+                // intervals. Only PASS skips work; ambiguous/contact regions
+                // still receive the original fine sweep below.
+                boolean proven = false;
+                if (blockProofAvailable) {
+                    for (int block : new int[] { 128, 32, 8 }) {
+                        int end = Math.min(fractions.size() - 1, index - 1 + block);
+                        if (end - index < 3) { continue; }
+                        Waypoint blockA = Waypoint.interpolate(first, last, fractions.get(index - 1));
+                        Waypoint blockB = Waypoint.interpolate(first, last, fractions.get(end));
+                        List<Waypoint> before = new ArrayList<>(), after = new ArrayList<>();
+                        for (int i = 0; i < tools.size(); i++) {
+                            DynamicTool tool = tools.get(i);
+                            Waypoint a = tool.at(anchor, blockA), b = tool.at(anchor, blockB);
+                            before.add(segmentZ.get(i) == null ? a
+                                    : new Waypoint(a.x, a.y, segmentZ.get(i).applyAsDouble(fractions.get(index - 1))));
+                            after.add(segmentZ.get(i) == null ? b
+                                    : new Waypoint(b.x, b.y, segmentZ.get(i).applyAsDouble(fractions.get(end))));
+                        }
+                        if (validateToolInterval(model, tools, before, after).isSafe()) {
+                            samples.add(blockB);
+                            index = end;
+                            proven = true;
+                            break;
+                        }
+                    }
+                }
+                if (proven) { continue; }
                 Waypoint a = Waypoint.interpolate(first, last, fractions.get(index - 1));
                 Waypoint b = Waypoint.interpolate(first, last, fractions.get(index));
                 samples.add(b);
@@ -308,11 +340,10 @@ final class CoordinatedMotionValidator {
                 // the housing may overhang the travel rectangle. Real obstacles
                 // still use the entire envelope, and native raw-axis soft limits
                 // are checked before issuing each planned motion.
-                return (!tool.selectedTool || (Math.min(a.x, b.x) >= model.getMinX()
-                        && Math.max(a.x, b.x) <= model.getMaxX()
-                        && Math.min(a.y, b.y) >= model.getMinY()
-                        && Math.max(a.y, b.y) <= model.getMaxY()))
-                        && minZ >= model.getMinZ() && maxZ <= model.getMaxZ();
+                // Even the selected nozzle is offset from the controller origin.
+                // Comparing its calibrated XY with raw controller limits rejects
+                // valid front-feeder poses (e.g. nozzle Y=-36, controller Y>0).
+                return minZ >= model.getMinZ() && maxZ <= model.getMaxZ();
             }
             return minX >= model.getMinX() && maxX <= model.getMaxX() && minY >= model.getMinY() && maxY <= model.getMaxY() && minZ >= model.getMinZ() && maxZ <= model.getMaxZ();
         }

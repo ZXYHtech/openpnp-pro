@@ -14,6 +14,25 @@ import org.openpnp.machine.reference.safety.SafetyWorkbenchModel.Point2;
 import org.openpnp.machine.reference.safety.SafetyWorkbenchModel.Shape;
 
 class CoordinatedMotionValidatorTest {
+    @Test void conservativeBlocksAvoidRepeatingCamTransformsAcrossAClearRisingRoute() {
+        SafetyWorkbenchModel model = model();
+        Waypoint start = new Waypoint(0, 0, 0);
+        DynamicTool moving = tool(start);
+        moving.conservativeSegmentZ = true;
+        var calls = new java.util.concurrent.atomic.AtomicInteger();
+        moving.segmentZ = (from, to) -> fraction -> {
+            calls.incrementAndGet();
+            return 20 * Math.sin(Math.PI * fraction / 3);
+        };
+        SafetyObject obstacle = box(model, ObjectType.KEEP_OUT, 250, -.1, 0, 1, .2, 5);
+        var path = Arrays.asList(start, new Waypoint(300, 0, 17.320508));
+        assertTrue(CoordinatedMotionValidator.validate(model, path, Collections.singletonList(moving), start).isSafe());
+        assertTrue(calls.get() < 120, "Clear conservative blocks must replace hundreds of full cam transforms");
+        obstacle.x = .23;
+        obstacle.width = .001;
+        assertFalse(CoordinatedMotionValidator.validate(model, path, Collections.singletonList(moving), start).isSafe(),
+                "An ambiguous block must still detect a thin obstacle between samples");
+    }
     @Test void feederBankAllowsOnlyKnownVerticalPickupAndKeepsFullUnion() {
         SafetyWorkbenchModel model = model();
         model.setMeasuredImportGeometry(40, 370, -7, -13);
@@ -42,7 +61,7 @@ class CoordinatedMotionValidatorTest {
         assertFalse(CoordinatedMotionValidator.validate(model,
                 Arrays.asList(pick, new Waypoint(16, 5, 0)), tools, pick, Long.MAX_VALUE, contact).isSafe());
     }
-    @Test void axisTravelRectangleAllowsHousingOverhangButNotObstacleOrTipOverrun() {
+    @Test void axisTravelRectangleIsNotComparedWithCalibratedNozzleCoordinates() {
         SafetyWorkbenchModel model = model();
         model.setMinY(0);
         Waypoint from = new Waypoint(50, 5, 20);
@@ -53,8 +72,9 @@ class CoordinatedMotionValidatorTest {
         assertFalse(CoordinatedMotionValidator.validate(model, path, tools, from).isSafe());
         model.setXyBoundsAreTravelLimits(true);
         assertTrue(CoordinatedMotionValidator.validate(model, path, tools, from).isSafe());
-        assertFalse(CoordinatedMotionValidator.validate(model,
-                Arrays.asList(from, new Waypoint(60, -1, 20)), tools, from).isSafe());
+        assertTrue(CoordinatedMotionValidator.validate(model,
+                Arrays.asList(from, new Waypoint(60, -36, 20)), tools, from).isSafe(),
+                "Native controller coordinates, not calibrated nozzle coordinates, enforce travel limits");
         box(model, ObjectType.KEEP_OUT, 55, -10, 22, 2, 2, 3);
         assertFalse(CoordinatedMotionValidator.validate(model, path, tools, from).isSafe(),
                 "The overhanging housing still collides with real frame objects");

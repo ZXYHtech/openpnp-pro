@@ -38,6 +38,7 @@ import org.openpnp.gui.JobPanel;
 import org.openpnp.gui.MainFrame;
 import org.openpnp.gui.support.Wizard;
 import org.openpnp.machine.reference.vision.AbstractPartAlignment;
+import org.openpnp.machine.reference.vision.ReferenceBottomVision;
 import org.openpnp.machine.reference.wizards.ReferencePnpJobProcessorConfigurationWizard;
 import org.openpnp.machine.reference.ReferenceFeeder;
 import org.openpnp.model.BoardLocation;
@@ -1458,6 +1459,10 @@ public class ReferencePnpJobProcessor extends AbstractPnpJobProcessor {
      * Pick step - pick parts using all nozzles
      */
     protected class Pick extends PlannedPlacementStep {
+        private Feeder previousFeeder;
+        private Nozzle previousNozzle;
+        private Nozzle prepositionedNozzle;
+        private Feeder prepositionedFeeder;
         HashMap<PlannedPlacement, Integer> retries = new HashMap<>();
         private final boolean discardOnPickFailure;
         
@@ -1534,7 +1539,7 @@ public class ReferencePnpJobProcessor extends AbstractPnpJobProcessor {
                  * Exception so that we can continue the loop.
                  */
                 try {
-                    feed(feeder, nozzle);
+                    feed(feeder, nozzle, jobPlacement);
                 }
                 catch (Feeder.FeederEmptyException e) {
                     if (tryLimit==1) {
@@ -1587,8 +1592,10 @@ public class ReferencePnpJobProcessor extends AbstractPnpJobProcessor {
             throw lastException;
         }
         
-        private void feed(Feeder feeder, Nozzle nozzle) throws JobProcessorException, Feeder.FeederEmptyException {
+        private void feed(Feeder feeder, Nozzle nozzle, JobPlacement jobPlacement) throws JobProcessorException, Feeder.FeederEmptyException {
             Exception lastException = null;
+            prepositionedNozzle = null;
+            prepositionedFeeder = null;
 
             Map<String, Object> globals = new HashMap<>();
             globals.put("nozzle", nozzle);
@@ -1600,7 +1607,15 @@ public class ReferencePnpJobProcessor extends AbstractPnpJobProcessor {
                     fireTextStatus("Feed %s on %s.", feeder.getName(), feeder.getPart().getId());
                     
                     Configuration.get().getScripting().on("Feeder.BeforeFeed", globals);
-                    feeder.feed(nozzle);
+                    boolean readyAtPick = org.openpnp.machine.reference.feeder.FeederPreposition.feed(feeder, nozzle,
+                                    Utils2D.calculateBoardPlacementLocation(jobPlacement.getBoardLocation(),
+                                            jobPlacement.getPlacement().getLocation()));
+                    if (readyAtPick) {
+                        prepositionedNozzle = nozzle;
+                        prepositionedFeeder = feeder;
+                    } else {
+                        feeder.feed(nozzle);
+                    }
                     Configuration.get().getScripting().on("Feeder.AfterFeed", globals);
                     return;
                 }
@@ -1648,6 +1663,8 @@ public class ReferencePnpJobProcessor extends AbstractPnpJobProcessor {
                     postPick(feeder, nozzle);
                     long vacuumCheckStarted = System.nanoTime();
                     checkPartOn(nozzle);
+                    previousFeeder = feeder;
+                    previousNozzle = nozzle;
                     if (org.openpnp.machine.reference.safety.DynamicSafeMotionSettings.isEnabled()
                             && (System.nanoTime() - postPickStarted) > 25_000_000L) {
                         Logger.info("XY/Z N1/feeder handoff {} ({}): feeder.postPick={} ms, part-on check={} ms",
@@ -1672,13 +1689,22 @@ public class ReferencePnpJobProcessor extends AbstractPnpJobProcessor {
                 // Prepare the Nozzle for pick-to-place articulation.
                 Location placementLocation = Utils2D.calculateBoardPlacementLocation(jobPlacement.getBoardLocation(), jobPlacement.getPlacement().getLocation());
                 Location pickLocation = feeder.getPickLocation();
-                nozzle.prepareForPickAndPlaceArticulation(pickLocation, placementLocation);
+                boolean readyAtPick = prepositionedNozzle == nozzle && prepositionedFeeder == feeder;
+                prepositionedNozzle = null;
+                prepositionedFeeder = null;
+                if (!readyAtPick) {
+                    nozzle.prepareForPickAndPlaceArticulation(pickLocation, placementLocation);
+                }
 
                 // Separate actual motion, vacuum and exit time. A feeder's own controller does
                 // not belong to the nozzle XYZ motion driver; a postPick/part-on barrier may
                 // account for an apparent N1 pause even when the planner accepted a fast path.
                 long approachStarted = System.nanoTime();
-                nozzle.moveToPickLocation(feeder);
+                if (readyAtPick) {
+                    org.openpnp.machine.reference.safety.DynamicSafeMotionPlanner.descendAtPrepositionedFeeder(nozzle, feeder);
+                } else {
+                    nozzle.moveToPickLocation(feeder);
+                }
                 long vacuumStarted = System.nanoTime();
                 nozzle.pick(part,feeder);
                 long retreatStarted = System.nanoTime();
@@ -1812,10 +1838,21 @@ public class ReferencePnpJobProcessor extends AbstractPnpJobProcessor {
                     continue;
                 }
                 try {
-                    PartAlignment.PartAlignmentOffset offsets = task.await();
                     if (p.nozzle.getPart() != p.jobPlacement.getPlacement().getPart()
                             || p.nozzle.getNozzleTip() != p.nozzleTip) {
                         throw new Exception("识别期间吸嘴或器件改变，已停止贴装。");
+                    }
+                    PartAlignment.PartAlignmentOffset offsets;
+                    try {
+                        offsets = task.await();
+                    } catch (ReferenceBottomVision.RefinementRequired refinement) {
+                        Logger.info("{}; continuing native iterative alignment on {}",
+                                refinement.getMessage(), p.nozzle.getName());
+                        Part part = p.jobPlacement.getPlacement().getPart();
+                        offsets = ((ReferenceBottomVision) AbstractPartAlignment.getPartAlignment(part))
+                                .refineCoordinatedAlignment(part, p.jobPlacement.getBoardLocation(),
+                                        p.jobPlacement.getPlacement(), p.nozzle);
+                        p.nozzle.moveToSafeZ();
                     }
                     checkPartOn(p.nozzle);
                     if (p.nozzle.isAligningRotationMode()) {

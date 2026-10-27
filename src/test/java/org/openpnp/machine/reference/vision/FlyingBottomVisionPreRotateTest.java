@@ -3,6 +3,7 @@ package org.openpnp.machine.reference.vision;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.jupiter.api.Assertions.assertNotEquals;
 
 import java.awt.Color;
 import java.awt.image.BufferedImage;
@@ -16,6 +17,25 @@ import org.openpnp.model.Placement;
 import org.openpnp.spi.PartAlignment.PartAlignmentOffset;
 
 class FlyingBottomVisionPreRotateTest {
+    @Test void largeInitialAngleRequestsCorrectionRatherThanRejectingThePart() {
+        assertTrue(ReferenceBottomVision.needsRefinement(3, .3102, .1, -10.455, 1, 10));
+        assertFalse(ReferenceBottomVision.needsRefinement(1, .3102, .1, -10.455, 1, 10),
+                "A configured single pass follows native behavior; final pick tolerance still applies");
+        assertFalse(ReferenceBottomVision.needsRefinement(3, .01, .02, .1, 1, 10));
+        assertTrue(ReferenceBottomVision.needsRefinement(3, .01, 1.1, .1, 1, 10));
+    }
+
+    @Test void nonzeroVisionOffsetIsAppliedAfterLargeAngleRotation() {
+        Location measured = new Location(LengthUnit.Millimeters, .3102, .1, 0, 0);
+        Location configured = new Location(LengthUnit.Millimeters, .12, -.08, 0, 0);
+        Location result = ReferenceBottomVision.normalizeExperimentalOffsets(
+                measured, -10.455, configured, 90, true);
+        Location nativeResult = measured.rotateXy(10.455).derive(null, null, null, -10.455)
+                .subtract(configured.rotateXy(90));
+        assertEquals(nativeResult, result);
+        assertNotEquals(ReferenceBottomVision.normalizeExperimentalOffsets(
+                measured, -10.455, Location.origin, 90, true), result);
+    }
     @Test
     void frameBufferIsBoundedForHdAndFourKImages() {
         long heap768MiB = 768L * 1024 * 1024;

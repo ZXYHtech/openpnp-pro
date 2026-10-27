@@ -9,6 +9,52 @@ import org.openpnp.machine.reference.safety.SafetyWorkbenchModel.SafetyObject;
 
 /** Conservative whole-plane admission check. Per-move swept validation remains mandatory. */
 public final class FastTravelClearance {
+    /** Physical clearance plane, independent of nozzle calibration and changer height. */
+    public static double planeZ(SafetyWorkbenchModel model) {
+        double highest = Double.NEGATIVE_INFINITY;
+        for (SafetyObject object : model.getObjects()) {
+            if (object.enabled && object.obstacle && !restrictedZone(object)
+                    && object.type != SafetyWorkbenchModel.ObjectType.KEEP_OUT) {
+                highest = Math.max(highest, object.z + object.height + Math.max(2, object.clearance));
+            }
+        }
+        return Double.isFinite(highest) ? highest : Double.NaN;
+    }
+
+    public static SafetyObject highestObject(SafetyWorkbenchModel model) {
+        SafetyObject highest = null;
+        for (SafetyObject object : model.getObjects()) {
+            if (object.enabled && object.obstacle && !restrictedZone(object)
+                    && object.type != SafetyWorkbenchModel.ObjectType.KEEP_OUT
+                    && (highest == null || object.z + object.height > highest.z + highest.height)) {
+                highest = object;
+            }
+        }
+        return highest;
+    }
+
+    /** Convert a physical clearance plane to the selected nozzle's reference Z. */
+    static double referenceZ(SafetyWorkbenchModel model,
+            List<DynamicSafetyCollisionEngine.DynamicTool> tools, double upper) {
+        double plane = planeZ(model);
+        if (!Double.isFinite(plane) || !Double.isFinite(upper) || upper < plane) { return Double.NaN; }
+        for (double z = plane; z <= upper + 0.000001; z = Math.min(upper, z + .25)) {
+            boolean clear = true;
+            for (DynamicSafetyCollisionEngine.DynamicTool tool : tools) {
+                if (!tool.isMoving()) { continue; }
+                double toolZ = tool.mappedZ != null ? tool.mappedZ.applyAsDouble(z)
+                        : tool.followsZ ? z : tool.reference.z;
+                if (!Double.isFinite(toolZ) || tool.minimumZAt(toolZ) < plane - 0.000001) {
+                    clear = false;
+                    break;
+                }
+            }
+            if (clear) { return z; }
+            if (z >= upper) { break; }
+        }
+        return Double.NaN;
+    }
+
     private FastTravelClearance() { }
 
     public static String reason(SafetyObject object, double floor) {

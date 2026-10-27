@@ -406,6 +406,11 @@ public abstract class AbstractActuator extends AbstractHeadMountable implements 
      * @throws Exception
      */
     protected void coordinateWithMachineBeforeActuate() throws Exception {
+        if (org.openpnp.machine.reference.feeder.FeederPreposition.isActive(this)) {
+            // The machine thread has already dispatched a checked safe approach.
+            // Keep the configured after-actuation barrier and every other actuator unchanged.
+            return;
+        }
         coordinateWithMachine(getCoordinatedBeforeActuateEnum());
     }
     protected void coordinateWithMachineAfterActuate() throws Exception {

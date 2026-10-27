@@ -228,10 +228,10 @@ public class SafetyWorkbenchDialog extends JDialog {
     private long lastLiveSnapshot;
 
     public SafetyWorkbenchDialog(MainFrame frame) {
-        super(frame, "OpenPnP Pro · 3D 安全工作台（实验）", false);
+        super(frame, "TORNADOSMT提速与安全工作台", false);
         this.frame = frame;
         this.model = SafetyWorkbenchStore.get();
-        canvas.rapidPreviewZ = model.getFastTravelFloorZ();
+        canvas.rapidPreviewZ = org.openpnp.machine.reference.safety.FastTravelClearance.planeZ(model);
         synchronizeToolProfiles();
         loadWorkbenchControls();
         this.history = new SafetyWorkbenchHistory(model);
@@ -647,7 +647,7 @@ public class SafetyWorkbenchDialog extends JDialog {
                 new EmptyBorder(2, 4, 7, 4)));
 
         JPanel heading = new JPanel(new BorderLayout(12, 0));
-        JLabel title = new JLabel("3D 安全工作台 / 数字孪生");
+        JLabel title = new JLabel("TORNADOSMT提速与安全工作台");
         title.setFont(title.getFont().deriveFont(Font.BOLD, 20f));
         JLabel explanation = new JLabel(
                 "建模与校准  →  轨迹预演  →  检查认证  →  受控运动");
@@ -748,61 +748,10 @@ public class SafetyWorkbenchDialog extends JDialog {
             }
         });
         coordinatedMotion.add(motionDiagnostics);
-        // Operator-specific rapid-Z plane, disabled by default. This is NOT a collision bypass:
-        // any change invalidates model certification and all proposed paths are still swept.
-        JCheckBox rapidPlaneEnabled = new JCheckBox("允许 Z 快速进场 ≥");
-        rapidPlaneEnabled.setSelected(model.isFastTravelFloorEnabled());
-        JSpinner rapidPlaneZ = new JSpinner(new SpinnerNumberModel(
-                model.getFastTravelFloorZ(), -500.0, 500.0, 0.5));
-        rapidPlaneZ.addChangeListener(event -> {
-            canvas.rapidPreviewZ = ((Number) rapidPlaneZ.getValue()).doubleValue();
-            canvas.repaint();
-        });
-        rapidPlaneZ.setPreferredSize(new Dimension(74, 27));
-        JButton rapidApply = new JButton("应用并重新认证");
-        rapidApply.setName("fast-z-floor-apply");
-        rapidApply.setToolTipText("当前吸嘴参考 Z（毫米），不是吸嘴尖/元件最低点；所有工具仍进行 3D 碰撞扫掠。");
-        rapidApply.addActionListener(event -> {
-            if (Configuration.get().getMachine().isBusy()) {
-                result.setText("运行任务期间不能改变快速 Z 通道，请先暂停并等待机器空闲。");
-                return;
-            }
-            boolean enable = rapidPlaneEnabled.isSelected();
-            double floorZ = ((Number) rapidPlaneZ.getValue()).doubleValue();
-            if (enable) {
-                java.util.List<String> issues = org.openpnp.machine.reference.safety.FastTravelClearance.check(
-                        model, Configuration.get().getMachine(), floorZ);
-                if (!issues.isEmpty()) {
-                    rapidPlaneEnabled.setSelected(false);
-                    canvas.repaint();
-                    result.setText("快速高度检查未通过，不能开启：\n" + String.join("\n", issues));
-                    return;
-                }
-            }
-            if (enable && JOptionPane.showConfirmDialog(this,
-                    "请确认这个数值是已标定的吸嘴参考 Z，并已实际测量 N1、N2、携带元件、飞达和相机外壳的间隙。\n"
-                    + "它只用于优先尝试安全联动路线，不会跳过 3D 扫掠、软限位、换嘴和末段垂直取放。\n"
-                    + "修改后须重新检查、认证并保存 3D 模型。是否继续？",
-                    "快速进场 Z 净空确认", JOptionPane.OK_CANCEL_OPTION,
-                    JOptionPane.WARNING_MESSAGE) != JOptionPane.OK_OPTION) {
-                return;
-            }
-            try {
-                model.setFastTravelFloor(enable, floorZ);
-                updateCertification();
-                coordinatedMotion.refresh();
-                result.setText(enable
-                        ? "已申请在吸嘴参考 Z ≥ " + floorZ + " mm 进行快速 XY/Z 进场。请核对全部实体尺寸，重新“检查并认证”，然后保存模型；认证前自动保持原路径。"
-                        : "已关闭快速 Z 进场通道。请重新认证并保存模型。");
-            } catch (IllegalArgumentException invalid) {
-                result.setText("快速 Z 阈值无效：" + invalid.getMessage());
-            }
-        });
         JPanel rapidRow = new JPanel(new WrapLayout(FlowLayout.LEFT, 4, 1));
-        rapidRow.add(rapidPlaneEnabled);
-        rapidRow.add(rapidPlaneZ);
-        rapidRow.add(new JLabel("mm（参考 Z）"));
-        rapidRow.add(rapidApply);
+        JLabel automaticPlane = new JLabel("自动安全平面：最高障碍物 + 2 mm · 提速终点");
+        automaticPlane.setToolTipText("换嘴区单独禁入；携带元件、吸嘴包络和更大的实体间隙仍参与检查。修改物体高度后自动重算，重新认证后生效。");
+        rapidRow.add(automaticPlane);
         coordinatedMotion.add(rapidRow);
         header.add(coordinatedMotion);
         return header;
@@ -846,7 +795,7 @@ public class SafetyWorkbenchDialog extends JDialog {
     }
 
     private ExperimentalGuide createGuide() {
-        return new ExperimentalGuide(this, "safety-workbench", "3D 安全工作台",
+        return new ExperimentalGuide(this, "safety-workbench", "TORNADOSMT提速与安全工作台",
                 new Step("导入现有机器坐标",
                         "先同步软限位、Safe Z、停靠点、换嘴路径，以及飞达和底部相机实体。",
                         () -> importConfiguration, () -> objectListModel.size() > 0),
@@ -2595,10 +2544,6 @@ public class SafetyWorkbenchDialog extends JDialog {
 
     private void certifyModel() {
         List<String> issues = SafetyModelValidator.validate(model);
-        if (model.isFastTravelFloorEnabled()) {
-            issues = org.openpnp.machine.reference.safety.FastTravelClearance.check(
-                    model, Configuration.get().getMachine(), model.getFastTravelFloorZ());
-        }
         if (!issues.isEmpty()) {
             JOptionPane.showMessageDialog(this, "模型不能认证：\n• "
                     + String.join("\n• ", issues), "检查未通过",
@@ -3335,6 +3280,7 @@ public class SafetyWorkbenchDialog extends JDialog {
             super.paintComponent(graphics);
             Graphics2D g = (Graphics2D) graphics.create();
             visualOriginZ = SafetyWorkbenchGeometry.workSurfaceZ(model);
+            rapidPreviewZ = org.openpnp.machine.reference.safety.FastTravelClearance.planeZ(model);
             g.setRenderingHint(RenderingHints.KEY_ANTIALIASING,
                     RenderingHints.VALUE_ANTIALIAS_ON);
             drawGrid(g);
@@ -3519,11 +3465,12 @@ public class SafetyWorkbenchDialog extends JDialog {
                 Point d = project(object.x - margin, object.y + object.depth + margin, rapidPreviewZ);
                 g.setColor(new Color(185, 115, 240));
                 g.drawPolygon(polygon(a, b, c, d));
-                g.drawString("换嘴专用区：经过时检查", a.x, a.y - 4);
+                g.drawString("换嘴专用区：普通联动绕行", a.x, a.y - 4);
             }
         }
 
         private void drawRapidPlane(Graphics2D g) {
+            if (!Double.isFinite(rapidPreviewZ)) { return; }
             Point a = project(model.getMinX(), model.getMinY(), rapidPreviewZ);
             Point b = project(model.getMaxX(), model.getMinY(), rapidPreviewZ);
             Point c = project(model.getMaxX(), model.getMaxY(), rapidPreviewZ);
@@ -3532,8 +3479,18 @@ public class SafetyWorkbenchDialog extends JDialog {
             g.fillPolygon(polygon(a, b, c, d));
             g.setStroke(new BasicStroke(2f));
             drawSafeZPlane(g, rapidPreviewZ, new Color(255, 145, 35));
+            SafetyObject highest = org.openpnp.machine.reference.safety.FastTravelClearance.highestObject(model);
+            if (highest != null) {
+                Point mark = project(highest.x + highest.width / 2,
+                        highest.y + highest.depth / 2, highest.z + highest.height);
+                g.setColor(new Color(255, 205, 90));
+                g.drawOval(mark.x - 6, mark.y - 6, 12, 12);
+                g.drawLine(mark.x + 6, mark.y, mark.x + 24, mark.y - 25);
+                g.drawString("最高物体：" + highest.name + "；降低该高度可进一步提速",
+                        mark.x + 26, mark.y - 25);
+            }
             Point label = project(model.getMinX(), model.getMinY(), rapidPreviewZ);
-            g.drawString(String.format(Locale.ROOT, "安全参考平面 Z = %.2f mm（吸嘴参考坐标）", rapidPreviewZ),
+            g.drawString(String.format(Locale.ROOT, "安全平面 Z = %.2f mm · 提速终点", rapidPreviewZ),
                     label.x + 5, label.y - 5);
         }
 
@@ -4137,7 +4094,7 @@ public class SafetyWorkbenchDialog extends JDialog {
                     + String.format(Locale.ROOT, "%.0f FPS", smoothedFps), 24, 74);
             g.setColor(new Color(255, 189, 100));
             g.drawString(String.format(Locale.ROOT,
-                    "半透明平面 Z=%.2f mm；标红按“顶面 + 安全间隙”检查，并非只比较顶面。", rapidPreviewZ), 24, 94);
+                    "安全平面 Z=%.2f mm · 提速终点；按最高障碍物 + 2 mm 自动计算（换嘴区除外）。", rapidPreviewZ), 24, 94);
             SafetyObject example = selected != null && selected.obstacle ? selected : null;
             if (example == null) {
                 for (SafetyObject object : model.getObjects()) {

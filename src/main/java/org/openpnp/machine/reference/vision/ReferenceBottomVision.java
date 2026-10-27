@@ -53,6 +53,25 @@ import org.simpleframework.xml.ElementMap;
 import org.simpleframework.xml.Root;
 
 public class ReferenceBottomVision extends AbstractPartAlignment {
+    public static final class RefinementRequired extends Exception {
+        public RefinementRequired(double linear, double angle) {
+            super(String.format(java.util.Locale.ROOT,
+                    "底部视觉需要继续校正：中心 %.4f mm、角度 %.3f°", linear, angle));
+        }
+    }
+
+    /** Machine-thread continuation; never perform correction motion on the image worker. */
+    public PartAlignmentOffset refineCoordinatedAlignment(Part part, BoardLocation board,
+            Placement placement, Nozzle nozzle) throws Exception {
+        return findOffsetsPreRotate(part, board, placement, nozzle,
+                VisionUtils.getBottomVisionCamera(), getInheritedVisionSettings(part));
+    }
+
+    static boolean needsRefinement(int passes, double linear, double edge, double angle,
+            double maxLinear, double maxAngle) {
+        return passes > 1 && (linear > maxLinear || edge > maxLinear || Math.abs(angle) > maxAngle);
+    }
+
     /** Single-shot job alignment; returns null before motion when unsupported. */
     public CoordinatedVisionTask<PartAlignmentOffset> beginCoordinatedAlignment(Part part,
             BoardLocation board, Placement placement, Nozzle nozzle) throws Exception {
@@ -150,6 +169,8 @@ public class ReferenceBottomVision extends AbstractPartAlignment {
             int width = camera.getWidth(), height = camera.getHeight();
             final double maxLinear = getMaxLinearOffset().convertToUnits(LengthUnit.Millimeters).getValue();
             final double maxAngle = getMaxAngularOffset();
+            final int passes = getMaxVisionPasses();
+            final Location visionOffset = settings.getVisionOffset();
             final String ordinaryReason = FlyingVisionEvaluation.ordinaryReason(part, board, placement, nozzle);
             CoordinatedVisionTask<PartAlignmentOffset> task = new CoordinatedVisionTask<>(() -> {
                 long analysisStarted = System.nanoTime();
@@ -186,12 +207,11 @@ public class ReferenceBottomVision extends AbstractPartAlignment {
                     double linear = offset.convertToUnits(LengthUnit.Millimeters).getLinearDistanceTo(Location.origin);
                     double edge = corner.getLinearDistanceTo(corner.rotateXy(residual))
                             * new Length(1, upp.getUnits()).convertToUnits(LengthUnit.Millimeters).getValue();
-                    if (linear > maxLinear || edge > maxLinear || Math.abs(residual) > maxAngle) {
-                        throw new Exception(String.format(java.util.Locale.ROOT,
-                                "快速底部视觉偏差超限：中心 %.4f mm、角度 %.3f°，请检查器件后重试。", linear, residual));
+                    if (needsRefinement(passes, linear, edge, residual, maxLinear, maxAngle)) {
+                        throw new RefinementRequired(linear, residual);
                     }
                     Location normalized = normalizeExperimentalOffsets(offset, residual,
-                            settings.getVisionOffset(), angle, true);
+                            visionOffset, angle, true);
                     offsetsCheck(part, nozzle, normalized);
                     partSizeCheck(part, settings, rect, camera);
                     FlyingVisionEvaluation.recordMode(nozzle, "普通视觉 · " + part.getId() + " · " + ordinaryReason);
@@ -205,6 +225,10 @@ public class ReferenceBottomVision extends AbstractPartAlignment {
                     Logger.info("Async bottom vision {}: capture={} ms, processing={} ms, offsets={}",
                             part.getId(), capturedNs / 1e6, (System.nanoTime() - analysisStarted) / 1e6, normalized);
                     return new PartAlignmentOffset(normalized, true);
+                } catch (RefinementRequired refinement) {
+                    Logger.info("{} on {}; scheduling correction on the machine thread",
+                            refinement.getMessage(), nozzle.getName());
+                    throw refinement;
                 } catch (Exception failure) {
                     Logger.warn(failure, "Async bottom vision failed for {}", part.getId());
                     throw failure;

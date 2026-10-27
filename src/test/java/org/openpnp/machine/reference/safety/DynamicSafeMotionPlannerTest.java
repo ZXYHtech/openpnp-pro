@@ -44,6 +44,170 @@ import org.openpnp.spi.MotionPlanner;
 import org.openpnp.util.MovableUtils;
 
 class DynamicSafeMotionPlannerTest {
+    @Test void automaticPlaneRoutesAroundChangerInsteadOfCrossingAboveIt() throws Exception {
+        SafetyObject solid = model.createObject(ObjectType.BOARD);
+        solid.x = 400;
+        solid.y = 400;
+        solid.z = -10;
+        solid.height = 3;
+        model.addObject(solid);
+        SafetyObject changer = model.createObject(ObjectType.NOZZLE_CHANGER);
+        changer.x = 140;
+        changer.y = 90;
+        changer.z = -50;
+        changer.width = 20;
+        changer.depth = 20;
+        changer.height = 10;
+        changer.apertureWidth = 0;
+        changer.apertureDepth = 0;
+        model.addObject(changer);
+        DynamicSafeMotionSettings.setStrictEnabled(true);
+        model.certify("Measured solids and local changer zone");
+        Plan plan = DynamicSafeMotionPlanner.preview(nozzle, target().derive(null, null, 20.0, null), 1);
+        assertTrue(plan.isOptimized(), plan.getReason());
+        assertTrue(plan.getReason().contains("绕开"), plan.getReason());
+        assertTrue(plan.getLocations().stream().anyMatch(p -> p.getY() < 90 || p.getY() > 110));
+        assertTrue(commands.isEmpty());
+    }
+    @Test void calibratedNegativeYIsValidButRawSoftLimitStillRejects() throws Exception {
+        model.setMinY(0);
+        model.setXyBoundsAreTravelLimits(true);
+        nozzle.setHeadOffsets(new Location(LengthUnit.Millimeters, 0, -136, 0, 0));
+        model.certify("Controller travel bounds");
+        DynamicSafeMotionSettings.setStrictEnabled(true);
+        assertEquals(-36, nozzle.getLocation().getY(), .001);
+        assertTrue(DynamicSafeMotionPlanner.preview(nozzle,
+                new Location(LengthUnit.Millimeters, 80, -36, 20, 0), 1).isOptimized());
+        when(planner.isValidLocation(any(), any())).thenReturn(false);
+        Plan invalid = DynamicSafeMotionPlanner.preview(nozzle, target(), 1);
+        assertFalse(invalid.isOptimized());
+        assertTrue(invalid.getReason().contains("软限位"));
+        assertTrue(commands.isEmpty());
+    }
+
+    @Test void independentFeederAdvanceStartsAfterSafeApproachIsQueuedAndFailureClearsScope() throws Exception {
+        feederWaitTrial(true, 0);
+    }
+
+    @Test void nextNozzleWaitsAtExactPickXyAndFeedSuccessOnlyReleasesZDescent() throws Exception {
+        feederWaitTrial(false, 0);
+    }
+
+    @Test void equivalentPositiveFullTurnKeepsCurrentAngleAndOnlyDescendsZ() throws Exception {
+        feederWaitTrial(false, 360);
+    }
+
+    @Test void equivalentNegativeFullTurnKeepsCurrentAngleAndOnlyDescendsZ() throws Exception {
+        feederWaitTrial(false, -360);
+    }
+
+    @Test void genuineRotationChangeStillPreventsPickupDescent() throws Exception {
+        feederWaitTrial(false, 1.5);
+    }
+
+    @Test void twoDecimalOutputRoundingKeepsActualWaitingXyDuringDescent() throws Exception {
+        feederWaitTrial(false, 360, -.006278, 2);
+    }
+
+    @Test void outputRoundingDoesNotExcuseLargerXyChanges() throws Exception {
+        feederWaitTrial(false, 0, -.02, 2);
+    }
+
+    @Test void fineOutputPrecisionStillRejectsTheSameXyChange() throws Exception {
+        feederWaitTrial(false, 0, -.006278, 4);
+    }
+
+    private void feederWaitTrial(boolean failFeed, double reportedRotationShift) throws Exception {
+        feederWaitTrial(failFeed, reportedRotationShift, 0, 0);
+    }
+
+    private void feederWaitTrial(boolean failFeed, double reportedRotationShift, double reportedXShift, int digits) throws Exception {
+        DynamicSafeMotionSettings.setEnabled(true);
+        DynamicSafeMotionSettings.setStrictEnabled(true);
+        nozzle.setNozzleTip(new org.openpnp.machine.reference.ReferenceNozzleTip());
+        nozzle.setName("N2");
+        ReferenceControllerAxis rotationAxis = axis(Axis.Type.Rotation, 60);
+        nozzle.setAxisRotation(rotationAxis);
+        nozzle.setRotationMode(org.openpnp.spi.base.AbstractNozzle.RotationMode.MinimalRotation);
+        ToolProfile profile = model.findToolProfile(head.getId(), nozzle.getId());
+        profile.bodyFollowsNozzleZ = false;
+        profile.zIsNozzleTip = true;
+        SafetyObject bank = model.createObject(ObjectType.FEEDER);
+        bank.x = 250;
+        bank.y = 70;
+        bank.z = -25;
+        bank.width = 100;
+        bank.depth = 60;
+        bank.height = 18;
+        bank.clearance = 2;
+        bank.sourceKey = "feeder-bank:front";
+        model.addObject(bank);
+        model.certify("Measured feeder");
+        var actuator = new org.openpnp.machine.reference.ReferenceActuator();
+        actuator.setName("feed-test");
+        actuator.setValueType(org.openpnp.spi.Actuator.ActuatorValueType.Double);
+        GcodeDriver feederDriver = new GcodeDriver() {
+            @Override public void actuate(org.openpnp.spi.Actuator actual, double value) throws Exception {
+                assertTrue(org.openpnp.machine.reference.feeder.FeederPreposition.isActive(actual));
+                assertEquals(1, DynamicSafeMotionPlannerTest.this.commands.size(),
+                        "One direct approach, no intermediate XY waiting point or extra Z tail");
+                assertEquals(300, nozzle.getLocation().getX(), .001);
+                assertEquals(100, nozzle.getLocation().getY(), .001);
+                assertTrue(nozzle.getLocation().getZ() >= -5, "No pickup descent while feeding");
+                verify(planner).waitForCompletion(null, MotionPlanner.CompletionType.CommandStillstand);
+                if (failFeed) { throw new Exception("feed failed"); }
+            }
+        };
+        machine.addDriver(feederDriver);
+        actuator.setDriver(feederDriver);
+        machine.addActuator(actuator);
+        var feeder = new org.openpnp.machine.reference.feeder.ReferenceAutoFeeder();
+        feeder.setActuatorName(actuator.getName());
+        feeder.setLocation(new Location(LengthUnit.Millimeters, 300, 100, -13, 0));
+        Configuration.get().getScripting().on("Feeder.BeforeFeed", java.util.Collections.emptyMap());
+        assertFalse(Configuration.get().getScripting().hasNoScript("Feeder.AfterFeed"),
+                "First pickup must preposition before the AfterFeed cache has warmed");
+        machine.submit(() -> {
+            if (failFeed) {
+                Exception failure = assertThrows(Exception.class, () ->
+                        org.openpnp.machine.reference.feeder.FeederPreposition.feed(feeder, nozzle, target()));
+                assertEquals("feed failed", failure.getMessage());
+                assertEquals(1, commands.size());
+            } else {
+                assertTrue(org.openpnp.machine.reference.feeder.FeederPreposition.feed(feeder, nozzle, target()));
+                rotationAxis.setCoordinate(rotationAxis.getCoordinate() + reportedRotationShift);
+                if (reportedXShift != 0) {
+                    GcodeDriver motionDriver = new GcodeDriver();
+                    motionDriver.setUsingLetterVariables(false);
+                    motionDriver.setCommand(null, CommandType.MOVE_TO_COMMAND,
+                            "G1 {X:X%." + digits + "f} {Y:Y%." + digits + "f} {Z:Z%.4f} {Rotation:A%.4f}");
+                    machine.addDriver(motionDriver);
+                    for (ReferenceControllerAxis axis : new ReferenceControllerAxis[] { x, y, z, rotationAxis }) {
+                        axis.setDriver(motionDriver);
+                    }
+                    x.setCoordinate(x.getCoordinate() + reportedXShift);
+                }
+                double rotation = nozzle.getLocation().getRotation();
+                double waitingX = x.getCoordinate(), waitingY = y.getCoordinate();
+                if (reportedRotationShift % 360 != 0 || Math.abs(reportedXShift) > Math.pow(10, -digits)) {
+                    Exception failure = assertThrows(Exception.class, () ->
+                            DynamicSafeMotionPlanner.descendAtPrepositionedFeeder(nozzle, feeder));
+                    assertTrue(failure.getMessage().contains("XY 或角度改变"));
+                    assertEquals(1, commands.size(), "Actual pose changes must not release pickup");
+                    return null;
+                }
+                DynamicSafeMotionPlanner.descendAtPrepositionedFeeder(nozzle, feeder);
+                assertEquals(2, commands.size(), "Exactly one vertical pickup after feed completes");
+                assertEquals(-13, nozzle.getLocation().getZ(), .001);
+                assertEquals(rotation, nozzle.getLocation().getRotation(), .001);
+                assertEquals(waitingX, commands.get(1).getCoordinate(x), 1e-9);
+                assertEquals(waitingY, commands.get(1).getCoordinate(y), 1e-9);
+            }
+            assertFalse(org.openpnp.machine.reference.feeder.FeederPreposition.isActive(actuator));
+            return null;
+        }).get(10, java.util.concurrent.TimeUnit.SECONDS);
+        if (failFeed) { assertTrue(nozzle.getLocation().getZ() >= -5); }
+    }
     @Test void boardToFeederUsesLowClearanceInsteadOfUpFlatDownSafeZ() throws Exception {
         z.setLengthCoordinate(new Length(-8, LengthUnit.Millimeters));
         model.findToolProfile(head.getId(), nozzle.getId()).zIsNozzleTip = true;
@@ -65,7 +229,7 @@ class DynamicSafeMotionPlannerTest {
         when(feeder.getId()).thenReturn("test");
         when(feeder.getPickLocation()).thenReturn(pick);
         assertTrue(DynamicSafeMotionPlanner.tryMoveToPick(nozzle, pick, 1, feeder));
-        assertEquals(2, commands.size(), "One diagonal arrival followed by vertical pickup; no intermediate junction");
+        assertTrue(commands.size() <= 3, "Use a continuous approach then final vertical pickup");
         assertTrue(commands.stream().allMatch(c -> c.getLengthCoordinate(z).getValue() < 0),
                 "Do not detour to full Safe-Z and reverse cam Z above a clear feeder corridor");
         assertEquals(-13, nozzle.getLocation().getZ(), .001);
@@ -109,12 +273,20 @@ class DynamicSafeMotionPlannerTest {
         board.height = 7;
         board.clearance = 0;
         model.addObject(board);
+        SafetyObject remote = model.createObject(ObjectType.FEEDER);
+        remote.x = remote.y = 450;
+        remote.z = 0;
+        remote.height = 12;
+        model.addObject(remote);
         model.certify("Board includes component envelope");
         DynamicSafeMotionSettings.setEnabled(true);
         DynamicSafeMotionSettings.setStrictEnabled(true);
         Location tip = target();
         Location surface = tip.derive(null, null, -1.0, null);
         assertTrue(DynamicSafeMotionPlanner.tryMoveToPlace(nozzle, surface, tip, 1));
+        assertEquals(2, commands.size(), "One board approach then one vertical contact stroke; no extra 5 mm junction");
+        assertTrue(commands.get(0).getCoordinate(z) < 10,
+                "Board arrival uses its own checked clearance, instead of the remote feeder's high plane");
         int beforeExit = commands.size();
         DynamicSafeMotionPlanner.retractAfterPlace(nozzle, surface, tip);
         assertTrue(commands.size() > beforeExit);
@@ -443,8 +615,17 @@ class DynamicSafeMotionPlannerTest {
     }
 
     @Test
-    void calibratedMinusFivePlaneOverlapsXyZThenApproachesPickVertically() throws Exception {
-        // Simulates a shallow feeder pick at -7: all XY motion must stay at Z >= -5.
+    void automaticPlaneOverlapsXyZThenApproachesPickVertically() throws Exception {
+        // An actual measured top replaces the legacy user-entered fixed height.
+        SafetyObject remote = model.createObject(ObjectType.BOARD);
+        remote.x = 400;
+        remote.y = 400;
+        remote.z = -10;
+        remote.height = 3;
+        remote.clearance = 2;
+        model.addObject(remote);
+        model.findToolProfile(head.getId(), nozzle.getId()).zIsNozzleTip = true;
+        model.findToolProfile(head.getId(), nozzle.getId()).clearance = 0;
         model.setFastTravelFloor(true, -5.0);
         assertFalse(model.isCertified(), "Changing a rapid plane must invalidate old geometry approval");
         model.certify("Operator measured the -5 mm reference-Z clearance");
@@ -484,6 +665,13 @@ class DynamicSafeMotionPlannerTest {
         camera.apertureWidth = 45;
         camera.apertureDepth = 35;
         model.addObject(camera);
+        SafetyObject remote = model.createObject(ObjectType.BOARD);
+        remote.x = 400;
+        remote.y = 400;
+        remote.z = -10;
+        remote.height = 1.75;
+        remote.clearance = 2;
+        model.addObject(remote);
         model.certify("Physical bottom-camera entrance and aperture measured");
         Location image = new Location(LengthUnit.Millimeters, 300, 100, -9, 0);
         Plan plan = DynamicSafeMotionPlanner.previewBottomVision(nozzle, image, 1);

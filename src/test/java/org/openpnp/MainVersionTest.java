@@ -7,6 +7,6 @@ import org.junit.jupiter.api.Test;
 public class MainVersionTest {
     @Test
     public void readsProVersionFromPackagedResource() {
-        assertEquals("2.6P3-beta66-xyz", Main.getVersionString());
+        assertEquals("2.6P3-beta67", Main.getVersionString());
     }
 }
