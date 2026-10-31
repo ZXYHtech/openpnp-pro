@@ -55,8 +55,8 @@ public class Cycles {
     }
 
     /**
-     * Discard the Part, if any, on the given Nozzle. The Nozzle is returned to Safe Z at the end of
-     * the operation.
+     * Discard the Part, if any, on the given Nozzle. Retract to checked local clearance when enabled,
+     * otherwise use configured Safe Z.
      * 
      * @param nozzle
      * @throws Exception
@@ -71,7 +71,7 @@ public class Cycles {
 
     /**
      * Discard the Part on the given Nozzle. Perform the discard action whether there is a part on the nozzle or not.
-     * The Nozzle is returned to Safe Z at the end of the operation.
+     * Retract to checked local clearance when enabled, otherwise use configured Safe Z.
      *
      * @param nozzle
      * @throws Exception
@@ -91,7 +91,7 @@ public class Cycles {
         nozzle.moveToPlacementLocation(discardLocation, null);
         // discard the part
         nozzle.place();
-        nozzle.moveToSafeZ();
+        org.openpnp.machine.reference.safety.DynamicSafeMotionPlanner.retractAfterDiscard(nozzle);
 
         Configuration.get().getScripting().on("Job.AfterDiscard", globals);
     }

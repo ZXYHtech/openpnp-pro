@@ -14,6 +14,23 @@ import org.openpnp.machine.reference.safety.SafetyWorkbenchModel.Point2;
 import org.openpnp.machine.reference.safety.SafetyWorkbenchModel.Shape;
 
 class CoordinatedMotionValidatorTest {
+    @Test void movingBetweenTwoTaughtFeederContactsStillRequiresBothVerticalContactStrokes() {
+        SafetyWorkbenchModel model = model();
+        SafetyObject a = box(model, ObjectType.FEEDER, 0, 0, -20, 20, 20, 15);
+        SafetyObject b = box(model, ObjectType.FEEDER, 60, 0, -20, 20, 20, 15);
+        a.sourceKey = "feeder:a:body";
+        b.sourceKey = "feeder:b:body";
+        Waypoint source = new Waypoint(10, 10, -13), target = new Waypoint(70, 10, -13);
+        DynamicTool selected = new DynamicTool("H1", "N1", "N1", source,
+                1, 1, 25, 30, .5, 0, 0, true, true, true, false);
+        var contact = new CoordinatedMotionValidator.FeederContact(b.sourceKey, target)
+                .withSource(new CoordinatedMotionValidator.FeederContact(a.sourceKey, source));
+        assertTrue(CoordinatedMotionValidator.validate(model, Arrays.asList(source,
+                new Waypoint(10, 10, 5), new Waypoint(70, 10, 5), target),
+                Collections.singletonList(selected), source, Long.MAX_VALUE, contact).isSafe());
+        assertFalse(CoordinatedMotionValidator.validate(model, Arrays.asList(source, target),
+                Collections.singletonList(selected), source, Long.MAX_VALUE, contact).isSafe());
+    }
     @Test void conservativeBlocksAvoidRepeatingCamTransformsAcrossAClearRisingRoute() {
         SafetyWorkbenchModel model = model();
         Waypoint start = new Waypoint(0, 0, 0);

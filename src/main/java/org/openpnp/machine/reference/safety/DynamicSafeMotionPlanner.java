@@ -163,6 +163,7 @@ public final class DynamicSafeMotionPlanner {
         private final double originalSeconds;
 
         private final double coordinatedSeconds;
+        private BoundedClearanceTravel.Candidate smooth;
 
         Plan(List<Location> locations, String reason, double originalSeconds, double coordinatedSeconds) {
             this.locations = Collections.unmodifiableList(new ArrayList<>(locations));
@@ -313,23 +314,83 @@ public final class DynamicSafeMotionPlanner {
         if (!Double.isFinite(z) || z > safeZ + EPSILON) {
             throw new Exception("飞达取料点上方未找到双嘴安全等待高度");
         }
-        for (double waitZ : new double[] { z, safeZ }) {
+        // A minimum endpoint clearance need not clear the bank's leading edge.
+        // Try modestly higher arrivals before full retraction; XY stays on the
+        // direct route to the pickup, never at a remote waiting position.
+        double sourceZ = clearHeight(start, safeZ, start, model, tools, deadline, false);
+        if (!Double.isFinite(sourceZ)) { throw new Exception("飞达进场起点未找到双嘴安全高度"); }
+        List<Location> selected = null;
+        double selectedZ = Double.NaN;
+        String blocked = "";
+        BoundedClearanceTravel.Candidate selectedSmooth = null;
+        for (double candidateZ : new double[] { z, z + .5, z + 1, z + 2.5, z + 5, safeZ }) {
+            double waitZ = Math.min(candidateZ, safeZ);
             Location waiting = pick.derive(null, null, waitZ, null);
-            ValidationResult check = CoordinatedMotionValidator.validate(model,
-                    Arrays.asList(point(start), point(waiting)), tools, point(start), deadline);
-            if (!check.isSafe()) { continue; }
-            estimate(nozzle, start, Collections.singletonList(waiting), machine.getSpeed());
-            if (SafetyWorkbenchStore.get() != live || live.getRevision() != revision || !live.isCertified()) {
-                throw new Exception("飞达预定位期间安全模型改变");
+            try {
+                var candidate = BoundedClearanceTravel.plan((ReferenceNozzle) nozzle, start, waiting,
+                        machine.getSpeed(), model, tools, null, deadline, () -> {
+                            if (SafetyWorkbenchStore.get() != live || live.getRevision() != revision || !live.isCertified()) {
+                                throw new IllegalStateException("飞达平滑进场模型改变，未发送运动");
+                            }
+                        });
+                double directSeconds = estimate(nozzle, start, Collections.singletonList(waiting), machine.getSpeed());
+                if (candidate != null && candidate.seconds + .005 < directSeconds) {
+                    selected = candidate.locations;
+                    selectedSmooth = candidate;
+                    selectedZ = waitZ;
+                    break;
+                }
             }
-            if (!raw(nozzle, start).matches(raw(nozzle, waiting))) {
-                nozzle.moveTo(waiting, machine.getSpeed(), MotionOption.CoordinatedMotion);
+            catch (Exception unavailable) { Logger.debug(unavailable, "Bounded feeder entry not selected before movement"); }
+            for (boolean exitFirst : new boolean[] { false, true }) {
+                List<Location> path = compact(nozzle, start, exitFirst
+                        ? Arrays.asList(start.derive(null, null, sourceZ, null), waiting)
+                        : Collections.singletonList(waiting));
+                if (path.isEmpty()) {
+                    selected = path;
+                    selectedZ = waitZ;
+                    break;
+                }
+                List<Waypoint> points = new ArrayList<>();
+                points.add(point(start));
+                for (Location point : path) { points.add(point(point)); }
+                ValidationResult check = CoordinatedMotionValidator.validate(model,
+                        points, tools, point(start), deadline);
+                if (!check.isSafe()) {
+                    blocked = String.join("；", check.getIssues());
+                    continue;
+                }
+                estimate(nozzle, start, path, machine.getSpeed());
+                selected = path;
+                selectedZ = waitZ;
+                break;
             }
-            Logger.info("Feeder wait {} at pick XY ({}, {}), Z={} mm; feed completion releases Z-only pickup",
-                    nozzle.getName(), pick.getX(), pick.getY(), waitZ);
-            return true;
+            if (selected != null) { break; }
+            if (System.nanoTime() > deadline) { break; }
         }
-        throw new Exception("飞达取料点上方直达预定位未通过双嘴扫掠检查，未下发绕行");
+        if (selected == null) {
+            throw new Exception("飞达进场未通过双嘴扫掠检查，未下发运动：" + blocked);
+        }
+        if (SafetyWorkbenchStore.get() != live || live.getRevision() != revision || !live.isCertified()
+                || !machine.isEnabled() || !machine.isHomed()) {
+            throw new Exception("飞达预定位期间机器或安全模型改变");
+        }
+        for (int index = 0; index < selected.size(); index++) {
+            Location next = selected.get(index);
+            if (SafetyWorkbenchStore.get() != live || live.getRevision() != revision || !live.isCertified()) {
+                throw new Exception("飞达预定位执行期间安全模型改变");
+            }
+            if (selectedSmooth != null && index == selectedSmooth.freeIndex) {
+                try (var profile = new org.openpnp.model.CertifiedTravelProfile(nozzle, selectedSmooth.bounds)) {
+                    nozzle.moveTo(next, machine.getSpeed(), MotionOption.UncoordinatedMotion);
+                }
+            } else {
+                nozzle.moveTo(next, machine.getSpeed(), MotionOption.CoordinatedMotion);
+            }
+        }
+        Logger.info("Feeder wait {} at pick XY ({}, {}), Z={} mm; minimum={} mm, approach={} segments; feed completion releases Z-only pickup",
+                nozzle.getName(), pick.getX(), pick.getY(), selectedZ, z, selected.size());
+        return true;
     }
 
     /** After feed: recheck a stale pose once, then descend or apply one bounded, swept local correction. */
@@ -465,6 +526,15 @@ public final class DynamicSafeMotionPlanner {
         nozzle.moveToSafeZ();
     }
 
+    /** Discard is also available without ever running a placement job. */
+    public static void retractAfterDiscard(Nozzle nozzle) throws Exception {
+        if (DynamicSafeMotionSettings.isEnabled() && nozzle.getPart() == null
+                && !nozzle.isPartOffEnabled(Nozzle.PartOffStep.AfterPlace)
+                && org.openpnp.model.Configuration.get().getScripting().hasNoScript("Job.AfterDiscard")
+                && tryLocalRetreat(nozzle, null)) { return; }
+        nozzle.moveToSafeZ();
+    }
+
     private static boolean tryLocalRetreat(Nozzle tool, CoordinatedMotionValidator.FeederContact contact) throws Exception {
         if (isNozzleTipChanging() || tool.getClass() != ReferenceNozzle.class || !tool.getHead().getMachine().isEnabled()
                 || !tool.getHead().getMachine().isHomed()) {
@@ -593,11 +663,18 @@ public final class DynamicSafeMotionPlanner {
         }
         // No catch here: once the first command is issued, a partial failure is
         // propagated to the existing job recovery, never retried with Safe-Z.
-        for (Location waypoint : plan.locations) {
+        for (int index = 0; index < plan.locations.size(); index++) {
+            Location waypoint = plan.locations.get(index);
             if (SafetyWorkbenchStore.get() != model || revision != model.getRevision() || !model.isCertified()) {
                 throw new Exception("3D 模型在联动执行中发生变化，已停止下发后续轨迹。");
             }
-            tool.moveTo(waypoint, requestedSpeed, MotionOption.CoordinatedMotion);
+            if (plan.smooth != null && index == plan.smooth.freeIndex) {
+                try (var profile = new org.openpnp.model.CertifiedTravelProfile(tool, plan.smooth.bounds)) {
+                    tool.moveTo(waypoint, requestedSpeed, MotionOption.UncoordinatedMotion);
+                }
+            } else {
+                tool.moveTo(waypoint, requestedSpeed, MotionOption.CoordinatedMotion);
+            }
         }
         ACCEPTED.incrementAndGet();
         DynamicMotionDiagnostics.record(tool.getName(), plan.reason, true, planningMs,
@@ -614,6 +691,10 @@ public final class DynamicSafeMotionPlanner {
 
     private static Plan rejected(String reason) {
         return new Plan(Collections.emptyList(), reason, Double.NaN, Double.NaN);
+    }
+
+    private static Plan prefer(Plan smooth, Plan ordinary) {
+        return smooth != null && smooth.coordinatedSeconds + .005 < ordinary.coordinatedSeconds ? smooth : ordinary;
     }
 
     /**
@@ -696,17 +777,56 @@ public final class DynamicSafeMotionPlanner {
         }
         List<DynamicTool> tools = DynamicSafetyCollisionEngine.snapshot(model, machine, tool);
         double originalSeconds = estimateStock(tool, target, speed);
+        // A manual discard or move may start at the taught feeder pickup depth.
+        // Recognize only an exact, measured electric-feeder contact. This permits
+        // the initial VERTICAL exit, never lateral motion inside the bank.
+        {
+            for (Feeder feeder : machine.getFeeders()) {
+                if (!(feeder instanceof ReferenceAutoFeeder)) { continue; }
+                Location pick = pickLocation((Nozzle) tool, feeder);
+                if (pick.getXyzDistanceTo(start) < .05) {
+                    var sourceContact = new CoordinatedMotionValidator.FeederContact(
+                            "feeder:" + feeder.getId() + ":body", point(pick));
+                    for (SafetyWorkbenchModel.SafetyObject object : model.getObjects()) {
+                        if (object.enabled && object.obstacle && sourceContact.permits(object, point(start))) {
+                            contact = contact == null ? sourceContact : contact.withSource(sourceContact);
+                            break;
+                        }
+                    }
+                    if (contact != null) { break; }
+                }
+            }
+        }
+        Plan smooth = null;
+        if (!imaging && tool instanceof ReferenceNozzle) {
+            SafetyWorkbenchModel live = SafetyWorkbenchStore.get();
+            long revision = live.getRevision();
+            try {
+                var candidate = BoundedClearanceTravel.plan((ReferenceNozzle) tool, start, target, speed, model,
+                        tools, contact, deadline, () -> {
+                            if (SafetyWorkbenchStore.get() != live || live.getRevision() != revision || !live.isCertified()) {
+                                throw new IllegalStateException("平滑联动模型认证改变，尚未发送运动");
+                            }
+                        });
+                if (candidate != null) {
+                    smooth = new Plan(candidate.locations, "已认证自由空间：原生连续 XYZ/Z 弧线过渡，末端垂直接触",
+                            originalSeconds, candidate.seconds);
+                    smooth.smooth = candidate;
+                }
+            }
+            catch (Exception unavailable) { Logger.debug(unavailable, "Bounded native smoothing not selected before issuing motion"); }
+        }
         // Optional fast-travel plane: above this calibrated *nozzle-reference* Z, enter pickup
         // or imaging with coordinated XY/Z. Below it, exit/enter vertically at the endpoint.
         // Never waive the full swept collision, sibling, feeder or soft-limit checks.
-        // Board entry first tries the locally required clearance with one
-        // diagonal and a vertical contact stroke. A global-plane waypoint near
-        // the PCB needlessly changes direction and can force a slow junction.
-        Plan floorPlan = contact != null && contact.board ? null
+        // Automatic clearance first tries a local direct route. A global-plane
+        // detour may be longer or fail even when this route is clear. An explicit
+        // certified floor retains its original constraints; contact remains vertical.
+        Plan floorPlan = !model.isFastTravelFloorEnabled() || contact != null && contact.board ? null
                 : planTravelFloor(tool, start, target, speed, model, tools,
                         originalSeconds, deadline, imaging, contact);
         if (floorPlan != null) {
-            return floorPlan;
+            return prefer(smooth, floorPlan);
         }
         if (imaging) {
             // Imaging has no contact/release step. Do not insert an artificial
@@ -777,8 +897,8 @@ public final class DynamicSafeMotionPlanner {
                 if (!direct.isSafe()) { continue; }
                 double seconds = estimate(tool, start, directPath, speed);
                 if (Double.isFinite(seconds) && (strict(model) || seconds + .001 < originalSeconds)) {
-                    return new Plan(directPath, "飞达直达联动：取消中途抬升折返，末段垂直取料",
-                            originalSeconds, seconds);
+                    return prefer(smooth, new Plan(directPath, "飞达直达联动：取消中途抬升折返，末段垂直取料",
+                            originalSeconds, seconds));
                 }
             }
         }
@@ -815,16 +935,16 @@ public final class DynamicSafeMotionPlanner {
             }
             double seconds = estimate(tool, start, path, speed);
             if (Double.isFinite(seconds) && (strict(model) || seconds + 0.001 < originalSeconds)) {
-                return new Plan(path, "联动通过，通行 Z=" + cruiseZ + " mm，保留末段垂直取放", originalSeconds, seconds);
+                return prefer(smooth, new Plan(path, "联动通过，通行 Z=" + cruiseZ + " mm，保留末段垂直取放", originalSeconds, seconds));
             }
         }
         }
-        if (contact != null && contact.board) {
+        {
             Plan alternate = planTravelFloor(tool, start, target, speed, model, tools,
                     originalSeconds, deadline, imaging, contact);
-            if (alternate != null) { return alternate; }
+            if (alternate != null) { return prefer(smooth, alternate); }
         }
-        return new Plan(Collections.emptyList(), reason, originalSeconds, originalSeconds);
+        return smooth != null ? smooth : new Plan(Collections.emptyList(), reason, originalSeconds, originalSeconds);
     }
 
     /** A deliberately opt-in rapid plane; cannot overrule certified 3D obstacles or axis limits. */
@@ -884,27 +1004,51 @@ public final class DynamicSafeMotionPlanner {
             normal.add(target);
         }
         proposals.add(normal);
-        // Ordinary travel never crosses a changer, even above it. Offer four
-        // conservative corridors around the union, expanded for both housings.
+        // Ordinary travel never crosses a changer, even above it. Offer local
+        // corridors expanded for both housings, then the outer union as backup.
+        List<Double> xCorridors = new ArrayList<>(), yCorridors = new ArrayList<>();
+        xCorridors.add(start.getX());
+        xCorridors.add(target.getX());
+        yCorridors.add(start.getY());
+        yCorridors.add(target.getY());
         double left = Double.POSITIVE_INFINITY, right = Double.NEGATIVE_INFINITY;
         double front = Double.POSITIVE_INFINITY, rear = Double.NEGATIVE_INFINITY;
         for (SafetyWorkbenchModel.SafetyObject object : model.getObjects()) {
             if (!object.enabled || !object.obstacle || !FastTravelClearance.restrictedZone(object)) { continue; }
+            double objectLeft = Double.POSITIVE_INFINITY, objectRight = Double.NEGATIVE_INFINITY;
+            double objectFront = Double.POSITIVE_INFINITY, objectRear = Double.NEGATIVE_INFINITY;
             for (DynamicTool moving : tools) {
                 if (!moving.isMoving()) { continue; }
                 double dx = moving.reference.x - start.getX(), dy = moving.reference.y - start.getY();
-                left = Math.min(left, object.x - object.clearance - moving.radiusX - dx - 1);
-                right = Math.max(right, object.x + object.width + object.clearance + moving.radiusX - dx + 1);
-                front = Math.min(front, object.y - object.clearance - moving.radiusY - dy - 1);
-                rear = Math.max(rear, object.y + object.depth + object.clearance + moving.radiusY - dy + 1);
+                objectLeft = Math.min(objectLeft, object.x - object.clearance - moving.radiusX - dx - 1);
+                objectRight = Math.max(objectRight, object.x + object.width + object.clearance + moving.radiusX - dx + 1);
+                objectFront = Math.min(objectFront, object.y - object.clearance - moving.radiusY - dy - 1);
+                objectRear = Math.max(objectRear, object.y + object.depth + object.clearance + moving.radiusY - dy + 1);
+            }
+            if (Double.isFinite(objectLeft)) {
+                // Keep the free aisle BETWEEN the left/right changer banks.
+                // Their single bounding union falsely blocks the whole table.
+                if (!xCorridors.contains(objectLeft)) { xCorridors.add(objectLeft); }
+                if (!xCorridors.contains(objectRight)) { xCorridors.add(objectRight); }
+                if (!yCorridors.contains(objectFront)) { yCorridors.add(objectFront); }
+                if (!yCorridors.contains(objectRear)) { yCorridors.add(objectRear); }
+                left = Math.min(left, objectLeft);
+                right = Math.max(right, objectRight);
+                front = Math.min(front, objectFront);
+                rear = Math.max(rear, objectRear);
             }
         }
         if (Double.isFinite(left)) {
             double cruise = Math.max(floor, Math.max(start.getZ(), approachZ));
-            double[] corridors = { left, right, front, rear };
-            for (int corridorIndex = 0; corridorIndex < corridors.length; corridorIndex++) {
-                double corridor = corridors[corridorIndex];
-                boolean alongY = corridorIndex < 2;
+            xCorridors.add(left);
+            xCorridors.add(right);
+            yCorridors.add(front);
+            yCorridors.add(rear);
+            List<Double> corridors = new ArrayList<>(xCorridors);
+            corridors.addAll(yCorridors);
+            for (int corridorIndex = 0; corridorIndex < corridors.size(); corridorIndex++) {
+                double corridor = corridors.get(corridorIndex);
+                boolean alongY = corridorIndex < xCorridors.size();
                 List<Location> detour = new ArrayList<>();
                 detour.add(start.derive(null, null, cruise, null));
                 detour.add(start.derive(alongY ? corridor : null, alongY ? null : corridor, cruise, null));

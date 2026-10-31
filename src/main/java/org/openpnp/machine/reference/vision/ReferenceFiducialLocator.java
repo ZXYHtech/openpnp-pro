@@ -567,6 +567,17 @@ public class ReferenceFiducialLocator extends AbstractPartSettingsHolder impleme
             parallaxDisplacement = parallaxDisplacement.multiply(-1);
         }
         Location viewPointLocation = location.add(parallaxDisplacement);
+        boolean precise = visionSettings.getPipelineParameterAssignments() != null && Boolean.TRUE.equals(
+                visionSettings.getPipelineParameterAssignments().get(
+                        org.openpnp.vision.PreciseCircularFeatureDetector.ENABLED_PROPERTY));
+        if (precise && !parallaxOperation) {
+            Location approach = viewPointLocation.convertToUnits(LengthUnit.Millimeters)
+                    .add(new Location(LengthUnit.Millimeters, -.5, -.5, 0, 0));
+            if (Configuration.get().getMachine().getMotionPlanner().isValidLocation(camera,
+                    camera.toRaw(camera.toHeadLocation(approach)))) {
+                MovableUtils.moveToLocationAtSafeZ(camera, approach);
+            }
+        }
         MovableUtils.moveToLocationAtSafeZ(camera, viewPointLocation);
 
         List<Location> matchedLocations = new ArrayList<Location>();
@@ -596,6 +607,14 @@ public class ReferenceFiducialLocator extends AbstractPartSettingsHolder impleme
 
                 // Move to the next location.
                 viewPointLocation = location.add(parallaxDisplacement);
+                if (precise && !parallaxOperation) {
+                    Location approach = viewPointLocation.convertToUnits(LengthUnit.Millimeters)
+                            .add(new Location(LengthUnit.Millimeters, -.5, -.5, 0, 0));
+                    if (Configuration.get().getMachine().getMotionPlanner().isValidLocation(camera,
+                            camera.toRaw(camera.toHeadLocation(approach)))) {
+                        camera.moveTo(approach);
+                    }
+                }
                 camera.moveTo(viewPointLocation);
 
                 if (i > 0) {
@@ -603,6 +622,7 @@ public class ReferenceFiducialLocator extends AbstractPartSettingsHolder impleme
                     matchedLocations.add(location);
                 }
             }
+
         }
 
         if (this.enabledAveraging && matchedLocations.size() >= 2) {

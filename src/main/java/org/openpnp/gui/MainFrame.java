@@ -818,6 +818,7 @@ public class MainFrame extends JFrame {
             }
         }));
         mnCommands.add(new JMenuItem(machineControlsPanel.fullVerificationAction));
+        mnCommands.add(org.openpnp.gui.support.TaskSoundMenu.create());
         mnCommands.add(new JMenuItem(machineControlsPanel.startStopMachineAction));
 
         int[] ctrl_shift_mask = {KeyEvent.CTRL_DOWN_MASK, KeyEvent.CTRL_DOWN_MASK | KeyEvent.SHIFT_DOWN_MASK};

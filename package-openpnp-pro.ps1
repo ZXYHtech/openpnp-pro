@@ -54,6 +54,69 @@ function Remove-BuildPath([string]$path, [string]$allowedRoot) {
     }
 }
 
+function Optimize-ApplicationArchives([string]$applicationJar, [string]$dependencyDirectory) {
+    Add-Type -AssemblyName System.IO.Compression.FileSystem
+    $opencv = Get-ChildItem -LiteralPath $dependencyDirectory -Filter "opencv-*.jar" | Select-Object -First 1
+    if (-not $opencv) { throw "运行时缺少 OpenCV，停止打包。" }
+    $before = $opencv.Length
+    $archive = [IO.Compression.ZipFile]::Open($opencv.FullName, [IO.Compression.ZipArchiveMode]::Update)
+    try {
+        foreach ($entry in @($archive.Entries)) {
+            if ($entry.FullName.StartsWith("nu/pattern/opencv/") -and
+                    -not $entry.FullName.StartsWith("nu/pattern/opencv/windows/x86_64/")) {
+                $entry.Delete()
+            }
+        }
+        if (-not $archive.GetEntry("nu/pattern/opencv/windows/x86_64/opencv_java455.dll")) {
+            throw "裁减后缺少 Windows x64 OpenCV 本地库。"
+        }
+    }
+    finally { $archive.Dispose() }
+    Write-Host ("OpenCV Windows x64：{0:N1} MB -> {1:N1} MB" -f ($before / 1MB), ((Get-Item $opencv.FullName).Length / 1MB))
+
+    $archive = [IO.Compression.ZipFile]::Open($applicationJar, [IO.Compression.ZipArchiveMode]::Update)
+    try {
+        foreach ($entry in @($archive.Entries)) {
+            if ($entry.FullName.StartsWith("samples/")) { $entry.Delete() }
+        }
+        # First launch offers unconfigured real devices, never an active virtual machine.
+        $configuration = $archive.GetEntry("config/machine.xml")
+        if (-not $configuration) { throw "缺少初始机器配置。" }
+        $reader = [IO.StreamReader]::new($configuration.Open())
+        try { [xml]$machineXml = $reader.ReadToEnd() }
+        finally { $reader.Dispose() }
+        foreach ($camera in @($machineXml.SelectNodes("//camera"))) {
+            $kind = $camera.GetAttribute("class")
+            if ($kind -notmatch "\.(ImageCamera|SimulatedUpCamera)$") { continue }
+            $replacement = $machineXml.CreateElement("camera")
+            $replacement.SetAttribute("class", "org.openpnp.machine.reference.camera.OpenPnpCaptureCamera")
+            foreach ($attribute in @("id", "name", "looking")) {
+                if ($camera.HasAttribute($attribute)) { $replacement.SetAttribute($attribute, $camera.GetAttribute($attribute)) }
+            }
+            foreach ($child in @($camera.ChildNodes)) {
+                if ($child.Name -in @("head-offsets", "units-per-pixel", "vision-provider")) {
+                    [void]$replacement.AppendChild($child.CloneNode($true))
+                }
+            }
+            [void]$camera.ParentNode.ReplaceChild($replacement, $camera)
+        }
+        foreach ($driver in @($machineXml.SelectNodes("//driver"))) {
+            if ($driver.GetAttribute("class") -ne "org.openpnp.machine.reference.driver.NullDriver") { continue }
+            $replacement = $machineXml.CreateElement("driver")
+            $replacement.SetAttribute("class", "org.openpnp.machine.reference.driver.GcodeAsyncDriver")
+            $replacement.SetAttribute("id", "DRV_PRO_HARDWARE")
+            [void]$driver.ParentNode.ReplaceChild($replacement, $driver)
+        }
+        foreach ($feeders in @($machineXml.SelectNodes("//feeders"))) { $feeders.RemoveAll() }
+        $configuration.Delete()
+        $entry = $archive.CreateEntry("config/machine.xml", [IO.Compression.CompressionLevel]::Optimal)
+        $writer = [IO.StreamWriter]::new($entry.Open(), [Text.UTF8Encoding]::new($false))
+        try { $writer.Write($machineXml.OuterXml) }
+        finally { $writer.Dispose() }
+    }
+    finally { $archive.Dispose() }
+}
+
 function Test-AppImageInUse([string]$path) {
     $prefix = [IO.Path]::GetFullPath($path) + [IO.Path]::DirectorySeparatorChar
     foreach ($process in Get-Process -ErrorAction SilentlyContinue) {
@@ -193,6 +256,7 @@ if ($env:MAVEN_HOME) {
 $maven = Find-Executable $mavenCandidates "mvn.cmd"
 
 $jpackageCandidates = @(
+    (Join-Path $repoRoot "..\.tools\jdk21-packaging\jdk-21.0.12.1+1\bin\jpackage.exe"),
     "C:\Program Files\ANSYS Inc\Shared Files\licensing\tools\java\winx64\bin\jpackage.exe"
 )
 if ($env:JAVA_HOME) {
@@ -256,8 +320,13 @@ try {
         $generatedDialog,
         (New-Object Text.UTF8Encoding($false)))
     Copy-Item -LiteralPath $jarPath -Destination $inputRoot -Force
-    Copy-Item -Path "target\lib\*" -Destination (Join-Path $inputRoot "lib") `
-        -Recurse -Force
+    # Resolve fresh runtime-only dependencies; target/lib may contain stale test jars.
+    $dependencyArguments = @()
+    if (-not $Online) { $dependencyArguments += "-o" }
+    $dependencyArguments += @("dependency:copy-dependencies", "-DincludeScope=runtime",
+        ("-DoutputDirectory=" + (Join-Path $inputRoot "lib")))
+    Invoke-Checked $maven $dependencyArguments
+    Optimize-ApplicationArchives (Join-Path $inputRoot $jarName) (Join-Path $inputRoot "lib")
     Copy-Item -LiteralPath $releaseNotesPath `
         -Destination (Join-Path $inputRoot "INSTALLER_RELEASE_NOTES_CN.txt") -Force
     Copy-Item -LiteralPath (Join-Path $repoRoot "OPENPNP_PRO_CHANGELOG_CN.md") `
@@ -310,9 +379,12 @@ try {
         "--java-options", "-XX:MaxMetaspaceSize=256m",
         "--java-options", "-XX:+UseG1GC",
         "--java-options", "-XX:MaxGCPauseMillis=100",
+        "--java-options", "-Dopenpnp.pro.hardwareOnly=true",
         "--java-options", "--add-opens=java.base/java.lang=ALL-UNNAMED",
         "--java-options", "--add-opens=java.desktop/java.awt=ALL-UNNAMED",
-        "--java-options", "--add-opens=java.desktop/java.awt.color=ALL-UNNAMED"
+        "--java-options", "--add-opens=java.desktop/java.awt.color=ALL-UNNAMED",
+        "--add-modules", "java.desktop,java.logging,java.prefs,java.scripting,java.sql,java.xml,java.naming,java.management,java.net.http,java.instrument,java.compiler,jdk.unsupported,jdk.zipfs,jdk.crypto.ec,jdk.charsets,jdk.localedata,jdk.dynalink,jdk.attach",
+        "--jlink-options", "--strip-debug --no-man-pages --no-header-files --compress=2"
     )
 
     Write-Step "生成便携程序目录"

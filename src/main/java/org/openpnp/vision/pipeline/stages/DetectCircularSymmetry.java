@@ -303,6 +303,20 @@ public class DetectCircularSymmetry extends CvStage {
             searchHeight = maxDistance*2;
         }
 
+        if (Boolean.TRUE.equals(pipeline.getProperty(org.openpnp.vision.PreciseCircularFeatureDetector.ENABLED_PROPERTY))) {
+            List<Result.Circle> circles = new ArrayList<>();
+            for (var feature : org.openpnp.vision.PreciseCircularFeatureDetector.detect(mat,
+                    center.x, center.y, diameter, maxDistance, maxTargetCount, searchWidth, searchHeight)) {
+                circles.add(new Result.Circle(feature.x, feature.y, feature.diameter));
+                Logger.debug("Precise circular feature x={} y={} diameter={} edge RMS={} coverage={}",
+                        feature.x, feature.y, feature.diameter, feature.rms, feature.coverage);
+            }
+            if (circles.isEmpty()) {
+                throw new Exception("圆环/通孔精定位未通过直径、完整边缘或拟合质量检查，请查看原图与搜索范围。");
+            }
+            return new Result(null, circles);
+        }
+
         List<Result.Circle> circles = findCircularSymmetry(mat, (int)center.x, (int)center.y, 
                 minDiameter, maxDiameter, maxDistance*2, searchWidth, searchHeight, maxTargetCount, minSymmetry, corrSymmetry, 
                 subSampling, superSampling, symmetryScore, diagnostics, heatMap, new ScoreRange());

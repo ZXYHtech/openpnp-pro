@@ -66,6 +66,7 @@ public class FiducialVisionSettingsConfigurationWizard extends AbstractConfigura
     private JTextField maxVisionPasses;
     private JLabel lblMaxLinearOffset;
     private JTextField maxLinearOffset;
+    private JCheckBox preciseCircularFeature;
 
     public FiducialVisionSettingsConfigurationWizard(FiducialVisionSettings visionSettings, 
             PartSettingsHolder settingsHolder) {
@@ -324,6 +325,11 @@ public class FiducialVisionSettingsConfigurationWizard extends AbstractConfigura
         parallaxAngle = new JTextField();
         panelAlign.add(parallaxAngle, "10, 4, fill, default");
         parallaxAngle.setColumns(10);
+
+        preciseCircularFeature = new JCheckBox("圆环/通孔边缘精定位（忽略孔内纹理）");
+        preciseCircularFeature.setToolTipText("适用于背景有纹理的完整圆环、安装孔；仍检查直径、搜索范围和圆边缘完整性。");
+        preciseCircularFeature.setEnabled(!visionSettings.isStockSetting());
+        panelAlign.add(preciseCircularFeature, "2, 6, 9, 1, fill, default");
         
         JButton btnTestFiducialLocator = new JButton(Translations.getString(
                 "FiducialVisionSettingsConfigurationWizard.TestFiducialLocatorPanel.TestFiducialLocatorButton.text" //$NON-NLS-1$
@@ -368,6 +374,7 @@ public class FiducialVisionSettingsConfigurationWizard extends AbstractConfigura
 
         addWrappedBinding(visionSettings, "maxVisionPasses", maxVisionPasses, "text", intConverter);
         addWrappedBinding(visionSettings, "maxLinearOffset", maxLinearOffset, "text", lengthConverter);
+        addWrappedBinding(visionSettings, "preciseCircularFeatureEnabled", preciseCircularFeature, "selected");
 
         addWrappedBinding(visionSettings, "parallaxDiameter", parallaxDiameter, "text", lengthConverter);
         addWrappedBinding(visionSettings, "parallaxAngle", parallaxAngle, "text", doubleConverter);

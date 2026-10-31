@@ -7,6 +7,20 @@ import org.simpleframework.xml.Attribute;
 import org.simpleframework.xml.Element;
 
 public class FiducialVisionSettings extends AbstractVisionSettings {
+    /** Stored as a standard pipeline assignment so stock OpenPnP can still read the configuration. */
+    public boolean isPreciseCircularFeatureEnabled() {
+        return getPipelineParameterAssignments() != null && Boolean.TRUE.equals(getPipelineParameterAssignments().get(
+                org.openpnp.vision.PreciseCircularFeatureDetector.ENABLED_PROPERTY));
+    }
+
+    public void setPreciseCircularFeatureEnabled(boolean enabled) {
+        var assignments = getPipelineParameterAssignments() == null ? new java.util.HashMap<String, Object>()
+                : new java.util.HashMap<>(getPipelineParameterAssignments());
+        if (enabled) { assignments.put(org.openpnp.vision.PreciseCircularFeatureDetector.ENABLED_PROPERTY, true); }
+        else { assignments.remove(org.openpnp.vision.PreciseCircularFeatureDetector.ENABLED_PROPERTY); }
+        setPipelineParameterAssignments(assignments);
+        firePropertyChange("preciseCircularFeatureEnabled", !enabled, enabled);
+    }
 
     @Element(required = false)
     private Length parallaxDiameter = new Length(0, LengthUnit.Millimeters);

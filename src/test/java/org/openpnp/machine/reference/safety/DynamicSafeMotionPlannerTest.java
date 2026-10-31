@@ -272,6 +272,146 @@ class DynamicSafeMotionPlannerTest {
         }).get(10, java.util.concurrent.TimeUnit.SECONDS);
         if (failFeed) { assertTrue(nozzle.getLocation().getZ() >= -5); }
     }
+    @Test void feederApproachRaisesArrivalJustEnoughToClearLeadingBankEdge() throws Exception {
+        z.setCoordinate(-8);
+        var profile = model.findToolProfile(head.getId(), nozzle.getId());
+        profile.zIsNozzleTip = true;
+        profile.bodyFollowsNozzleZ = false;
+        SafetyObject bank = model.createObject(ObjectType.FEEDER);
+        bank.x = 0;
+        bank.y = -20;
+        bank.z = -25;
+        bank.width = 400;
+        bank.depth = 60;
+        bank.height = 18;
+        bank.clearance = 2;
+        bank.sourceKey = "feeder-bank:front";
+        model.addObject(bank);
+        model.certify("Measured bank approach");
+        DynamicSafeMotionSettings.setEnabled(true);
+        DynamicSafeMotionSettings.setStrictEnabled(true);
+        var feeder = new org.openpnp.machine.reference.feeder.ReferenceAutoFeeder();
+        feeder.setLocation(new Location(LengthUnit.Millimeters, 60, 5, -13, 0));
+        assertTrue(DynamicSafeMotionPlanner.prepositionForFeed(nozzle, feeder));
+        assertEquals(1, commands.size(), "Approach must remain one direct XYZ move");
+        assertEquals(60, nozzle.getLocation().getX(), .001);
+        assertEquals(5, nozzle.getLocation().getY(), .001);
+        assertTrue(nozzle.getLocation().getZ() < 0, "Try a modest arrival lift instead of full Safe-Z");
+        assertTrue(nozzle.getLocation().getZ() > -4.3, "The minimum endpoint height collides with the leading edge");
+    }
+
+    @Test void discardFromTaughtFeederDepthExitsVerticallyBeforeDirectTravel() throws Exception {
+        var profile = model.findToolProfile(head.getId(), nozzle.getId());
+        profile.zIsNozzleTip = true;
+        profile.bodyFollowsNozzleZ = false;
+        SafetyObject bank = model.createObject(ObjectType.FEEDER);
+        bank.x = 0;
+        bank.y = 0;
+        bank.z = -25;
+        bank.width = 100;
+        bank.depth = 40;
+        bank.height = 18;
+        bank.clearance = 2;
+        bank.sourceKey = "feeder-bank:front";
+        model.addObject(bank);
+        model.certify("Measured manual pickup and exit");
+        var feeder = new org.openpnp.machine.reference.feeder.ReferenceAutoFeeder();
+        feeder.setLocation(new Location(LengthUnit.Millimeters, 60, 5, -13, 0));
+        machine.addFeeder(feeder);
+        x.setCoordinate(60);
+        y.setCoordinate(5);
+        z.setCoordinate(-13);
+        DynamicSafeMotionSettings.setEnabled(true);
+        DynamicSafeMotionSettings.setStrictEnabled(true);
+        Location discard = new Location(LengthUnit.Millimeters, 19, 318, 0, 0);
+        assertTrue(DynamicSafeMotionPlanner.tryMoveToPlace(nozzle, discard, discard, 1));
+        assertEquals(60, commands.get(0).getCoordinate(x), .001);
+        assertEquals(5, commands.get(0).getCoordinate(y), .001);
+        assertTrue(commands.get(0).getCoordinate(z) > -13, "Exit contact vertically before any XY");
+        assertTrue(commands.stream().allMatch(c -> c.getCoordinate(z) < 20), "No needless full retraction");
+        assertEquals(19, nozzle.getLocation().getX(), .001);
+        assertEquals(318, nozzle.getLocation().getY(), .001);
+    }
+
+    @Test void pairedChangerBanksLeaveTheirCentralAisleAvailableForDiscard() throws Exception {
+        var profile = model.findToolProfile(head.getId(), nozzle.getId());
+        profile.zIsNozzleTip = true;
+        profile.bodyFollowsNozzleZ = false;
+        profile.bodyRadiusX = profile.bodyRadiusY = 16;
+        for (double bankX : new double[] { 1, 409 }) {
+            SafetyObject changer = model.createObject(ObjectType.NOZZLE_CHANGER);
+            changer.x = bankX;
+            changer.y = 155;
+            changer.z = -17;
+            changer.width = 42;
+            changer.depth = 105;
+            changer.height = 32;
+            changer.clearance = 2;
+            model.addObject(changer);
+        }
+        SafetyObject solid = model.createObject(ObjectType.FEEDER);
+        solid.x = 300;
+        solid.y = 400;
+        solid.z = -25;
+        solid.height = 18;
+        model.addObject(solid);
+        model.certify("Separate left and right changer banks");
+        x.setCoordinate(60);
+        y.setCoordinate(5);
+        z.setCoordinate(0);
+        DynamicSafeMotionSettings.setEnabled(true);
+        DynamicSafeMotionSettings.setStrictEnabled(true);
+        when(planner.isValidLocation(any(), any())).thenAnswer(invocation -> {
+            AxesLocation raw = invocation.getArgument(1);
+            return raw.getCoordinate(x) >= 0 && raw.getCoordinate(x) <= 452;
+        });
+        Plan plan = DynamicSafeMotionPlanner.preview(nozzle,
+                new Location(LengthUnit.Millimeters, 19, 318, 0, 0), 1);
+        assertTrue(plan.isOptimized(), plan.getReason());
+        assertTrue(plan.getLocations().stream().allMatch(p -> p.getX() >= 0 && p.getX() < 100),
+                "Use the aisle beside the left bank, never the outside of the entire machine");
+        assertTrue(commands.isEmpty());
+    }
+
+    @Test void manualDiscardRetreatDoesNotDependOnPlacementJobScriptCache() throws Exception {
+        nozzle.setNozzleTip(new org.openpnp.machine.reference.ReferenceNozzleTip());
+        DynamicSafeMotionSettings.setEnabled(true);
+        DynamicSafeMotionSettings.setStrictEnabled(true);
+        var profile = model.findToolProfile(head.getId(), nozzle.getId());
+        profile.zIsNozzleTip = true;
+        profile.bodyFollowsNozzleZ = false;
+        z.setCoordinate(0);
+        org.openpnp.model.Configuration.get().getScripting().on("Job.AfterDiscard", java.util.Collections.emptyMap());
+        assertFalse(org.openpnp.model.Configuration.get().getScripting().hasNoScript("Job.Placement.Complete"));
+        DynamicSafeMotionPlanner.retractAfterDiscard(nozzle);
+        assertEquals(0, nozzle.getLocation().getZ(), .001, "A clear discard endpoint needs no full Safe-Z reset");
+        assertTrue(commands.isEmpty());
+    }
+
+    @Test void unregisteredDeepFeederStartCannotAcquireContactPermission() throws Exception {
+        var profile = model.findToolProfile(head.getId(), nozzle.getId());
+        profile.zIsNozzleTip = true;
+        profile.bodyFollowsNozzleZ = false;
+        SafetyObject bank = model.createObject(ObjectType.FEEDER);
+        bank.x = 0;
+        bank.y = 0;
+        bank.z = -25;
+        bank.width = 100;
+        bank.depth = 40;
+        bank.height = 18;
+        bank.sourceKey = "feeder-bank:front";
+        model.addObject(bank);
+        model.certify("Unknown contact is not exempt");
+        x.setCoordinate(60);
+        y.setCoordinate(5);
+        z.setCoordinate(-13);
+        DynamicSafeMotionSettings.setEnabled(true);
+        DynamicSafeMotionSettings.setStrictEnabled(true);
+        assertThrows(Exception.class, () -> DynamicSafeMotionPlanner.tryMoveToLocationAtSafeZ(nozzle,
+                new Location(LengthUnit.Millimeters, 19, 318, 0, 0), 1));
+        assertTrue(commands.isEmpty());
+    }
+
     @Test void boardToFeederUsesLowClearanceInsteadOfUpFlatDownSafeZ() throws Exception {
         z.setLengthCoordinate(new Length(-8, LengthUnit.Millimeters));
         model.findToolProfile(head.getId(), nozzle.getId()).zIsNozzleTip = true;

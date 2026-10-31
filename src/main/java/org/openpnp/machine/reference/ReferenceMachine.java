@@ -221,6 +221,7 @@ public class ReferenceMachine extends AbstractMachine {
     public void setEnabled(boolean enabled) throws Exception {
         Logger.debug("setEnabled({})", enabled);
         if (enabled) {
+            ProductionFeaturePolicy.requireHardware(this);
             List<Driver> enabledDrivers = new ArrayList<>();
             try {
                 boolean syncLocation = false;
@@ -465,9 +466,9 @@ public class ReferenceMachine extends AbstractMachine {
         l.add(Neoden4SwitcherCamera.class);
         l.add(Webcams.class);
         l.add(OnvifIPCamera.class);
-        l.add(ImageCamera.class);
+        if (!ProductionFeaturePolicy.hardwareOnly()) { l.add(ImageCamera.class); }
         l.add(SwitcherCamera.class);
-        l.add(SimulatedUpCamera.class);
+        if (!ProductionFeaturePolicy.hardwareOnly()) { l.add(SimulatedUpCamera.class); }
         l.add(MjpgCaptureCamera.class);
         l.add(GstreamerCamera.class);
         return l;
@@ -504,7 +505,7 @@ public class ReferenceMachine extends AbstractMachine {
     @Override
     public List<Class<? extends Driver>> getCompatibleDriverClasses() {
         List<Class<? extends Driver>> l = new ArrayList<>();
-        l.add(NullDriver.class);
+        if (!ProductionFeaturePolicy.hardwareOnly()) { l.add(NullDriver.class); }
         l.add(GcodeDriver.class);
         l.add(GcodeAsyncDriver.class);
         l.add(NeoDen4Driver.class);

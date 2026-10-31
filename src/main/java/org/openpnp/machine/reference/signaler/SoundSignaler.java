@@ -20,10 +20,10 @@ import org.simpleframework.xml.Attribute;
 public class SoundSignaler extends AbstractSignaler {
 
     @Attribute
-    protected boolean enableErrorSound;
+    protected volatile boolean enableErrorSound;
 
     @Attribute
-    protected boolean enableFinishedSound;
+    protected volatile boolean enableFinishedSound;
 
     private ClassLoader classLoader = getClass().getClassLoader();
 
@@ -43,7 +43,12 @@ public class SoundSignaler extends AbstractSignaler {
             }
 
             Clip clip = AudioSystem.getClip();
-            clip.open(audioInputStream);
+            try (AudioInputStream stream = audioInputStream) {
+                clip.open(stream);
+            }
+            clip.addLineListener(event -> {
+                if (event.getType() == javax.sound.sampled.LineEvent.Type.STOP) { clip.close(); }
+            });
             clip.start(); 
         } 
         catch (Exception e) {

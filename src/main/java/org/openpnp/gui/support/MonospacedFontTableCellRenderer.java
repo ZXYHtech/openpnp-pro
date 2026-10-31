@@ -36,6 +36,7 @@ public class MonospacedFontTableCellRenderer extends DefaultTableCellRenderer
                                                    boolean isSelected, boolean hasFocus, int row, int column) {
         super.getTableCellRendererComponent(table, value, isSelected, hasFocus, row, column);
         Color alternateRowColor = UIManager.getColor("Table.alternateRowColor");
+        if (alternateRowColor == null) { alternateRowColor = table.getBackground(); }
         if (isSelected) {
             setForeground(table.getSelectionForeground());
             super.setBackground(table.getSelectionBackground());
@@ -44,6 +45,7 @@ public class MonospacedFontTableCellRenderer extends DefaultTableCellRenderer
             setForeground(table.getForeground());
             setBackground(row%2==0 ? table.getBackground() : alternateRowColor);
         }
+        setForeground(ReadableTableColors.foreground(getBackground(), getForeground()));
         setFont(new Font( "Monospaced", Font.BOLD, super.getFont().getSize()));
         return this;
     }

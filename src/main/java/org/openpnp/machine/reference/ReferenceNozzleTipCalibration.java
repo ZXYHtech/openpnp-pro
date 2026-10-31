@@ -1568,6 +1568,26 @@ public class ReferenceNozzleTipCalibration extends AbstractModelObject {
                 ||  recalibrationTrigger == RecalibrationTrigger.MachineHome;
     }
 
+    /** Conservative XY offset bound for all rotation angles, in millimetres. */
+    public double getMaximumOffsetMagnitude(ReferenceNozzle nozzle) {
+        if (!isEnabled() || !isCalibrated(nozzle)) { return 0; }
+        RunoutCompensation compensation = getRunoutCompensation(nozzle);
+        if (compensation instanceof ModelBasedRunoutCompensation) {
+            ModelBasedRunoutCompensation model = (ModelBasedRunoutCompensation) compensation;
+            return new Length(Math.hypot(model.centerX, model.centerY) + Math.abs(model.radius)
+                    + Math.abs(model.peakError), model.units).convertToUnits(LengthUnit.Millimeters).getValue();
+        }
+        if (compensation instanceof TableBasedRunoutCompensation) {
+            double bound = 0;
+            for (Location measured : ((TableBasedRunoutCompensation) compensation).nozzleTipMeasuredLocations) {
+                Location point = measured.convertToUnits(LengthUnit.Millimeters);
+                bound = Math.max(bound, Math.hypot(point.getX(), point.getY()));
+            }
+            return bound;
+        }
+        return Double.POSITIVE_INFINITY;
+    }
+
     public boolean isEnabled() {
         return enabled;
     }

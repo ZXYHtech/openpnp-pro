@@ -359,7 +359,8 @@ public class ReferenceAdvancedMotionPlanner extends AbstractMotionPlanner {
     @Override
     protected Motion addMotion(HeadMountable hm, double speed, AxesLocation location0,
             AxesLocation location1, int options) {
-        if (allowUncoordinated && !MotionOption.CoordinatedMotion.isSetIn(options)) {
+        if (allowUncoordinated && !MotionOption.CoordinatedMotion.isSetIn(options)
+                && !org.openpnp.model.CertifiedTravelProfile.active()) {
             if (location0.isInSafeZone()
                     && location1.isInSafeZone()) {
                 // Both locations are in the Safe Zone. Add the uncoordinated flags.
@@ -378,10 +379,12 @@ public class ReferenceAdvancedMotionPlanner extends AbstractMotionPlanner {
     protected void optimizeExecutionPlan(List<Motion> executionPlan,
             CompletionType completionType) throws Exception {
         if (org.openpnp.model.ContinuousVisionProfile.optimizeIfRequested(executionPlan)) {
+            org.openpnp.model.CertifiedTravelProfile.validate(executionPlan);
             return;
         }
         PlannerPath path = new PlannerPath(executionPlan);
         path.solve();
+        org.openpnp.model.CertifiedTravelProfile.validate(executionPlan);
     }
 
     protected void startNewMotionGraph() {

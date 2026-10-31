@@ -32,6 +32,7 @@ final class CoordinatedMotionValidator {
         final String sourceKey;
         final Waypoint pick;
         final boolean board;
+        private FeederContact source;
         FeederContact(String sourceKey, Waypoint pick) {
             this(sourceKey, pick, false);
         }
@@ -41,13 +42,18 @@ final class CoordinatedMotionValidator {
             this.board = board;
         }
         boolean permits(SafetyObject object, Waypoint point) {
-            return (board ? object.type == ObjectType.BOARD && sourceKey.equals(object.id)
+            return source != null && source.permits(object, point) || (board ? object.type == ObjectType.BOARD && sourceKey.equals(object.id)
                     : object.type == ObjectType.FEEDER && (sourceKey.equals(object.sourceKey)
                             || sourceKey.startsWith("feeder:") && object.sourceKey.startsWith("feeder-bank:")
                             && pick.x >= object.x && pick.x <= object.x + object.width
                             && pick.y >= object.y && pick.y <= object.y + object.depth))
                     && Math.abs(point.x - pick.x) < .05 && Math.abs(point.y - pick.y) < .05
                     && Math.abs(point.z - pick.z) < .05;
+        }
+        FeederContact withSource(FeederContact contact) {
+            FeederContact combined = new FeederContact(sourceKey, pick, board);
+            combined.source = contact;
+            return combined;
         }
     }
 

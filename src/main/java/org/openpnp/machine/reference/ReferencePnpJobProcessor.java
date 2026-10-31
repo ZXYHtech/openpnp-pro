@@ -1762,8 +1762,6 @@ public class ReferencePnpJobProcessor extends AbstractPnpJobProcessor {
 
             // sort plannedPlacements for alignment with place as next/end location using TSM
             List<PlannedPlacement> optimizedPlannedPlacements = optimizePlacements(alignLocator, placeLocator);
-            optimizedPlannedPlacements = org.openpnp.machine.reference.vision.FlyingVisionMotion
-                    .orderForFlying(optimizedPlannedPlacements);
             
             // continue with alignment
             return new PrerotateAllNozzlesForAlign(optimizedPlannedPlacements);
@@ -2596,6 +2594,11 @@ public class ReferencePnpJobProcessor extends AbstractPnpJobProcessor {
             if (plannedPlacements.size() <= 1) {
                 return plannedPlacements;
             }
+            if (planner.getStrategy() == PnpJobPlanner.Strategy.FullyAsPlanned) { return plannedPlacements; }
+            int phase = sortLocator == pickLocator ? 0 : sortLocator == alignLocator ? 1 : 2;
+            List<PlannedPlacement> cycleOrder = org.openpnp.machine.reference.vision.DualNozzleCyclePlanner.order(
+                    plannedPlacements, phase, pickLocator::getLocation, alignLocator::getLocation, placeLocator::getLocation);
+            if (cycleOrder != null) { return cycleOrder; }
 
             // if any sort locations are now empty, skip the optimization
             if (plannedPlacements.stream().filter(p -> {return sortLocator.getLocation(p) == null;}).count() != 0) {
@@ -2640,7 +2643,8 @@ public class ReferencePnpJobProcessor extends AbstractPnpJobProcessor {
             
             Logger.debug("Optimization for {} completed in {}ms: {}, {}% gain", sortLocator.toString(), (System.currentTimeMillis() - t), optimizedPlannedPlacements, df.format(optimization_advantage));
             
-            return optimizedPlannedPlacements;
+            return sortLocator == alignLocator ? org.openpnp.machine.reference.vision.FlyingVisionMotion
+                    .orderForFlying(optimizedPlannedPlacements) : optimizedPlannedPlacements;
         }
     }
 

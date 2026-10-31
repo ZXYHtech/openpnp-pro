@@ -254,6 +254,7 @@ public class ImageCamera extends ReferenceCamera {
 
     @Override 
     public synchronized void open() throws Exception {
+        org.openpnp.machine.reference.ProductionFeaturePolicy.requireRealCamera(this);
         if (sourceUri.startsWith("classpath://")) {
             source = ImageIO.read(getClass().getClassLoader()
                     .getResourceAsStream(sourceUri.substring("classpath://".length())));

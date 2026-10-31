@@ -97,6 +97,25 @@ public abstract class AbstractMotionPlanner extends AbstractModelObject implemen
     private boolean homed = false; 
 
     private SubordinateMotion subordinateMotion = new SubordinateMotion();
+
+    public synchronized boolean hasPendingLinearMotion() {
+        for (Motion motion : motionCommands) {
+            if (!motion.getLocation0().byType(Axis.Type.X).matches(motion.getLocation1().byType(Axis.Type.X))
+                    || !motion.getLocation0().byType(Axis.Type.Y).matches(motion.getLocation1().byType(Axis.Type.Y))
+                    || !motion.getLocation0().byType(Axis.Type.Z).matches(motion.getLocation1().byType(Axis.Type.Z))) { return true; }
+        }
+        for (Driver driver : getMachine().getDrivers()) { if (driver.isMotionPending()) { return true; } }
+        return false;
+    }
+
+    public synchronized AxesLocation getPendingSubordinateAxes() {
+        return subordinateMotion.queue == null ? AxesLocation.zero : subordinateMotion.queue;
+    }
+
+    /** Same pure normalisation used when queueing, with no driver commands. */
+    public AxesLocation normalizeForPreview(HeadMountable tool, AxesLocation target) throws Exception {
+        return limitAxesLocation(tool, target, true);
+    }
     
     /**
      * This class provides support for subordinate motion handling. It queues motion 
@@ -675,6 +694,7 @@ public abstract class AbstractMotionPlanner extends AbstractModelObject implemen
                 speed,
                 options);
         // Add to the recorded motion commands. 
+        org.openpnp.model.CertifiedTravelProfile.annotate(motionCommand);
         motionCommands.addLast(motionCommand);
         return motionCommand;
     }

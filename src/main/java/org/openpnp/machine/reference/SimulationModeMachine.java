@@ -175,12 +175,16 @@ public class SimulationModeMachine extends ReferenceMachine {
 
     @Override
     public void setEnabled(boolean enabled) throws Exception {
+        if (enabled && ProductionFeaturePolicy.hardwareOnly() && simulationMode != SimulationMode.Off) {
+            throw new Exception("本版本已移除虚拟机器，请使用真实机器配置。");
+        }
         // TODO: re-wire drivers and cameras. 
         super.setEnabled(enabled);
     }
 
     @Override
     public PropertySheet[] getPropertySheets() {
+        if (ProductionFeaturePolicy.hardwareOnly()) { return super.getPropertySheets(); }
         return Collect.concat(super.getPropertySheets(),
                 new PropertySheet[] {
                         new PropertySheetWizardAdapter(new SimulationModeMachineConfigurationWizard(this), "Simulation Mode")
@@ -192,6 +196,9 @@ public class SimulationModeMachine extends ReferenceMachine {
     }
 
     public void setSimulationMode(SimulationMode simulationMode) {
+        if (ProductionFeaturePolicy.hardwareOnly() && simulationMode != SimulationMode.Off) {
+            throw new IllegalStateException("本版本已移除虚拟机器功能。");
+        }
         if (this.simulationMode != simulationMode) {
             try {
                 setEnabled(false);

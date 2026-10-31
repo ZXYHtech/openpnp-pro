@@ -75,6 +75,9 @@ public class MonospacedFontWithAffineStatusTableCellRenderer extends DefaultTabl
         catch (Exception ex) {
             //do nothing
         }
+        // Status tints may be pale even under a dark theme. Derive a readable
+        // foreground from the final tint, including selected/alternating rows.
+        foreground = ReadableTableColors.foreground(background, foreground);
         setForeground(foreground);
         setBackground(background);
         setFont(new Font( "Monospaced", Font.BOLD, super.getFont().getSize()));

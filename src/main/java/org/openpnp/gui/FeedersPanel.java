@@ -727,8 +727,19 @@ public class FeedersPanel extends JPanel implements WizardContainer {
      * @throws Exception
      */
     public static Nozzle feedFeeder(Feeder feeder) throws Exception {
+        return feedFeeder(feeder, null);
+    }
+
+    private static Nozzle feedFeeder(Feeder feeder, boolean[] prepositioned) throws Exception {
         if (feeder.getPart() == null) {
             throw new Exception("Feeder "+feeder.getName()+" has no part.");
+        }
+        // Reject an occupied selected nozzle before preparation can move the feeder/head.
+        if (prepositioned != null) {
+            Nozzle selected = MainFrame.get().getMachineControls().getSelectedNozzle();
+            if (selected.getPart() != null) {
+                throw new Exception("吸嘴 " + selected.getName() + " 已持有器件，请先贴装或抛料后再取料。");
+            }
         }
         // Simulate a "one feeder" job, prepare the feeder.
         if (feeder.getJobPreparationLocation() != null) {
@@ -748,10 +759,17 @@ public class FeedersPanel extends JPanel implements WizardContainer {
         globals.put("feeder", feeder);
         globals.put("part", feeder.getPart());
 
-        // Perform the feed.
-        nozzle.moveToSafeZ();
+        // Perform the feed. Feed-only keeps its original Safe-Z hook contract.
+        if (prepositioned == null) { nozzle.moveToSafeZ(); }
         Configuration.get().getScripting().on("Feeder.BeforeFeed", globals);
-        feeder.feed(nozzle);
+        boolean ready = prepositioned != null
+                && org.openpnp.machine.reference.feeder.FeederPreposition.feed(
+                        feeder, nozzle, getTestPlacementLocation(feeder.getPart()));
+        if (!ready) {
+            if (prepositioned != null) { nozzle.moveToSafeZ(); }
+            feeder.feed(nozzle);
+        }
+        if (prepositioned != null) { prepositioned[0] = ready; }
         Configuration.get().getScripting().on("Feeder.AfterFeed", globals);
         return nozzle;
     }
@@ -765,7 +783,8 @@ public class FeedersPanel extends JPanel implements WizardContainer {
      */
     public static void pickFeeder(Feeder feeder) throws Exception, JobProcessorException {
         // Do the feed an get the nozzle for the pick.
-        Nozzle nozzle = feedFeeder(feeder);
+        boolean[] prepositioned = { false };
+        Nozzle nozzle = feedFeeder(feeder, prepositioned);
 
         // Perform the vacuum check, if enabled.
         if (nozzle.isPartOffEnabled(Nozzle.PartOffStep.BeforePick)) {
@@ -779,13 +798,16 @@ public class FeedersPanel extends JPanel implements WizardContainer {
 
         // Make sure the nozzle can articulate from pick to placement. 
         Location placementLocation = getTestPlacementLocation(feeder.getPart());
-        nozzle.prepareForPickAndPlaceArticulation(feeder.getPickLocation(), 
-                placementLocation);
+        if (prepositioned[0]) {
+            org.openpnp.machine.reference.safety.DynamicSafeMotionPlanner.descendAtPrepositionedFeeder(nozzle, feeder);
+        } else {
+            nozzle.prepareForPickAndPlaceArticulation(feeder.getPickLocation(), placementLocation);
+            nozzle.moveToPickLocation(feeder);
+        }
 
         // Go to the pick location and pick.
-        nozzle.moveToPickLocation(feeder);
         nozzle.pick(feeder.getPart(),feeder);
-        nozzle.moveToSafeZ();
+        org.openpnp.machine.reference.safety.DynamicSafeMotionPlanner.retractAfterPick(nozzle, feeder);
 
         // After the pick. 
         feeder.postPick(nozzle);
@@ -917,7 +939,7 @@ public class FeedersPanel extends JPanel implements WizardContainer {
                 Nozzle nozzle = getCompatibleNozzleAndTip(feeder, true);
 
                 Location pickLocation = preliminaryPickLocation(feeder, nozzle);
-                MovableUtils.moveToLocationAtSafeZ(nozzle, pickLocation);
+                MovableUtils.moveToFeederPickLocation(nozzle, pickLocation, feeder);
                 MovableUtils.fireTargetedUserAction(nozzle);
             });
         }

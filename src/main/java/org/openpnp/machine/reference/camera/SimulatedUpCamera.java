@@ -100,6 +100,7 @@ public class SimulatedUpCamera extends ReferenceCamera {
 
     @Override
     public BufferedImage internalCapture() {
+        org.openpnp.machine.reference.ProductionFeaturePolicy.requireRealCamera(this);
         if (!ensureOpen()) {
             return null;
         }
