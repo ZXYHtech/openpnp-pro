@@ -18,6 +18,23 @@ class BoundedClearanceTravelTest {
     @TempDir Path temporary;
     DynamicSafeMotionPlannerTest f;
 
+    private ReferenceAdvancedMotionPlanner recordingPlanner() {
+        var planner = new ReferenceAdvancedMotionPlanner() {
+            @Override public void moveTo(org.openpnp.spi.HeadMountable tool, AxesLocation axes, double speed,
+                    Motion.MotionOption... options) {
+                f.commands.add(axes);
+                f.options.add(java.util.Arrays.asList(options));
+                if (java.util.Arrays.asList(options).contains(Motion.MotionOption.UncoordinatedMotion)) {
+                    assertTrue(org.openpnp.model.CertifiedTravelProfile.active());
+                }
+                for (var axis : axes.getControllerAxes()) { axis.setLengthCoordinate(axes.getLengthCoordinate(axis)); }
+            }
+        };
+        planner.setAllowContinuousMotion(true);
+        f.machine.setMotionPlanner(planner);
+        return planner;
+    }
+
     @BeforeEach void setup() throws Exception {
         f = new DynamicSafeMotionPlannerTest();
         f.temporary = temporary;
@@ -79,6 +96,46 @@ class BoundedClearanceTravelTest {
         System.out.printf("NATIVE BOUNDED Z ARCH: stopped=%.6fs smooth=%.6fs entryV=%.6f exitV=%.6f peakZ=%.6f%n",
                 stopped, candidate.seconds, z.getVelocity(0), z.getVelocity(7), z.getHigherSBoundary());
         assertTrue(f.commands.isEmpty(), "Planning cannot issue hardware commands");
+    }
+
+    @Test void anInvalidShortStraightLineCannotDisqualifyLowCurvedEntryIntoAFeederBank() throws Exception {
+        recordingPlanner();
+        var bank = f.model.createObject(SafetyWorkbenchModel.ObjectType.FEEDER);
+        bank.x = 100;
+        bank.y = 70;
+        bank.width = 240;
+        bank.depth = 60;
+        bank.z = -25;
+        bank.height = 18;
+        bank.clearance = 2;
+        bank.sourceKey = "feeder-bank:front";
+        f.model.addObject(bank);
+        f.model.certify("Bank leading edge requires a curve");
+        SafetyWorkbenchStore.save(f.model);
+        DynamicSafeMotionSettings.setEnabled(true);
+        var feeder = new org.openpnp.machine.reference.feeder.ReferenceAutoFeeder();
+        feeder.setLocation(new Location(LengthUnit.Millimeters, 300, 100, -13, 0));
+        assertTrue(DynamicSafeMotionPlanner.prepositionForFeed(f.nozzle, feeder));
+        assertTrue(f.options.stream().anyMatch(flags -> flags.contains(Motion.MotionOption.UncoordinatedMotion)),
+                "The certified curve must beat an unavailable/blocked direct line, not its unchecked time");
+        assertTrue(f.nozzle.getLocation().getZ() < -3, "Do not raise the arrival to full Safe Z");
+        assertEquals(300, f.nozzle.getLocation().getX(), .001);
+        assertEquals(100, f.nozzle.getLocation().getY(), .001);
+        assertTrue(f.nozzle.getLocation().getZ() > -7, "Remain clear while feed is not confirmed");
+    }
+
+    @Test void aCompletelyClearFeederEntryCanReachThePickWithoutForcedVerticalWaypoints() throws Exception {
+        recordingPlanner().setAllowContinuousMotion(false);
+        f.z.setCoordinate(20);
+        f.model.certify("Clear feeder entry");
+        SafetyWorkbenchStore.save(f.model);
+        DynamicSafeMotionSettings.setEnabled(true);
+        var feeder = new org.openpnp.machine.reference.feeder.ReferenceAutoFeeder();
+        var target = new Location(LengthUnit.Millimeters, 300, 100, 0, 0);
+        feeder.setLocation(target);
+        assertTrue(DynamicSafeMotionPlanner.tryMoveToPick(f.nozzle, target, 1, feeder));
+        assertEquals(1, f.commands.size(), "XYZ can arrive together when its entire envelope is clear");
+        assertEquals(target, f.nozzle.getLocation());
     }
 
     @Test void aRestrictedVolumePreventsFreeSpaceSmoothingBeforeMotion() throws Exception {
@@ -169,8 +226,18 @@ class BoundedClearanceTravelTest {
     }
 
     @Test void sharedNativeCamKeepsBothNozzlesAboveClearanceThroughoutFreeProfile() throws Exception {
+        checkSharedNativeCam(180);
+    }
+
+    @Test void thisMachinesFoldedCamKeepsBothNozzlesAboveClearanceThroughoutFreeProfile() throws Exception {
+        checkSharedNativeCam(0);
+    }
+
+    private void checkSharedNativeCam(double armsAngle) throws Exception {
         var ccw = new org.openpnp.machine.reference.axis.ReferenceCamCounterClockwiseAxis();
         ccw.setType(org.openpnp.spi.Axis.Type.Z);
+        ccw.setCamArmsAngle(armsAngle);
+        ccw.setCamRadius(new org.openpnp.model.Length(15, LengthUnit.Millimeters));
         ccw.setInputAxis(f.z);
         f.machine.addAxis(ccw);
         var cw = new org.openpnp.machine.reference.axis.ReferenceCamClockwiseAxis();
@@ -190,7 +257,8 @@ class BoundedClearanceTravelTest {
         profile.zIsNozzleTip = true;
         profile.bodyFollowsNozzleZ = false;
         f.model.certify("Shared native cam");
-        f.z.setCoordinate(-30);
+        f.z.setCoordinate(f.nozzle.toRaw(f.nozzle.toHeadLocation(
+                new Location(LengthUnit.Millimeters, 20, 100, -12, 0))).getCoordinate(f.z));
         var candidate = BoundedClearanceTravel.plan(f.nozzle, f.nozzle.getLocation(),
                 new Location(LengthUnit.Millimeters, 300, 100, -13, 0), 1, f.model,
                 DynamicSafetyCollisionEngine.snapshot(f.model, f.machine, f.nozzle), null, Long.MAX_VALUE, () -> { });

@@ -326,22 +326,17 @@ public final class DynamicSafeMotionPlanner {
         for (double candidateZ : new double[] { z, z + .5, z + 1, z + 2.5, z + 5, safeZ }) {
             double waitZ = Math.min(candidateZ, safeZ);
             Location waiting = pick.derive(null, null, waitZ, null);
+            BoundedClearanceTravel.Candidate smoothCandidate = null;
             try {
-                var candidate = BoundedClearanceTravel.plan((ReferenceNozzle) nozzle, start, waiting,
+                smoothCandidate = BoundedClearanceTravel.plan((ReferenceNozzle) nozzle, start, waiting,
                         machine.getSpeed(), model, tools, null, deadline, () -> {
                             if (SafetyWorkbenchStore.get() != live || live.getRevision() != revision || !live.isCertified()) {
                                 throw new IllegalStateException("飞达平滑进场模型改变，未发送运动");
                             }
                         });
-                double directSeconds = estimate(nozzle, start, Collections.singletonList(waiting), machine.getSpeed());
-                if (candidate != null && candidate.seconds + .005 < directSeconds) {
-                    selected = candidate.locations;
-                    selectedSmooth = candidate;
-                    selectedZ = waitZ;
-                    break;
-                }
             }
             catch (Exception unavailable) { Logger.debug(unavailable, "Bounded feeder entry not selected before movement"); }
+            double bestValidatedSeconds = Double.POSITIVE_INFINITY;
             for (boolean exitFirst : new boolean[] { false, true }) {
                 List<Location> path = compact(nozzle, start, exitFirst
                         ? Arrays.asList(start.derive(null, null, sourceZ, null), waiting)
@@ -349,6 +344,7 @@ public final class DynamicSafeMotionPlanner {
                 if (path.isEmpty()) {
                     selected = path;
                     selectedZ = waitZ;
+                    bestValidatedSeconds = 0;
                     break;
                 }
                 List<Waypoint> points = new ArrayList<>();
@@ -360,10 +356,19 @@ public final class DynamicSafeMotionPlanner {
                     blocked = String.join("；", check.getIssues());
                     continue;
                 }
-                estimate(nozzle, start, path, machine.getSpeed());
-                selected = path;
+                double seconds = estimate(nozzle, start, path, machine.getSpeed());
+                if (seconds < bestValidatedSeconds) {
+                    selected = path;
+                    selectedZ = waitZ;
+                    bestValidatedSeconds = seconds;
+                }
+            }
+            // An unchecked straight line can cut through the bank's leading edge.
+            // Its artificially low time must never disqualify a certified curve.
+            if (smoothCandidate != null && smoothCandidate.seconds + .005 < bestValidatedSeconds) {
+                selected = smoothCandidate.locations;
+                selectedSmooth = smoothCandidate;
                 selectedZ = waitZ;
-                break;
             }
             if (selected != null) { break; }
             if (System.nanoTime() > deadline) { break; }
@@ -388,8 +393,8 @@ public final class DynamicSafeMotionPlanner {
                 nozzle.moveTo(next, machine.getSpeed(), MotionOption.CoordinatedMotion);
             }
         }
-        Logger.info("Feeder wait {} at pick XY ({}, {}), Z={} mm; minimum={} mm, approach={} segments; feed completion releases Z-only pickup",
-                nozzle.getName(), pick.getX(), pick.getY(), selectedZ, z, selected.size());
+        Logger.info("Feeder wait {} at pick XY ({}, {}), Z={} mm; minimum={} mm, approach={} segments, native curve={}; feed completion releases pickup",
+                nozzle.getName(), pick.getX(), pick.getY(), selectedZ, z, selected.size(), selectedSmooth != null);
         return true;
     }
 
@@ -798,6 +803,21 @@ public final class DynamicSafeMotionPlanner {
             }
         }
         Plan smooth = null;
+        // Do not force a separate vertical approach merely because this is a
+        // feeder target. A fully clear, swept XYZ entry can reach it directly.
+        // Actual feeder-body/shaft intersections still require a taught vertical
+        // contact stroke; this does not open a hole in an unknown feeder body.
+        if (contact != null && !contact.board && Math.abs(contact.pick.x - target.getX()) < .05
+                && Math.abs(contact.pick.y - target.getY()) < .05 && Math.abs(contact.pick.z - target.getZ()) < .05) {
+            var direct = Collections.singletonList(target);
+            if (CoordinatedMotionValidator.validate(model, Arrays.asList(point(start), point(target)),
+                    tools, point(start), deadline, contact).isSafe()) {
+                double seconds = estimate(tool, start, direct, speed);
+                if (Double.isFinite(seconds)) {
+                    smooth = new Plan(direct, "飞达连续 XYZ 进场：全段扫掠通过，无额外垂直航点", originalSeconds, seconds);
+                }
+            }
+        }
         if (!imaging && tool instanceof ReferenceNozzle) {
             SafetyWorkbenchModel live = SafetyWorkbenchStore.get();
             long revision = live.getRevision();
@@ -809,9 +829,10 @@ public final class DynamicSafeMotionPlanner {
                             }
                         });
                 if (candidate != null) {
-                    smooth = new Plan(candidate.locations, "已认证自由空间：原生连续 XYZ/Z 弧线过渡，末端垂直接触",
+                    Plan curved = new Plan(candidate.locations, "已认证自由空间：原生连续 XYZ/Z 弧线过渡，末端垂直接触",
                             originalSeconds, candidate.seconds);
-                    smooth.smooth = candidate;
+                    curved.smooth = candidate;
+                    smooth = smooth == null ? curved : prefer(curved, smooth);
                 }
             }
             catch (Exception unavailable) { Logger.debug(unavailable, "Bounded native smoothing not selected before issuing motion"); }
