@@ -8,7 +8,9 @@ import org.openpnp.machine.reference.camera.OpenPnpCaptureCamera;
 import org.openpnp.machine.reference.driver.NullDriver;
 
 class ProductionFeaturePolicyTest {
+    @org.junit.jupiter.api.io.TempDir java.nio.file.Path directory;
     @Test void productionRejectsSimulationBeforeConnectingAndRetainsRealHardwareChoices() throws Exception {
+        org.openpnp.model.Configuration.initialize(directory.toFile());
         String previous = System.getProperty(ProductionFeaturePolicy.HARDWARE_ONLY);
         try {
             System.clearProperty(ProductionFeaturePolicy.HARDWARE_ONLY);
@@ -21,6 +23,8 @@ class ProductionFeaturePolicyTest {
             assertDoesNotThrow(() -> ProductionFeaturePolicy.requireRealCamera(new OpenPnpCaptureCamera()));
             assertFalse(machine.getCompatibleCameraClasses().contains(ImageCamera.class));
             assertFalse(machine.getCompatibleDriverClasses().contains(NullDriver.class));
+            assertTrue(machine.getCompatibleMotionPlannerClasses().contains(org.openpnp.machine.reference.driver.NullMotionPlanner.class),
+                    "The native direct hardware planner is not a virtual machine");
             System.setProperty(ProductionFeaturePolicy.HARDWARE_ONLY, "false");
             assertDoesNotThrow(() -> ProductionFeaturePolicy.requireHardware(machine));
             assertTrue(machine.getCompatibleCameraClasses().contains(ImageCamera.class));

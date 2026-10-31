@@ -6,7 +6,9 @@ import org.openpnp.machine.reference.ReferenceMachine;
 import org.openpnp.machine.reference.signaler.SoundSignaler;
 
 class TaskSoundMenuTest {
+    @org.junit.jupiter.api.io.TempDir java.nio.file.Path directory;
     @Test void errorAndCompletionPreferencesAreIndependentAndDoNotDuplicateSignalers() throws Exception {
+        org.openpnp.model.Configuration.initialize(directory.toFile());
         var machine = new ReferenceMachine();
         TaskSoundMenu.setEnabled(machine, true, false);
         assertTrue(machine.getSignalers().isEmpty());
