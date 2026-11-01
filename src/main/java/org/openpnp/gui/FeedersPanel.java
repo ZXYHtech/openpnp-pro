@@ -734,11 +734,13 @@ public class FeedersPanel extends JPanel implements WizardContainer {
         if (feeder.getPart() == null) {
             throw new Exception("Feeder "+feeder.getName()+" has no part.");
         }
-        // Reject an occupied selected nozzle before preparation can move the feeder/head.
+        // An operator can remove a manually picked part without notifying the
+        // software. A fresh manual pick replaces that record, without release,
+        // discard or any change to the configured physical pick checks.
         if (prepositioned != null) {
             Nozzle selected = MainFrame.get().getMachineControls().getSelectedNozzle();
             if (selected.getPart() != null) {
-                throw new Exception("吸嘴 " + selected.getName() + " 已持有器件，请先贴装或抛料后再取料。");
+                selected.clearPartForRepick();
             }
         }
         // Simulate a "one feeder" job, prepare the feeder.

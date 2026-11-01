@@ -307,8 +307,8 @@ public final class DynamicSafeMotionPlanner {
         }
         long deadline = System.nanoTime() + 500_000_000L;
         List<DynamicTool> tools = DynamicSafetyCollisionEngine.snapshot(model, machine, nozzle);
-        // Waiting is AT the pick XY, with clearance in Z only. Never ask the
-        // general travel-plane planner for run-in points, detours or a Z tail.
+        // Waiting ends AT the pick XY, with clearance in Z only. Prefer direct
+        // entry; a blocked middle segment may use the existing changer corridors.
         double z = clearHeight(pick.derive(null, null, pick.getZ() + 2, null), safeZ,
                 start, model, tools, deadline, false);
         if (!Double.isFinite(z) || z > safeZ + EPSILON) {
@@ -372,6 +372,17 @@ public final class DynamicSafeMotionPlanner {
             }
             if (selected != null) { break; }
             if (System.nanoTime() > deadline) { break; }
+        }
+        if (selected == null) {
+            Location waiting = pick.derive(null, null, z, null);
+            Plan corridor = planTravelFloor(nozzle, start, waiting, machine.getSpeed(), model, tools,
+                    Double.POSITIVE_INFINITY, System.nanoTime() + 500_000_000L, false, null);
+            if (corridor != null && corridor.isOptimized()) {
+                selected = corridor.locations;
+                selectedZ = z;
+                Logger.info("Feeder entry {} uses certified changer corridor; final wait remains at pick XY/Z {}",
+                        nozzle.getName(), waiting);
+            }
         }
         if (selected == null) {
             throw new Exception("飞达进场未通过双嘴扫掠检查，未下发运动：" + blocked);

@@ -44,6 +44,39 @@ import org.openpnp.spi.MotionPlanner;
 import org.openpnp.util.MovableUtils;
 
 class DynamicSafeMotionPlannerTest {
+    @Test void feederPrepositionUsesExistingChangerCorridorInsteadOfStoppingAtBlockedDirectEntry() throws Exception {
+        var profile = model.findToolProfile(head.getId(), nozzle.getId());
+        profile.zIsNozzleTip = true;
+        profile.bodyFollowsNozzleZ = false;
+        SafetyObject bank = model.createObject(ObjectType.FEEDER);
+        bank.x = 250;
+        bank.y = 70;
+        bank.z = -25;
+        bank.width = 100;
+        bank.depth = 60;
+        bank.height = 18;
+        bank.sourceKey = "feeder-bank:front";
+        model.addObject(bank);
+        SafetyObject changer = model.createObject(ObjectType.NOZZLE_CHANGER);
+        changer.x = 140;
+        changer.y = 90;
+        changer.z = -50;
+        changer.width = changer.depth = 20;
+        changer.height = 10;
+        changer.apertureWidth = changer.apertureDepth = 0;
+        model.addObject(changer);
+        model.certify("Feeder approach around changer");
+        SafetyWorkbenchStore.save(model);
+        DynamicSafeMotionSettings.setEnabled(true);
+        DynamicSafeMotionSettings.setStrictEnabled(true);
+        var feeder = new org.openpnp.machine.reference.feeder.ReferenceAutoFeeder();
+        feeder.setLocation(new Location(LengthUnit.Millimeters, 300, 100, -13, 0));
+        assertTrue(DynamicSafeMotionPlanner.prepositionForFeed(nozzle, feeder));
+        assertTrue(commands.stream().anyMatch(p -> p.getCoordinate(y) < 90 || p.getCoordinate(y) > 110));
+        assertEquals(300, nozzle.getLocation().getX(), .001);
+        assertEquals(100, nozzle.getLocation().getY(), .001);
+        assertTrue(nozzle.getLocation().getZ() < 0, "The detour must still end at the low pick waiting position");
+    }
     @Test void automaticPlaneRoutesAroundChangerInsteadOfCrossingAboveIt() throws Exception {
         SafetyObject solid = model.createObject(ObjectType.BOARD);
         solid.x = 400;

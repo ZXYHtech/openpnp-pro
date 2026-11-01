@@ -67,7 +67,7 @@ class ManualFeederPickupTest {
         GcodeDriver feederDriver = new GcodeDriver() {
             @Override public void actuate(Actuator actual, double value) {
                 feeds.incrementAndGet();
-                assertEquals(1, fixture.commands.size(), "Manual feed overlaps one safe approach");
+                assertTrue(fixture.commands.size() >= 1, "Manual feed follows a checked approach");
                 assertEquals(300, nozzle.getLocation().getX(), .001);
                 assertTrue(nozzle.getLocation().getZ() > -13);
             }
@@ -112,13 +112,18 @@ class ManualFeederPickupTest {
         assertTrue(fixture.nozzle.getLocation().getZ() < 0, "No forced full Safe-Z after manual pick");
     }
 
-    @Test void occupiedNozzleRejectsManualPickupBeforeFeedOrMotion() throws Exception {
+    @Test void oldManualPickRecordAllowsRepeatedPickupWithoutDiscardOrVacuumRelease() throws Exception {
         var setPart = org.openpnp.spi.base.AbstractNozzle.class.getDeclaredMethod("setPart", Part.class);
         setPart.setAccessible(true);
         setPart.invoke(fixture.nozzle, part);
-        Exception rejected = assertThrows(Exception.class, () -> FeedersPanel.pickFeeder(feeder));
-        assertTrue(rejected.getMessage().contains("已持有器件"));
-        assertEquals(0, feeds.get());
-        assertTrue(fixture.commands.isEmpty());
+        fixture.machine.submit(() -> {
+            FeedersPanel.pickFeeder(feeder);
+            FeedersPanel.pickFeeder(feeder);
+            return null;
+        }).get(10, java.util.concurrent.TimeUnit.SECONDS);
+        assertEquals(2, feeds.get());
+        assertSame(part, fixture.nozzle.getPart());
+        assertSame(feeder, fixture.nozzle.getPartsFeeder());
+        verify(fixture.nozzle.getVacuumActuator(), never()).actuate(false);
     }
 }
