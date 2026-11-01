@@ -2160,10 +2160,16 @@ solve(eq, t)            # Solve for t
             if (sqArg < 0 && sqArg > -eps) {
                 sqArg = 0;
             }
-            double sTerm = Math.sqrt(sqArg);
             double ti0 = 0;
-            double ti1 = Math.max(ti0, Math.min(ti, -(a0 + sTerm)/j));
-            double ti2 = Math.max(ti0, Math.min(ti, -(a0 - sTerm)/j));
+            // A negative discriminant means velocity has no real zero: the
+            // complete segment is monotonic. NaN roots would silently skip it,
+            // making a reachable splice position appear unreachable.
+            double ti1 = ti0, ti2 = ti;
+            if (sqArg >= 0) {
+                double sTerm = Math.sqrt(sqArg);
+                ti1 = Math.max(ti0, Math.min(ti, -(a0 + sTerm)/j));
+                ti2 = Math.max(ti0, Math.min(ti, -(a0 - sTerm)/j));
+            }
             // Now treat each interval and solve for roots numerically. 
             Function<Double, Double> f = (t) -> (-ds + v0*t + 1./2*a0*Math.pow(t, 2) + 1./6*j*Math.pow(t, 3)); 
             Function<Double, Double> g = (t) -> (v0 + a0*t + 1./2*j*Math.pow(t, 2));

@@ -275,11 +275,21 @@ public abstract class AbstractMotionPath implements Iterable<MotionProfile []> {
                     //validate("["+i+"]["+lead+"]", solverProfile);
 
                     // Cut this along the sequence.
-                    double t0 = solverProfile.getForwardCrossingTime(profiles[lead].s[0], false);
+                    Double entryTime = solverProfile.getForwardCrossingTime(profiles[lead].s[0], false);
+                    if (entryTime == null) {
+                        throw new Exception("Native curve cannot reach splice entry: segment=" + i
+                                + ", axis=" + lead + ", position=" + profiles[lead].s[0]);
+                    }
+                    double t0 = entryTime;
                     for (int j = i; j < iNext; j++) {
                         MotionProfile [] seqProfiles = get(j);
                         // Note, we can always use forward crossing time, because in coordinated moves there is no sign reversal.
-                        double t1 = solverProfile.getForwardCrossingTime(seqProfiles[lead].s[segments], false);
+                        Double exitTime = solverProfile.getForwardCrossingTime(seqProfiles[lead].s[segments], false);
+                        if (exitTime == null) {
+                            throw new Exception("Native curve cannot reach splice exit: segment=" + j
+                                    + ", axis=" + lead + ", position=" + seqProfiles[lead].s[segments]);
+                        }
+                        double t1 = exitTime;
                         seqProfiles[lead].extractProfileSectionFrom(solverProfile, t0, t1);
                         // TODO: if the extracted move has reached solverProfile.vMax on entry/exit it may be re-optimized using its higher
                         // vMax i.e. while pinching down entry/exit velocity and acceleration, we can re-solve it.

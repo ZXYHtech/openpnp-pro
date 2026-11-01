@@ -201,7 +201,12 @@ final class BoundedClearanceTravel {
         List<Motion> motions = new ArrayList<>();
         AxesLocation previous = initial;
         for (int i = 0; i < locations.size(); i++) {
-            AxesLocation next = previous.put(raw(nozzle, locations.get(i)));
+            // Queueing normalizes equivalent C turns on every waypoint. The
+            // preview must do the same: a fictitious 360->0 turn changes the
+            // native splice timing and can hide an unsolvable bounded curve.
+            AxesLocation normalized = planner.normalizeForPreview(nozzle, raw(nozzle, locations.get(i)));
+            if (normalized == null) { return null; }
+            AxesLocation next = previous.put(normalized);
             if (i == 0) { next = next.put(goal.byType(Axis.Type.Rotation)); }
             Motion motion = new Motion(nozzle, previous, next, speed * nozzle.getHead().getMaxPartSpeed(),
                     i == freeIndex ? Motion.MotionOption.UncoordinatedMotion : Motion.MotionOption.CoordinatedMotion);

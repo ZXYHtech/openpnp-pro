@@ -66,14 +66,17 @@ public final class FeederPreposition {
         }
         // Complete the previous tip's retreat before feeding. Only the next safe
         // approach is allowed to overlap, never a pick/contact stroke.
-        boolean needsWait = !(machine.getMotionPlanner() instanceof org.openpnp.machine.reference.driver.AbstractMotionPlanner)
-                || ((org.openpnp.machine.reference.driver.AbstractMotionPlanner) machine.getMotionPlanner()).hasPendingLinearMotion();
-        if (needsWait) { machine.getMotionPlanner().waitForCompletion(null, CompletionType.WaitForStillstand); }
-        // Establish the final pick rotation/reference BEFORE moving. Recomputing
-        // MinimalRotation after arriving changes the pose and can trigger Safe-Z again.
-        nozzle.prepareForPickAndPlaceArticulation(feeder.getPickLocation(), placement);
-        if (!DynamicSafeMotionPlanner.prepositionForFeed(nozzle, feeder)) { return false; }
-        machine.getMotionPlanner().waitForCompletion(null, CompletionType.CommandStillstand);
+        try {
+            boolean needsWait = !(machine.getMotionPlanner() instanceof org.openpnp.machine.reference.driver.AbstractMotionPlanner)
+                    || ((org.openpnp.machine.reference.driver.AbstractMotionPlanner) machine.getMotionPlanner()).hasPendingLinearMotion();
+            if (needsWait) { machine.getMotionPlanner().waitForCompletion(null, CompletionType.WaitForStillstand); }
+            // Establish the final pick rotation/reference BEFORE moving. Recomputing
+            // MinimalRotation after arriving changes the pose and can trigger Safe-Z again.
+            nozzle.prepareForPickAndPlaceArticulation(feeder.getPickLocation(), placement);
+            if (!DynamicSafeMotionPlanner.prepositionForFeed(nozzle, feeder)) { return false; }
+            machine.getMotionPlanner().waitForCompletion(null, CompletionType.CommandStillstand);
+        }
+        catch (Exception approachFailure) { throw new FeederApproachException(approachFailure); }
         ACTIVE.set(actuator);
         try {
             feeder.feed(nozzle); // Synchronous feed completion remains the pickup barrier.

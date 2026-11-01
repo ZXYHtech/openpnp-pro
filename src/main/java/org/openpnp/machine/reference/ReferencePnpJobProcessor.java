@@ -1554,6 +1554,7 @@ public class ReferencePnpJobProcessor extends AbstractPnpJobProcessor {
                     continue;
                 }
                 catch (JobProcessorException jpe) {
+                    if (jpe.isInterrupting()) { throw jpe; }
                     lastException = jpe;
                     continue;
                 }
@@ -1618,6 +1619,9 @@ public class ReferencePnpJobProcessor extends AbstractPnpJobProcessor {
                     }
                     Configuration.get().getScripting().on("Feeder.AfterFeed", globals);
                     return;
+                }
+                catch (org.openpnp.machine.reference.feeder.FeederApproachException e) {
+                    throw new JobProcessorException(nozzle, e, true);
                 }
                 catch (Feeder.FeederEmptyException e) {
                     // This exception gets handled in the outer retry loop
