@@ -14,6 +14,20 @@ import org.openpnp.machine.reference.safety.SafetyWorkbenchModel.Point2;
 import org.openpnp.machine.reference.safety.SafetyWorkbenchModel.Shape;
 
 class CoordinatedMotionValidatorTest {
+    @Test void anEmptyReleasedSiblingCanLiftOffABoardWhileTheSelectedFoldedCamMovesToBalance() {
+        var model = model();
+        box(model, ObjectType.BOARD, 15, -5, -17, 10, 10, 5.6).clearance = 1;
+        Waypoint start = new Waypoint(0, 0, 15.0012), end = new Waypoint(0, 0, 15);
+        DynamicTool selected = tool(start);
+        DynamicTool sibling = new DynamicTool("H1", "N1", "N1", new Waypoint(20, 0, -12.1),
+                1, 1, 25, 30, .5, 0, 0, true, true, true, false);
+        sibling.selectedTool = false;
+        sibling.mappedZ = z -> -12.1 + (15.0012 - z) / .0012 * 27.1;
+        assertTrue(CoordinatedMotionValidator.validate(model, Arrays.asList(start, end),
+                Arrays.asList(selected, sibling), start).isSafe());
+        assertFalse(CoordinatedMotionValidator.validate(model, Arrays.asList(start, new Waypoint(1, 0, 15)),
+                Arrays.asList(selected, sibling), start).isSafe(), "A lateral contact exit remains blocked");
+    }
     @Test void movingBetweenTwoTaughtFeederContactsStillRequiresBothVerticalContactStrokes() {
         SafetyWorkbenchModel model = model();
         SafetyObject a = box(model, ObjectType.FEEDER, 0, 0, -20, 20, 20, 15);

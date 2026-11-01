@@ -214,6 +214,17 @@ class BoundedClearanceTravelTest {
                     new boolean[2], 0, mask, new AxesLocation(f.machine)));
         }
         var best = org.openpnp.machine.reference.vision.DualNozzleCyclePlanner.best(scores);
+        try (var cache = new org.openpnp.machine.reference.vision.DualNozzleCycleCosts()) {
+            for (int mask = 0; mask < 8; mask++) {
+                var cached = org.openpnp.machine.reference.vision.DualNozzleCyclePlanner.evaluate(items, targets,
+                        new boolean[2], 0, mask, new AxesLocation(f.machine));
+                assertEquals(scores.get(mask).seconds, cached.seconds, 1e-6);
+                assertEquals(scores.get(mask).distance, cached.distance, 1e-6);
+                assertEquals(scores.get(mask).reversals, cached.reversals);
+            }
+            assertTrue(cache.getHits() > cache.getSolved(), "Repeated candidate legs should reuse native solves");
+            System.out.printf("CYCLE COST CACHE: solves=%d reused=%d%n", cache.getSolved(), cache.getHits());
+        }
         assertNotNull(best);
         double minimum = scores.stream().mapToDouble(s -> s.seconds).min().orElseThrow();
         assertTrue(best.seconds <= minimum + .005);

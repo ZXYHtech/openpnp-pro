@@ -64,12 +64,15 @@ public final class FeederPreposition {
                 }
             }
         }
-        // Complete the previous tip's retreat before feeding. Only the next safe
-        // approach is allowed to overlap, never a pick/contact stroke.
+        // A proven post-release retreat may flow directly into the next safe
+        // approach. Other pending contact strokes must complete before feeding.
         try {
             boolean needsWait = !(machine.getMotionPlanner() instanceof org.openpnp.machine.reference.driver.AbstractMotionPlanner)
                     || ((org.openpnp.machine.reference.driver.AbstractMotionPlanner) machine.getMotionPlanner()).hasPendingLinearMotion();
-            if (needsWait) { machine.getMotionPlanner().waitForCompletion(null, CompletionType.WaitForStillstand); }
+            boolean releasedRetreat = org.openpnp.machine.reference.safety.PlacementTravelHandoff.consume(nozzle);
+            if (needsWait && !releasedRetreat) {
+                machine.getMotionPlanner().waitForCompletion(null, CompletionType.WaitForStillstand);
+            }
             // Establish the final pick rotation/reference BEFORE moving. Recomputing
             // MinimalRotation after arriving changes the pose and can trigger Safe-Z again.
             nozzle.prepareForPickAndPlaceArticulation(feeder.getPickLocation(), placement);

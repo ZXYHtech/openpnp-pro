@@ -17,7 +17,6 @@ public final class CertifiedTravelProfile implements AutoCloseable {
             this.guard = guard;
         }
         public void constrain(Motion motion) {
-            int index = 0;
             for (var axis : motion.getLocation1().getControllerAxes()) {
                 double low = minimum.getCoordinate(axis), high = maximum.getCoordinate(axis);
                 double first = motion.getLocation0().getCoordinate(axis), last = motion.getLocation1().getCoordinate(axis);
@@ -25,16 +24,15 @@ public final class CertifiedTravelProfile implements AutoCloseable {
                         || last < low - 1e-6 || last > high + 1e-6) {
                     throw new IllegalStateException("平滑联动控制轴超出已认证空间：" + axis.getName());
                 }
-                MotionProfile profile = motion.getAxesProfiles()[index++];
+                MotionProfile profile = motion.getAxesProfiles()[motion.getAxisIndex(axis)];
                 profile.setLocationMin(Math.max(profile.getLocationMin(), low));
                 profile.setLocationMax(Math.min(profile.getLocationMax(), high));
             }
         }
         public void validate(Motion motion) {
             guard.run();
-            int index = 0;
             for (var axis : motion.getLocation1().getControllerAxes()) {
-                MotionProfile profile = motion.getAxesProfiles()[index++];
+                MotionProfile profile = motion.getAxesProfiles()[motion.getAxisIndex(axis)];
                 if (profile.checkValidity() != null || profile.getLowerSBoundary() < minimum.getCoordinate(axis) - 1e-5
                         || profile.getHigherSBoundary() > maximum.getCoordinate(axis) + 1e-5) {
                     throw new IllegalStateException("平滑曲线越出已认证包络，尚未发送运动：" + axis.getName());
@@ -65,6 +63,7 @@ public final class CertifiedTravelProfile implements AutoCloseable {
         request.bounds.guard.run();
         request.bounds.constrain(motion);
         CERTIFIED.put(motion, request.bounds);
+        CertifiedCurveRepair.register(motion, request.bounds);
     }
 
     /** Called after native profile optimisation, before any driver receives commands. */

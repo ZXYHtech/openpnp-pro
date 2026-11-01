@@ -383,8 +383,13 @@ public class ReferenceAdvancedMotionPlanner extends AbstractMotionPlanner {
             return;
         }
         PlannerPath path = new PlannerPath(executionPlan);
-        path.solve();
-        org.openpnp.model.CertifiedTravelProfile.validate(executionPlan);
+        try {
+            path.solve();
+            org.openpnp.model.CertifiedTravelProfile.validate(executionPlan);
+        }
+        catch (Exception invalidBlend) {
+            if (!org.openpnp.model.CertifiedCurveRepair.rebuild(executionPlan)) { throw invalidBlend; }
+        }
     }
 
     protected void startNewMotionGraph() {

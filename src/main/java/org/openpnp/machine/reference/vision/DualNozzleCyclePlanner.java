@@ -56,7 +56,7 @@ public final class DualNozzleCyclePlanner {
         Route(AxesLocation position) { this.position = position; }
 
         void visit(Nozzle nozzle, Location headTarget, double speed) throws Exception {
-            AxesLocation next = position.put(nozzle.toRaw(headTarget, LocationOption.Quiet));
+            AxesLocation next = position.put(DualNozzleCycleCosts.raw(nozzle, headTarget));
             // Equivalent full turns must not manufacture a slow 360-degree route.
             for (var axis : next.getControllerAxes()) {
                 if (axis.getType() == Axis.Type.Rotation
@@ -77,8 +77,7 @@ public final class DualNozzleCyclePlanner {
                 }
             }
             distance += Math.hypot(dx, dy);
-            seconds += new Motion(nozzle, position, next, speed,
-                    Motion.MotionOption.CoordinatedMotion).getTime();
+            seconds += DualNozzleCycleCosts.seconds(nozzle, position, next, speed);
             position = next;
         }
     }
@@ -98,29 +97,9 @@ public final class DualNozzleCyclePlanner {
                 Nozzle nozzle = item.nozzle;
                 Location target = targets[stage][index];
                 if (target == null) { continue; }
-                Location toolTarget = nozzle.toHeadMountableLocation(target, LocationOption.Quiet);
-                var profile = model.findToolProfile(nozzle.getHead().getId(), nozzle.getId());
-                double clearance = profile == null ? 2 : profile.clearance;
-                double partHeight = nozzle.getSafePartHeight(item.jobPlacement.getPlacement().getPart())
-                        .convertToUnits(LengthUnit.Millimeters).getValue();
-                double safe = nozzle.getEffectiveSafeZ().convertToUnits(LengthUnit.Millimeters).getValue();
-                double local = Double.isFinite(plane) ? Math.min(safe, plane + clearance + partHeight + .5) : safe;
-                if (stage == 1 && flying[index]) {
-                    int direction = FlyingVisionMotion.direction();
-                    route.visit(nozzle, target.derive(target.getX() - direction * FlyingVisionSettings.getApproachDistanceMm(), null, null, null), speed);
-                    route.visit(nozzle, target.derive(target.getX() + direction * FlyingVisionSettings.getExitDistanceMm(), null, null, null),
-                            Math.min(speed, FlyingVisionSettings.getSpeed()));
-                    route.visit(nozzle, nozzle.toHeadLocation(toolTarget.derive(
-                            toolTarget.getX() + direction * FlyingVisionSettings.getExitDistanceMm(), null, safe, null), LocationOption.Quiet), speed);
-                }
-                else {
-                    if (stage != 1) {
-                        route.visit(nozzle, nozzle.toHeadLocation(toolTarget.derive(null, null,
-                                Math.max(local, toolTarget.getZ() + 1), null), LocationOption.Quiet), speed);
-                    }
-                    route.visit(nozzle, target, speed);
-                    double exit = stage == 1 ? safe : Math.max(toolTarget.getZ(), local);
-                    route.visit(nozzle, nozzle.toHeadLocation(toolTarget.derive(null, null, exit, null), LocationOption.Quiet), speed);
+                for (var step : DualNozzleCycleCosts.steps(nozzle, item.jobPlacement.getPlacement().getPart(),
+                        target, stage, flying[index], speed, model, plane)) {
+                    route.visit(nozzle, step.location, step.speed);
                 }
             }
         }
@@ -133,7 +112,8 @@ public final class DualNozzleCyclePlanner {
         if (!DynamicSafeMotionSettings.isEnabled() || items.size() != 2
                 || items.get(0).nozzle.getHead() != items.get(1).nozzle.getHead()
                 || !SafetyWorkbenchStore.get().isCertified()) { return null; }
-        try {
+        try (var costs = new DualNozzleCycleCosts()) {
+            long started = System.nanoTime();
             Location[][] targets = new Location[3][2];
             boolean[] flying = new boolean[2];
             for (int i = 0; i < 2; i++) {
@@ -158,6 +138,8 @@ public final class DualNozzleCyclePlanner {
             Logger.info("Dual cycle phase={} candidates={} order={} -> {}; total native estimate={} s, XY={} mm, reversals={}, remaining mask={}",
                     phase, candidates.size(), ordered.get(0).nozzle.getName(), ordered.get(1).nozzle.getName(),
                     selected.seconds, selected.distance, selected.reversals, selected.mask);
+            Logger.info("Dual cycle actual planning={} ms; native solves={}, reused={}",
+                    (System.nanoTime() - started) / 1e6, costs.getSolved(), costs.getHits());
             return ordered;
         }
         catch (Exception unavailable) {

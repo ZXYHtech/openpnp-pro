@@ -249,10 +249,18 @@ final class CoordinatedMotionValidator {
     }
 
     private static boolean terminalContact(Envelope envelope, SafetyObject object, Waypoint first, Waypoint last, Waypoint source, Waypoint target, boolean firstSegment, boolean lastSegment, FeederContact contact) {
-        // Only the selected tip may leave/approach a feeder or board, vertically.
-        // Never waive contact during a diagonal or for a sibling nozzle.
-        if (!envelope.tool.selectedTool || (object.type != ObjectType.BOARD && object.type != ObjectType.FEEDER && object.type != ObjectType.LOOSE_PARTS_FEEDER) || Math.abs(first.x - last.x) > EPSILON || Math.abs(first.y - last.y) > EPSILON || envelope.bodyMinZ <= object.z + object.height + object.clearance) {
+        // Contact strokes must remain vertical. A released sibling may also
+        // lift from a board while the shared cam returns toward balance.
+        if ((object.type != ObjectType.BOARD && object.type != ObjectType.FEEDER && object.type != ObjectType.LOOSE_PARTS_FEEDER) || Math.abs(first.x - last.x) > EPSILON || Math.abs(first.y - last.y) > EPSILON || envelope.bodyMinZ <= object.z + object.height + object.clearance) {
             return false;
+        }
+        if (!envelope.tool.selectedTool) {
+            double sourceTip = envelope.tool.reference.z - envelope.tool.tipLengthAt(envelope.tool.reference.z);
+            return firstSegment && object.type == ObjectType.BOARD && envelope.tool.mappedZ != null && !envelope.tool.carryingPart
+                    // The board envelope includes tall placed components. Its
+                    // highest point is not the local released-tip contact plane.
+                    && sourceTip >= object.z - EPSILON
+                    && envelope.tool.minimumZAt(envelope.b.z) > envelope.tool.minimumZAt(envelope.a.z) + EPSILON;
         }
         if (firstSegment && last.z > first.z && sameXy(first, source) && envelope.tool.minimumZAt(envelope.b.z) >= envelope.tool.minimumZAt(envelope.a.z)
                 && (source.z >= object.z + object.height - EPSILON || contact != null && contact.permits(object, source))) {

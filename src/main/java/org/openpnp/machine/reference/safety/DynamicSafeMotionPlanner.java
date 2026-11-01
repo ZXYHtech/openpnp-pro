@@ -618,6 +618,7 @@ public final class DynamicSafeMotionPlanner {
         }
         DynamicMotionDiagnostics.recordRetraction(tool.getName(), plan.reason, planningMs,
                 plan.originalSeconds, plan.coordinatedSeconds);
+        if (contact != null && contact.board && tool.getPart() == null) { PlacementTravelHandoff.record(tool); }
         lastReason = plan.reason;
         return true;
     }
@@ -885,7 +886,11 @@ public final class DynamicSafeMotionPlanner {
                 stockExitZ = Math.min(target.getZ(), zone[1].convertToUnits(LengthUnit.Millimeters).getValue());
             }
         }
-        double safeZ = Math.max(stockExitZ, Math.max(start.getZ(), target.getZ()));
+        // A folded cam's "higher" extension plateau can mean its sibling is
+        // still down. Its calibrated balanced Safe-Z, not max(tool Z), is clear.
+        boolean camZ = tool.getAxisZ() instanceof ReferenceCamCounterClockwiseAxis
+                || tool.getAxisZ() instanceof ReferenceCamClockwiseAxis;
+        double safeZ = camZ ? stockExitZ : Math.max(stockExitZ, Math.max(start.getZ(), target.getZ()));
         if (!Double.isFinite(safeZ)) {
             return rejected("所需巡航高度无效");
         }
@@ -1276,10 +1281,14 @@ public final class DynamicSafeMotionPlanner {
     static double clearHeight(Location endpoint, double safeZ, Location start, SafetyWorkbenchModel model, List<DynamicTool> tools, long deadline, boolean finalApproach) {
         double low = endpoint.getZ();
         if (clearAt(endpoint, start, model, tools, deadline)) {
+            if (safeZ < low) { return low; }
             // Keep a short vertical final approach even on an unobstructed table.
             double approach = Math.min(safeZ, low + (finalApproach ? 1 : 0));
             return clearAt(endpoint.derive(null, null, approach, null), start, model, tools, deadline)
                     ? approach : low;
+        }
+        if (safeZ < low) {
+            return clearAt(endpoint.derive(null, null, safeZ, null), start, model, tools, deadline) ? safeZ : Double.NaN;
         }
         // Shared cam Z is not monotonically safer when the selected nozzle rises:
         // its sibling descends. Find the first clear bracket, even if full Safe-Z
